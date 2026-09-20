@@ -1,0 +1,15 @@
+{
+  "name": "jev-router",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test 'tests/*.test.ts'",
+    "typecheck": "tsc -p .",
+    "validate": "claude plugin validate .",
+    "check-gateway": "node scripts/check-gateway.mjs",
+    "try-prompts": "node scripts/try-prompts.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

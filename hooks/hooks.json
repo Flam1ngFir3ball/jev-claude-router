@@ -1,0 +1,4 @@
+{
+  "description": "Per-turn model routing: turn.start asks Jev which tier and how much effort, turn.step rewrites the request's model and effort, SessionMode shows the pick in the footer",
+  "modules": ["./register.ts"]
+}

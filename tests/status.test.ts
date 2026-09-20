@@ -1,0 +1,179 @@
+import assert from 'node:assert/strict'
+import { describe, test } from 'node:test'
+
+import {
+  announceReply,
+  attemptOf,
+  liveLine,
+  REPLY_SEPARATOR,
+  statusReport,
+  toggleReply,
+  type Status,
+} from '../hooks/status.ts'
+
+const decision = {
+  tier: 'fable' as const,
+  model: 'claude-fable-5-1',
+  effort: 'xhigh' as const,
+  confidence: 0.97,
+}
+
+const base: Status = {
+  enabled: true,
+  surface: 'desktop',
+  hasKey: true,
+  timeoutMs: 1500,
+  offered: ['haiku', 'sonnet', 'opus', 'fable'],
+  excluded: [],
+  announce: true,
+  attempts: [],
+}
+
+describe('status report', () => {
+  test('the first lines answer "is this even on"', () => {
+    const lines = statusReport(base).split('\n')
+    assert.match(lines[1] ?? '', /routing\s+on/)
+    assert.match(lines[2] ?? '', /surface\s+desktop/)
+    assert.match(lines[3] ?? '', /AI_GATEWAY_API_KEY is set/)
+  })
+
+  test('a missing key is stated loudly, not implied', () => {
+    const text = statusReport({ ...base, hasKey: false })
+    assert.match(text, /NO KEY — nothing will route/)
+  })
+
+  test('routing off says how to turn it back on', () => {
+    assert.match(statusReport({ ...base, enabled: false }), /off \(\/jev on\)/)
+  })
+
+  test('before any turn it says so rather than showing an empty table', () => {
+    assert.match(statusReport(base), /No turns yet/)
+  })
+
+  test('a routed turn shows tier, effort, confidence and latency', () => {
+    const text = statusReport({
+      ...base,
+      attempts: [{ prompt: 'plan the migration', ms: 641, decision }],
+    })
+    assert.match(text, /641ms/)
+    assert.match(text, /fable·xhigh 0\.97/)
+    assert.match(text, /plan the migration/)
+  })
+
+  test('an unrouted turn shows why, which is the whole point', () => {
+    const text = statusReport({
+      ...base,
+      attempts: [
+        { prompt: 'x', ms: 12, skipped: 'gateway said HTTP 403 (customer_verification_required)' },
+      ],
+    })
+    assert.match(text, /unrouted — gateway said HTTP 403/)
+  })
+
+  test('a low-confidence pick is called out in words, not a symbol', () => {
+    const text = statusReport({
+      ...base,
+      attempts: [{ prompt: 'x', ms: 400, decision: { ...decision, confidence: 0.3 } }],
+    })
+    assert.match(text, /low confidence/)
+  })
+
+  test('excluded tiers are listed only when there are some', () => {
+    assert.doesNotMatch(statusReport(base), /excluded/)
+    assert.match(
+      statusReport({ ...base, excluded: ['fable'], offered: ['haiku', 'sonnet', 'opus'] }),
+      /excluded\s+fable/,
+    )
+  })
+
+  test('a long prompt is trimmed so the report stays one screen', () => {
+    const text = statusReport({
+      ...base,
+      attempts: [{ prompt: 'a'.repeat(200), ms: 1, decision }],
+    })
+    for (const line of text.split('\n')) assert.ok(line.length < 100, line)
+  })
+
+  test('toggling reports the state it moved to', () => {
+    assert.match(toggleReply(true), /on\./)
+    assert.match(toggleReply(false), /session model/)
+  })
+})
+
+describe('live line', () => {
+  test('a routed turn is announced with tier, effort, confidence and latency', () => {
+    assert.equal(
+      liveLine({ prompt: 'plan the migration', ms: 641, decision }),
+      '> ✳️ `fable` · xhigh · 97% · 641ms',
+    )
+  })
+
+  test('an unrouted turn announces why, rather than going silent', () => {
+    assert.equal(
+      liveLine({ prompt: 'x', ms: 12, skipped: 'no AI_GATEWAY_API_KEY' }),
+      '> ⚠️ `unrouted` · no AI_GATEWAY_API_KEY',
+    )
+  })
+
+  test('a shaky pick is marked so a bad route is visible as it happens', () => {
+    assert.match(
+      liveLine({ prompt: 'x', ms: 400, decision: { ...decision, confidence: 0.3 } }),
+      /· 30%\? ·/,
+    )
+  })
+
+  test('the line is a blockquote with the tier as inline code, since that is what the transcript can colour', () => {
+    const line = liveLine({ prompt: 'x', ms: 641, decision })
+    assert.ok(line.startsWith('> '), line)
+    assert.match(line, /`fable`/)
+  })
+
+  test('the separator is a rule with a blank line before it, or --- would make the route a heading', () => {
+    assert.equal(REPLY_SEPARATOR, '\n\n---\n\n')
+  })
+
+  test('the line stays short enough not to wrap', () => {
+    const line = liveLine({ prompt: 'a'.repeat(300), ms: 641, decision })
+    assert.ok(line.length < 60, line)
+  })
+
+  test('announcing can be turned off without turning routing off', () => {
+    assert.match(announceReply(false), /quietly/)
+    assert.match(announceReply(true), /announce/)
+    assert.match(statusReport({ ...base, announce: false }), /announce\s+off/)
+  })
+})
+
+describe('attemptOf', () => {
+  const offered = ['haiku', 'sonnet', 'opus', 'fable'] as const
+  const skippedOf = (a: ReturnType<typeof attemptOf>) =>
+    'skipped' in a ? a.skipped : 'UNEXPECTEDLY ROUTED'
+
+  test('a good answer becomes a routed attempt', () => {
+    const attempt = attemptOf(
+      'plan it',
+      {
+        ok: true,
+        ms: 500,
+        answers: { tier: { type: 'choice', choice: 'fable' } },
+      },
+      offered,
+    )
+    assert.equal('decision' in attempt && attempt.decision.tier, 'fable')
+    assert.equal(attempt.ms, 500)
+  })
+
+  test('a failed call keeps its reason, so the line can say why', () => {
+    assert.equal(
+      skippedOf(attemptOf('x', { ok: false, ms: 9, reason: 'timed out after 1500ms' }, offered)),
+      'timed out after 1500ms',
+    )
+  })
+
+  test('an answer naming a tier we did not offer is its own reason', () => {
+    assert.match(
+      skippedOf(attemptOf('x', { ok: true, ms: 5, answers: { tier: {} } }, offered)),
+      /named no tier we offered/,
+    )
+  })
+})

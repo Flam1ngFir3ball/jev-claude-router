@@ -1,0 +1,6 @@
+{
+  "name": "jev-router",
+  "version": "0.1.0",
+  "description": "Routes each turn to a Claude model chosen by TypeSafe's Jev, asked through the Vercel AI Gateway.",
+  "author": { "name": "Satvik Sinha" }
+}
