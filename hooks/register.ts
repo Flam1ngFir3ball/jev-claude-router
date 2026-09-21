@@ -5,18 +5,27 @@ import { labelOf, withLabel } from './label.ts'
 import { excludedTiers, offeredTiers, type Decision } from './policy.ts'
 import { providerOf } from './provider.ts'
 import {
+  addUsage,
   announceReply,
   attemptOf,
   HISTORY_LIMIT,
   liveLine,
+  FOOTER_SEPARATOR,
   REPLY_SEPARATOR,
   statusReport,
   toggleReply,
+  usageFooter,
   type Attempt,
 } from './status.ts'
 
 /** Turns kept in the decision cache before the oldest are dropped. */
 const CACHE_LIMIT = 32
+
+/**
+ * Stop reasons that mean the turn continues: the engine will step again, so
+ * the footer would land in the middle of a reply. Every other reason ends it.
+ */
+const MID_TURN: ReadonlySet<string> = new Set(['tool_use', 'pause_turn'])
 
 /**
  * Registers the router: one Jev call per turn, applied to every model request
@@ -38,6 +47,11 @@ export function register(on: On) {
   /** turnId → the line to put in front of the reply, until it has been. */
   const pending = new Map<string, string>()
   const attempts: Attempt[] = []
+  /**
+   * turnId → its attempt, so each step's `stop` chunk can add what the API
+   * reported to the right turn. The same objects as in `attempts`.
+   */
+  const byTurn = new Map<string, Attempt>()
   let latest: Decision | null = null
   let enabled = true
   let announce = true
@@ -127,6 +141,8 @@ export function register(on: On) {
     // announcement can never disagree about what happened.
     const attempt = attemptOf(e.text, result, offered)
     record(attempt)
+    byTurn.set(e.turnId, attempt)
+    trim(byTurn)
 
     // The line goes into the reply's own text, in turn.step below. Render
     // hooks and $.ui.log both drew nothing in the desktop app; the model's
@@ -146,7 +162,10 @@ export function register(on: On) {
   })
 
   // turn.step streams, so it is an async generator. The model rewrite goes
-  // down in `e`; the label comes back up in the first text chunk of the turn.
+  // down in `e`; the label comes back up in the first text chunk of the turn,
+  // and the `stop` chunk's usage, which names the model the API says answered,
+  // is kept on the turn. That is the check on the rewrite: the route line is
+  // what was asked for, /jev shows what was got.
   //
   // Text chunks concatenate per block, so prefixing the first one puts the
   // line at the top of the reply. This is the recorded text too, so the model
@@ -158,13 +177,48 @@ export function register(on: On) {
       ? next({ ...e, model: decision.model, effort: decision.effort })
       : next(e)
 
+    // The block the footer joins, so it lands at the end of the reply's text
+    // rather than opening a block of its own.
+    let lastTextIndex = 0
+
     for await (const chunk of step) {
       const label = pending.get(e.turnId)
-      if (label !== undefined && chunk.kind === 'text') {
-        pending.delete(e.turnId)
-        yield { ...chunk, text: `${label}${REPLY_SEPARATOR}${chunk.text}` }
-        continue
+      if (chunk.kind === 'text') {
+        lastTextIndex = chunk.index
+        if (label !== undefined) {
+          pending.delete(e.turnId)
+          yield { ...chunk, text: `${label}${REPLY_SEPARATOR}${chunk.text}` }
+          continue
+        }
       }
+
+      if (chunk.kind === 'stop') {
+        const attempt = byTurn.get(e.turnId)
+        if (attempt && chunk.usage) addUsage(attempt, chunk.usage)
+
+        // The index must be one past the last text block, and this is
+        // load-bearing. A chunk yielded at an index the engine already
+        // streamed is dropped on the floor, silently: probed live, a chunk
+        // at `lastTextIndex` never reached the transcript, one at
+        // `lastTextIndex + 1` did. It opens a block of its own, which is
+        // what a footer wants anyway — the reply above it stays untouched.
+        //
+        // No `ref`, because the engine's handle belongs to a chunk the
+        // engine streamed; one a hook built has none and is taken at its
+        // word. It goes before the stop chunk, the last thing the engine
+        // expects to see.
+        if (attempt && announce && !MID_TURN.has(chunk.stopReason ?? '')) {
+          const footer = usageFooter(attempt)
+          if (footer !== null) {
+            yield {
+              kind: 'text' as const,
+              index: lastTextIndex + 1,
+              text: `${FOOTER_SEPARATOR}${footer}`,
+            }
+          }
+        }
+      }
+
       yield chunk
     }
   })

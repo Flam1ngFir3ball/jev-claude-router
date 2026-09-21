@@ -86,7 +86,7 @@ where it loads on its own next session.
 
 ## Knowing whether it is working
 
-Three signals, in order of how much you can trust them.
+Four signals, in order of how much you can trust them.
 
 **`/jev`** prints the full state. A command's output row draws on every
 surface, so this always works:
@@ -101,12 +101,32 @@ jev-router
 
   Recent turns, newest first:
    641ms  fable·xhigh 0.97  help me plan the architecture
+          answered claude-fable-5-1 ✓  cache 91%  130k in  2k out
    402ms  haiku·medium 0.75  rename the variable foo to bar
+          answered claude-haiku-4-5 ✓  cache 4%  128k in  0k out
     12ms  unrouted — gateway said HTTP 403 (customer_verification_required)
 ```
 
+The same `answered` information is under each reply as it happens, in the
+footer below; `/jev` is where you go to see it across turns.
+
 An unrouted turn says why. That matters because the router fails open, so a
 dead provider and a missing plugin look identical from the outside.
+
+The `answered` line under each turn is the API's own report, taken from the
+`usage` on each step's `stop` chunk: which model actually answered, and what
+the turn's requests carried. The route line above it is what the mod asked
+for; this is what it got. `✓` means they agree (a dated id such as
+`claude-opus-5-20260901` still counts); `≠ claude-opus-5` means something else
+answered, which is the one case worth looking into. There is no need to proxy
+traffic or force a bogus model id to check the rewrite lands.
+
+`cache` is the share of the turn's input read from the prompt cache. The
+cache is per model, so the turn after a switch runs cold: `cache 4%` on the
+haiku turn above is the price of leaving fable. Cache reads bill at a tenth of
+uncached input, so a switch on a large context costs roughly ten times what
+staying would have, once. Watch this number to see whether Jev's switching is
+eating what the cheaper tiers save.
 
 **The first line of every reply.** The route is written into the reply's
 own text, as the first text chunk streams through `turn.step`:
@@ -127,8 +147,59 @@ rule on the line directly after text is a setext heading underline, and the
 route would render as a heading.
 
 An unrouted turn opens with `> ⚠️ \`unrouted\` · reason`. A `?` after the
-percentage means Jev was under 50% sure. `/jev quiet` drops the line without
-turning routing off; `/jev loud` brings it back.
+percentage means Jev was under 50% sure.
+
+**The footer under every finished reply**, which is the same information
+settled. The top line is what the router asked for, before the reply exists;
+the footer is what the API says it got, and it can only be written once the
+response is whole:
+
+```
+──────────────────────────────────────────────────────
+jev  fable·xhigh · 97% · 641ms
+api  claude-fable-5-1 ✓ · cache 90% · 130k in · 1k out
+```
+
+`api` is read off the `usage` on the step's stop chunk, so `✓` is the API's
+own confirmation that the model rewrite landed — no proxy, no bogus model id.
+A dated id such as `claude-fable-5-1-20260901` still counts as a match; a real
+mismatch reads `claude-opus-5 ≠ claude-fable-5-1`.
+
+`cache` is the share of the turn's input read from the prompt cache. The cache
+is per model, so the turn after a switch runs cold:
+
+```
+─────────────────────────────────────────────────────
+jev  haiku·medium · 75% · 402ms
+api  claude-haiku-4-5 ✓ · cache 4% · 128k in · 0k out
+```
+
+That `4%` is the price of leaving fable. Cache reads bill at a tenth of
+uncached input, so a switch on a large context costs roughly ten times what
+staying would have, once. Watch it to see whether the switching is eating what
+the cheaper tiers save.
+
+The footer is fenced because markdown collapses leading whitespace and joins
+consecutive lines: unfenced, the rule and the two rows render as one run-on
+paragraph. `<details>` was tried first, for a fold; the desktop app renders it
+as raw tags.
+
+It is emitted as a chunk the hook built rather than one the engine streamed,
+at **one past the last text block's index**, and only on a step whose stop
+reason ends the turn — a `tool_use` step is mid-reply. The index is
+load-bearing: a chunk yielded at an index the engine has already streamed is
+dropped silently. Probed live, a chunk at `lastTextIndex` never reached the
+transcript and one at `lastTextIndex + 1` did, so the footer opens a block of
+its own and the reply above it is untouched.
+
+Note that `claude -p` shows only the *last* text block in its `result`, so the
+reply looks like it vanished when the footer lands. It has not:
+`--output-format stream-json --verbose` shows both blocks whole.
+
+`/jev quiet` drops both the line and the footer without turning routing off;
+`/jev loud` brings them back. Both ride in the reply's recorded text, so the
+model sees them on its own past replies; that is the standing cost of a marker
+on a surface that draws neither render sites nor `ui.log`.
 
 The line is part of the recorded message, so the model sees its own past
 replies open with it. That is the cost of a marker that reaches the desktop
@@ -226,7 +297,7 @@ hooks/jev.ts        the request shape, timeout, named failures
 hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
 hooks/policy.ts     the tiers, the criteria, answers → model and effort
 hooks/label.ts      decision → footer string
-hooks/status.ts     the per-turn line and what /jev prints
+hooks/status.ts     the per-turn line, what /jev prints, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks
                     with a fake engine and asserts the stream transform
 scripts/            check-jev and try-prompts, for setup and tuning
