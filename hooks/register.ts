@@ -3,12 +3,19 @@ import type { On } from "claude-code";
 import { askJev, timeoutOf } from "./jev.ts";
 import { labelOf, withLabel } from "./label.ts";
 import {
+  DEFAULT_STICKY_CONFIDENCE,
+  decisionOf,
   excludedTiers,
+  isContinuation,
+  MODEL_OF,
   offeredTiers,
+  parseOverride,
+  shouldBlockSonnetEffort,
   stickyDecision,
   stickyOf,
   thresholdOf,
   type Decision,
+  type Tier,
 } from "./policy.ts";
 import { providerOf } from "./provider.ts";
 import {
@@ -97,6 +104,11 @@ export function register(on: On) {
   let enabled = true;
   let announce = true;
   let surface: string | null = null;
+  /**
+   * The previous effort level, for Sonnet effort-change gating.
+   * Effort changes on Sonnet rewrite ~50% of the cache, so block low-confidence flips.
+   */
+  let previousEffort: string | null = null;
 
   const trim = (map: Map<string, unknown>) => {
     while (map.size > CACHE_LIMIT) {
@@ -183,6 +195,36 @@ export function register(on: On) {
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
     );
 
+    // 1. Continuation guard: bare affirmations hold previous tier AND effort
+    if (isContinuation(e.text) && running !== null) {
+      const continuationDecision = {
+        ...running,
+        effort: previousEffort ?? running.effort,
+      };
+      const attempt = {
+        prompt: e.text,
+        ms: 0,
+        skipped: "continuation (held previous tier and effort)",
+        kind: "continuation" as const,
+      };
+      record(attempt);
+      byTurn.set(e.turnId, attempt);
+      trim(byTurn);
+      if (announce) {
+        pending.add(e.turnId);
+        trimSet(pending);
+      }
+      decisions.set(e.turnId, continuationDecision);
+      trim(decisions);
+      latest = continuationDecision;
+      running = continuationDecision;
+      previousEffort = continuationDecision.effort;
+      return next(e);
+    }
+
+    // 2. Parse explicit overrides before asking Jev
+    const override = parseOverride(e.text);
+
     const provider = providerOf({
       TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
       AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
@@ -199,28 +241,63 @@ export function register(on: On) {
       timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
     });
 
-    // One place where the turn's outcome is settled, so the report and the
-    // announcement can never disagree about what happened.
-    const attempt = attemptOf(e.text, result, offered, { sticky, running });
+    // Extract decision from Jev response
+    let freshDecision =
+      result.ok && result.answers ? decisionOf(result.answers, offered) : null;
+
+    // 2. Apply explicit override if one was parsed
+    if (freshDecision && override) {
+      freshDecision = {
+        ...freshDecision,
+        tier: override,
+        model: MODEL_OF[override],
+      };
+    }
+
+    // 3. Apply stickiness (only if sticky is enabled)
+    let finalDecision = freshDecision
+      ? sticky !== null
+        ? stickyDecision(freshDecision, running, sticky)
+        : freshDecision
+      : null;
+
+    // 4. Block Sonnet effort changes on low confidence
+    if (
+      finalDecision &&
+      sticky !== null &&
+      shouldBlockSonnetEffort(
+        finalDecision,
+        running,
+        thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE")),
+      )
+    ) {
+      // Keep the previous effort instead of the new one
+      finalDecision = {
+        ...finalDecision,
+        effort: previousEffort ?? finalDecision.effort,
+      };
+    }
+
+    // One place where the turn's outcome is settled
+    const attempt = attemptOf(e.text, result, offered, {
+      sticky,
+      running,
+    });
     record(attempt);
     byTurn.set(e.turnId, attempt);
     trim(byTurn);
 
-    // The line goes into the reply's own text, in turn.step below. Render
-    // hooks and $.ui.log both drew nothing in the desktop app; the model's
-    // text is the one channel that reaches every surface.
     if (announce) {
       pending.add(e.turnId);
       trimSet(pending);
     }
 
-    if ("decision" in attempt) {
-      decisions.set(e.turnId, attempt.decision);
+    if (finalDecision) {
+      decisions.set(e.turnId, finalDecision);
       trim(decisions);
-      latest = attempt.decision;
-      // What the next turn holds to is the tier actually running, which on a
-      // held turn is the previous one, not the one Jev named.
-      running = attempt.decision;
+      latest = finalDecision;
+      running = finalDecision;
+      previousEffort = finalDecision.effort;
     }
 
     return next(e);
@@ -314,6 +391,56 @@ export function register(on: On) {
 
       yield chunk;
     }
+  });
+
+  // Subagent routing: classify the subagent's prompt and route its model.
+  // The subagent's effort is not ours to set (Agent tool has no effort param),
+  // and its own model choice wins if the caller named one.
+  on("agent.spawn", async ($, e, next) => {
+    if (!enabled) return next(e);
+
+    // If the caller explicitly named a model, respect it
+    if (e.model) return next(e);
+
+    const offered = offeredTiers(
+      excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
+    );
+
+    const provider = providerOf({
+      TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
+      AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
+      JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
+      TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
+    });
+
+    // Classify the subagent task
+    const result = await askJev({
+      fetch: (url, init) => $.http.fetch(url, init),
+      sleep: (ms) => $.clock.sleep(ms),
+      provider,
+      state: e.prompt,
+      offered,
+      timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
+    });
+
+    if (!("decision" in result)) return next(e);
+
+    let subagentDecision = result.decision;
+
+    // Apply sticky to subagents too, using the running tier as the hold point
+    if (sticky !== null && running !== null) {
+      subagentDecision = stickyDecision(
+        subagentDecision,
+        running,
+        sticky,
+      );
+    }
+
+    // If the subagent's own model choice was set, it wins (checked above, but
+    // for clarity: only use the routed model if no model was specified by caller)
+    const routedModel = subagentDecision.model;
+
+    return next({ ...e, model: routedModel });
   });
 
   // The footer, where a surface draws one. The announcement above is what

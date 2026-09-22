@@ -6,8 +6,11 @@ import {
   decisionOf,
   effortOf,
   excludedTiers,
+  isContinuation,
   MODEL_OF,
   offeredTiers,
+  parseOverride,
+  shouldBlockSonnetEffort,
   stickyDecision,
   stickyOf,
   thresholdOf,
@@ -171,5 +174,127 @@ describe("sticky routing", () => {
     assert.equal(d.tier, "fable");
     assert.equal(d.effort, "low");
     assert.equal(d.held, undefined);
+  });
+});
+
+describe("continuation guard", () => {
+  test("bare affirmations are recognized", () => {
+    for (const text of [
+      "yes",
+      "y",
+      "ok",
+      "go ahead",
+      "continue",
+      "sure",
+      "yep",
+      "do it",
+    ]) {
+      assert.equal(isContinuation(text), true, text);
+    }
+  });
+
+  test("non-continuations are rejected", () => {
+    for (const text of [
+      "rename the variable",
+      "use opus",
+      "yes, and also fix the test",
+      "ok do something else",
+      "   ",
+      "",
+    ]) {
+      assert.equal(isContinuation(text), false, text);
+    }
+  });
+
+  test("case and whitespace are normalized", () => {
+    assert.equal(isContinuation("  YES  "), true);
+    assert.equal(isContinuation("Go Ahead"), true);
+  });
+});
+
+describe("explicit overrides", () => {
+  test("patterns like 'use X' are parsed", () => {
+    assert.equal(parseOverride("use opus"), "opus");
+    assert.equal(parseOverride("use haiku"), "haiku");
+    assert.equal(parseOverride("use fable for this"), "fable");
+  });
+
+  test("'with' and 'switch to' also work", () => {
+    assert.equal(parseOverride("with sonnet, do it"), "sonnet");
+    assert.equal(parseOverride("switch to haiku"), "haiku");
+  });
+
+  test("'on' and 'for' work too", () => {
+    assert.equal(parseOverride("on fable"), "fable");
+    assert.equal(parseOverride("for opus"), "opus");
+  });
+
+  test("unknown tiers are rejected", () => {
+    assert.equal(parseOverride("use gpt-5"), null);
+    assert.equal(parseOverride("with mistral"), null);
+  });
+
+  test("no override is null, not an error", () => {
+    assert.equal(parseOverride("just rename it"), null);
+    assert.equal(parseOverride(""), null);
+  });
+
+  test("case is normalized", () => {
+    assert.equal(parseOverride("USE OPUS"), "opus");
+    assert.equal(parseOverride("With Fable"), "fable");
+  });
+});
+
+describe("Sonnet effort blocking", () => {
+  const at = (
+    tier: string,
+    effort: Effort = "high",
+    confidence = 0.9,
+  ): Decision => ({
+    tier: tier as Decision["tier"],
+    model: MODEL_OF[tier as Decision["tier"]],
+    effort,
+    confidence,
+  });
+
+  test("first turn has nothing to block", () => {
+    const d = at("sonnet", "high", 0.5);
+    assert.equal(shouldBlockSonnetEffort(d, null, 0.75), false);
+  });
+
+  test("effort change on Sonnet below confidence is blocked", () => {
+    const prev = at("sonnet", "low", 0.9);
+    const fresh = at("sonnet", "high", 0.6);
+    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), true);
+  });
+
+  test("effort change on Sonnet above confidence is allowed", () => {
+    const prev = at("sonnet", "low", 0.9);
+    const fresh = at("sonnet", "high", 0.8);
+    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
+  });
+
+  test("effort change exactly at the bar is allowed", () => {
+    const prev = at("sonnet", "low", 0.9);
+    const fresh = at("sonnet", "high", 0.75);
+    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
+  });
+
+  test("same effort is never blocked", () => {
+    const prev = at("sonnet", "high", 0.9);
+    const fresh = at("sonnet", "high", 0.3);
+    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
+  });
+
+  test("tier changes are unaffected", () => {
+    const prev = at("sonnet", "low", 0.9);
+    const fresh = at("opus", "high", 0.3);
+    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
+  });
+
+  test("effort changes on other tiers are unaffected", () => {
+    const prev = at("opus", "low", 0.9);
+    const fresh = at("opus", "high", 0.3);
+    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
   });
 });

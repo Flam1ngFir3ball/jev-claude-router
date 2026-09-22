@@ -197,3 +197,62 @@ export function stickyDecision(
     held: fresh.tier,
   };
 }
+
+/**
+ * Detects a bare continuation: "yes", "y", "ok", "go ahead", "continue", etc.
+ * These should hold the previous tier and effort, not drop to haiku on 1.00 confidence.
+ */
+export function isContinuation(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
+  const continuations = [
+    "yes",
+    "y",
+    "ok",
+    "ok do it",
+    "go ahead",
+    "go",
+    "continue",
+    "sure",
+    "yep",
+    "yeah",
+    "uh huh",
+    "do it",
+    "go for it",
+    "let's do it",
+  ];
+  return continuations.includes(trimmed);
+}
+
+/**
+ * Parses explicit tier overrides from the prompt text.
+ * Matches: "use opus", "with fable", "switch to haiku", "on haiku", "for sonnet"
+ */
+export function parseOverride(text: string): Tier | null {
+  const lower = text.toLowerCase();
+  // Match patterns like "use X", "with X", "switch to X", "on X", "for X"
+  const match = lower.match(
+    /(?:use|with|switch to|on|for)\s+(haiku|sonnet|opus|fable)/,
+  );
+  if (match && match[1]) {
+    const tier = match[1] as Tier;
+    if (TIERS.includes(tier)) return tier;
+  }
+  return null;
+}
+
+/**
+ * Whether a Sonnet effort change should be blocked due to low confidence.
+ * Sonnet's cache key includes effort, so a flip rewrites ~50% of the prefix.
+ * Only allow the flip if confidence is high or the tier itself is changing.
+ */
+export function shouldBlockSonnetEffort(
+  decision: Decision,
+  previous: Decision | null,
+  confidenceThreshold: number,
+): boolean {
+  if (previous === null) return false;
+  if (decision.tier !== "sonnet" || previous.tier !== "sonnet") return false;
+  if (decision.effort === previous.effort) return false;
+  // Block the effort change if confidence is too low
+  return decision.confidence < confidenceThreshold;
+}
