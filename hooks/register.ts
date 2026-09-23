@@ -876,7 +876,6 @@ export function register(on: On) {
     }
     claimed.set(e.turnId, e.text);
     if (claimed.size > 200) claimed.delete(claimed.keys().next().value as string);
-    if (surface === null) surface = await surfaceOf($);
     const { offered, ceiling } = settings;
 
     // A turn the person typed starts a reply; one the engine started — a
@@ -905,7 +904,14 @@ export function register(on: On) {
     const softNotify =
       settings.notifyContinue && notification && continueFrom !== null;
 
+    // Jev is the long pole of the turn, so it is asked first and the
+    // engine's own answers (context, surface) are read while it thinks.
+    const asking =
+      isContinuation(e.text) || nudge || softNotify || forced !== null
+        ? null
+        : classify($, e.text, offered, settings);
     const reported = await contextTokensOf($);
+    if (surface === null) surface = await surfaceOf($);
     let attempt: Attempt;
     if (isContinuation(e.text) || nudge || softNotify) {
       attempt =
@@ -955,9 +961,9 @@ export function register(on: On) {
           : undefined;
       attempt = attemptOf(
         e.text,
-        forced !== null
+        asking === null
           ? { ok: false, reason: "you named the tier, so Jev was not asked", ms: 0 }
-          : await classify($, e.text, offered, settings),
+          : await asking,
         offered,
         {
           sticky: settings.sticky,

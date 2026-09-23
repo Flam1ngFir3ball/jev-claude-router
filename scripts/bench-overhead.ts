@@ -5,8 +5,16 @@
 // a final step, on a session with 20 turns of history behind it.
 import { register } from "../hooks/register.ts";
 
+// LAG_MS adds a delay to every engine call and JEV_MS to the Jev call, to
+// show wall time rather than call counts: LAG_MS=1 JEV_MS=300 npm run bench-overhead
+const LAG_MS = Number(process.env.LAG_MS ?? 0);
+const JEV_MS = Number(process.env.JEV_MS ?? 0);
+const lag = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : undefined);
 const counts: Record<string, number> = {};
-const tick = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
+const tick = async (k: string) => {
+  counts[k] = (counts[k] ?? 0) + 1;
+  await lag(k === "jev" ? JEV_MS : LAG_MS);
+};
 const store = new Map<string, unknown>();
 let bytesWritten = 0;
 
@@ -19,11 +27,11 @@ register(on as never);
 
 const env: Record<string, string> = { AI_GATEWAY_API_KEY: "k" };
 const $ = {
-  env: { get: async (k: string) => (tick("env.get"), env[k]) },
+  env: { get: async (k: string) => (await tick("env.get"), env[k]) },
   clock: { sleep: () => new Promise<never>(() => {}) },
   http: {
     fetch: async () => (
-      tick("jev"),
+      await tick("jev"),
       {
         ok: true,
         status: 200,
@@ -34,24 +42,24 @@ const $ = {
   },
   command: { register: async () => {} },
   store: {
-    get: async (k: string) => (tick("store.get"), store.get(k)),
+    get: async (k: string) => (await tick("store.get"), store.get(k)),
     set: async (k: string, v: unknown) => {
-      tick("store.set");
+      await tick("store.set");
       const s = JSON.stringify(v);
       bytesWritten += s.length;
       store.set(k, JSON.parse(s));
     },
-    keys: async () => (tick("store.keys"), [...store.keys()]),
-    delete: async (k: string) => (tick("store.delete"), store.delete(k)),
+    keys: async () => (await tick("store.keys"), [...store.keys()]),
+    delete: async (k: string) => (await tick("store.delete"), store.delete(k)),
   },
   session: {
-    id: async () => (tick("session.id"), "bench"),
+    id: async () => (await tick("session.id"), "bench"),
     surface: async () => "test",
-    surfaces: async () => (tick("session.surfaces"), ["test"]),
-    model: async () => (tick("session.model"), "claude-opus-5-5"),
-    usage: async () => (tick("session.usage"), { context: { tokens: 150_000 } }),
+    surfaces: async () => (await tick("session.surfaces"), ["test"]),
+    model: async () => (await tick("session.model"), "claude-opus-5-5"),
+    usage: async () => (await tick("session.usage"), { context: { tokens: 150_000 } }),
   },
-  agent: { list: async () => (tick("agent.list"), []) },
+  agent: { list: async () => (await tick("agent.list"), []) },
 };
 
 const usage = { model: "claude-opus-5-5", input_tokens: 100, output_tokens: 300, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 0 };
@@ -62,8 +70,11 @@ async function* step(pieces: number, stopReason: string) {
   return { stopReason };
 }
 
+let startMs = 0;
 async function turn(id: string, steps: number, pieces: number) {
+  const t = performance.now();
   await hooks.get("turn.start")!($, { text: `turn ${id}: implement the thing`, turnId: id }, async (e: unknown) => e);
+  startMs = performance.now() - t;
   for (let s = 0; s <= steps; s++) {
     const gen = hooks.get("turn.step")!($, { turnId: id, index: s }, () => step(pieces, s < steps ? "tool_use" : "end_turn"));
     for await (const _ of gen) void _;
@@ -77,6 +88,6 @@ bytesWritten = 0;
 const t0 = performance.now();
 await turn("measured", 20, 40);
 const ms = performance.now() - t0;
-console.log(`one turn, 21 steps, 840 text pieces: ${ms.toFixed(1)}ms of plugin time`);
+console.log(`one turn, 21 steps, 840 text pieces: ${ms.toFixed(1)}ms in the plugin (turn.start ${startMs.toFixed(1)}ms; engine lag ${LAG_MS}ms/call, Jev ${JEV_MS}ms)`);
 console.log(`store bytes written: ${(bytesWritten / 1024).toFixed(1)}k`);
 for (const [k, v] of Object.entries(counts).sort((a, b) => b[1] - a[1])) console.log(`  ${String(v).padStart(5)}  ${k}`);
