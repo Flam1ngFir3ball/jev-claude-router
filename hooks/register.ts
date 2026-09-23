@@ -28,7 +28,7 @@ import {
   type Decision,
   type Tier,
 } from "./policy.ts";
-import { ttlOf, usageCost, type Ttl } from "./pricing.ts";
+import { baseModel, ttlOf, usageCost, type Ttl } from "./pricing.ts";
 import {
   pack,
   SNAPSHOT_PREFIX,
@@ -105,6 +105,16 @@ const OWNER_PREFIX = "owner:";
 
 /** How often a turn still running saves its state. */
 const MID_TURN_SAVE_MS = 5_000;
+
+/**
+ * The decision a session is running on, from the model id the API reports
+ * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
+ * Null for an id off the ladder or not a string.
+ */
+function warmDecision(model: unknown): Decision | null {
+  if (typeof model !== "string" || model === "") return null;
+  return sessionDecision(model.replace(/-\d{8}$/, ""));
+}
 
 /**
  * Stop reasons that mean the turn continues: the engine will step again, so
@@ -1216,6 +1226,18 @@ export function register(on: On) {
               context: carriedOf(chunk.usage),
               output: chunk.usage.output_tokens,
             };
+            // What answered is what is warm now. An unrouted turn (Jev
+            // timed out) runs on the session model and rewrites the cache
+            // there; holding to the tier routed before it would send the
+            // next turn to a cold cache while calling it a stay.
+            const answered = warmDecision(chunk.usage.model);
+            if (
+              answered !== null &&
+              (running === null ||
+                baseModel(running.model) !== baseModel(answered.model))
+            ) {
+              running = answered;
+            }
           }
           // A step that ends the turn always saves; one that continues it
           // saves at most every few seconds. A tool-using turn has dozens

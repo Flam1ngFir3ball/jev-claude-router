@@ -2520,6 +2520,31 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal((await turn(named.hooks, named.$, "n2", "use fable to plan the migration")).sent.model, "claude-fable-5-1");
   });
 
+  test("an unrouted turn warms the session model, and the next turn is priced from there", async () => {
+    // Jev timed out on a fable session: the turn ran on the session model
+    // (opus) and rewrote the cache there. Holding to fable afterwards would
+    // send the next turn to a cold fable cache while calling it a stay.
+    const { hooks, $, setTier, setContext, fail } = await boot();
+    setContext(20_000);
+    setTier("fable", 0.97, 3);
+    assert.equal((await turn(hooks, $, "w1", "plan the migration")).sent.model, "claude-fable-5-1");
+    setContext(250_000);
+    fail();
+    await hooks.get("turn.start")!($, { text: "2", turnId: "w2" }, async (e: unknown) => e);
+    let sent: { model?: string } = { model: "unset" };
+    await collect(
+      hooks.get("turn.step")!($, { turnId: "w2", index: 0 }, (e: { model?: string }) => {
+        sent = e;
+        return answeredBy(e.model ?? "claude-opus-5-5");
+      }),
+    );
+    assert.equal(sent.model, undefined, "unrouted: left on the session model");
+    setTier("fable", 0.97, 3);
+    const t = await turn(hooks, $, "w3", "do one more audit");
+    assert.equal(t.sent.model, "claude-opus-5-5", "opus is what is warm now");
+    assert.match(t.text, /kept opus: fable costs \$\d+\.\d+ vs \$0\.\d+, over the \$1\.00 limit/);
+  });
+
   test("a prompt repeated by the same copy is routed each time", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
