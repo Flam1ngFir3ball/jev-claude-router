@@ -230,6 +230,14 @@ Note that `claude -p` shows only the *last* text block in its `result`, so the
 reply looks like it vanished when the summary lands. It has not:
 `--output-format stream-json --verbose` shows both blocks whole.
 
+A session's routing survives a reload of the plugin (an update, a `git pull`):
+the history, `spent`, the tier being held, the open reply and the `/jev`
+settings are kept in the engine's per-plugin store
+(`~/.claude/plugins/store/jev-router_*.json`, the twenty newest sessions)
+and restored by the first hook after the reload. Before, a reload reset
+all of it, and the first switch after one was priced against the wrong
+model.
+
 `/jev quiet` drops both the line and the summary without turning routing
 off; `/jev loud` brings them back. Both ride in the reply's recorded text, so
 the model sees them on its own past replies; that is the standing cost of a
