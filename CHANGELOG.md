@@ -1,19 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- A go-ahead that outgrows haiku steps up only into offered tiers, never an
-  excluded one.
-- `/resume` or a fork into another session in a running process starts from
-  that session's own saved state instead of carrying the previous one's.
-- A turn held on Sonnet by the window guard still goes through the Sonnet
-  effort hold.
-- The step-up line names Jev's pick only when it differs, and a named tier
-  that has to step up, or is held by the window guard, still says
-  `your pick` and skips the Sonnet effort hold.
-- A copy that does not own the session leaves its state alone at a
-  compaction.
-- The `/jev` command description lists `price` and `compact`.
 
 ## 1.0.0 — 2026-09-23
 
@@ -111,10 +97,25 @@ summary. See the [README](README.md) for how each feature works.
 - **Bounded growth** of every table and of the store; usage records with
   missing fields are tolerated; nothing can throw out of a hook.
 
+### Fixed before release
+
+- A go-ahead that outgrows haiku steps up only into offered tiers, never an
+  excluded one.
+- `/resume` or a fork into another session in a running process starts from
+  that session's own saved state instead of carrying the previous one's.
+- A turn held on Sonnet by the window guard still goes through the Sonnet
+  effort hold.
+- The step-up line names Jev's pick only when it differs, and a named tier
+  that has to step up, or is held by the window guard, still says
+  `your pick` and skips the Sonnet effort hold.
+- A copy that does not own the session leaves its state alone at a
+  compaction.
+- The `/jev` command description lists `price` and `compact`.
+
 ### Tooling
 
 - `check-jev`, `try-prompts`, `measure-switch-cost`, `bench-overhead`.
-- 407 tests; `claude plugin validate` in the pre-commit hook.
+- 412 tests; `claude plugin validate` in the pre-commit hook.
 
 ### Credits
 
