@@ -2293,6 +2293,64 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(status, /No turns yet/);
   });
 
+  test("a copy that loads claims at once: the old one asks Jev no more, even on the next turn", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-CL" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const old = load(env, shared);
+    await old.hooks.get("session.start")!(old.$, {}, async (e: unknown) => e);
+    old.setTier("opus", 0.9, 1);
+    await turn(old.hooks, old.$, "c0", "implement it");
+    await new Promise((r) => setTimeout(r, 5));
+    const fresh = load(env, shared);
+    // The engine sends a reloaded module its own session.start.
+    await fresh.hooks.get("session.start")!(fresh.$, {}, async (e: unknown) => e);
+    fresh.setTier("opus", 0.9, 1);
+    const asked = old.fetches();
+    await old.hooks.get("turn.start")!(old.$, { text: "and tests", turnId: "c1" }, (e: unknown) =>
+      fresh.hooks.get("turn.start")!(fresh.$, e, async (x: unknown) => x),
+    );
+    assert.equal(old.fetches(), asked, "the old copy stood aside on the very first turn");
+    assert.equal(fresh.fetches(), 1);
+  });
+
+  test("/jev reaches the owner, not an older copy's frozen state", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-CMD" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const old = load(env, shared);
+    await old.hooks.get("session.start")!(old.$, {}, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    const fresh = load(env, shared);
+    await fresh.hooks.get("session.start")!(fresh.$, {}, async (e: unknown) => e);
+    const cmd = (args: string) =>
+      old.hooks.get('command.run:{"command":"jev"}')!(old.$, { args }, (e: unknown) =>
+        fresh.hooks.get('command.run:{"command":"jev"}')!(fresh.$, e, async () => ({ text: "nobody" })),
+      );
+    await cmd("off");
+    // Routing is off in the copy that routes.
+    fresh.setTier("opus", 0.9, 1);
+    let sent: { model?: string } = {};
+    await fresh.hooks.get("turn.start")!(fresh.$, { text: "x", turnId: "o1" }, async (e: unknown) => e);
+    await collect(fresh.hooks.get("turn.step")!(fresh.$, { turnId: "o1", index: 0, model: "m" }, (e: { model: string }) => {
+      sent = e;
+      return answeredBy(e.model);
+    }));
+    assert.equal(sent.model, "m", "/jev off reached the owner");
+  });
+
+  test("the session ending releases its claim, so a later process on it is not left standing aside", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-END" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const first = load(env, shared);
+    await first.hooks.get("session.start")!(first.$, {}, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    const second = load(env, shared);
+    await second.hooks.get("session.start")!(second.$, {}, async (e: unknown) => e);
+    await second.hooks.get("session.end")!(second.$, {}, async (e: unknown) => e);
+    assert.ok(!shared.store.has("owner:session:sess-END"));
+    first.setTier("opus", 0.9, 1);
+    assert.equal((await turn(first.hooks, first.$, "e1", "implement the parser")).sent.model, "claude-opus-5-5");
+  });
+
   test("two copies of the module in one session: the newest routes and writes, the old stands aside", async () => {
     const shared = { store: new Map<string, unknown>(), id: "sess-TWO" };
     const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };

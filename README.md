@@ -94,7 +94,7 @@ Four signals, in order of how much you can trust them.
 surface, so this always works:
 
 ```
-jev-router
+jev-router:
   routing   on
   surface   desktop
   provider  typesafe · TYPESAFE_API_KEY is set · jev-latest

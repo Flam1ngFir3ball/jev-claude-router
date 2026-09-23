@@ -271,6 +271,25 @@ async function ownsSession(
   }
 }
 
+/** Drops this copy's claim on the session, if it still holds it. Never throws. */
+async function releaseSession(
+  $: {
+    store: {
+      get: (key: string) => Promise<unknown>;
+      delete: (key: string) => Promise<void>;
+    };
+  },
+  key: string,
+  birth: number,
+): Promise<void> {
+  try {
+    const at = `${OWNER_PREFIX}${key}`;
+    if ((await $.store.get(at)) === birth) await $.store.delete(at);
+  } catch {
+    // Nothing to release, or the store is unreadable: the next claim decides.
+  }
+}
+
 /** Where the session draws first (`terminal`, `desktop`, ...), or null in a plain -p run. */
 async function surfaceOf($: {
   session: { surfaces: () => Promise<readonly string[]> };
@@ -546,7 +565,19 @@ export function register(on: On) {
         applyState(await loadSnapshot($, snapshotKey));
       restoreOnKey = true;
     }
+    // A reloaded copy gets its own session.start, so it claims the session
+    // the moment it loads; an older copy then stands aside from the next
+    // turn on, instead of both asking Jev on the first one.
+    if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
     sessionModel = await sessionModelOf($);
+    return next(e);
+  });
+
+  // The session ending releases its claim, so a copy in another process
+  // that resumes the same session later is not left standing aside behind
+  // an owner that no longer exists.
+  on("session.end", async ($, e, next) => {
+    if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
     return next(e);
   });
 
@@ -615,13 +646,22 @@ export function register(on: On) {
     return next(e);
   });
 
-  on("command.run", { command: "jev" }, async ($, e) => {
+  on("command.run", { command: "jev" }, async ($, e, next) => {
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
         applyState(await loadSnapshot($, snapshotKey));
       restoreOnKey = true;
+    }
+    // An older copy hands /jev to the owner: answering itself would report
+    // its frozen state and change settings the owner never sees.
+    if (
+      inert ||
+      (snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+    ) {
+      inert = true;
+      return next(e);
     }
     const arg = e.args.trim().toLowerCase();
 
@@ -953,12 +993,15 @@ export function register(on: On) {
       const at = (chunk as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
       if (chunk.kind === "text") {
-        if (
-          attempt &&
-          pending.has(e.turnId) &&
-          !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
-        ) {
+        if (attempt && pending.has(e.turnId)) {
+          // The line is this turn's either way; a copy that lost the session
+          // since the turn began leaves it to the owner, once.
           pending.delete(e.turnId);
+          if (snapshotKey && !(await ownsSession($, snapshotKey, birth, false))) {
+            inert = true;
+            yield chunk;
+            continue;
+          }
           yield {
             ...chunk,
             text: `${liveLine(attempt)}${REPLY_SEPARATOR}${chunk.text}`,

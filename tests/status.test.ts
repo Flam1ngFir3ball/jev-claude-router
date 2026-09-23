@@ -84,7 +84,7 @@ const usageOf = (
 describe("status report", () => {
   test('the first lines answer "is this even on"', () => {
     const report = statusReport(base);
-    assert.match(report, /^jev-router\n  routing   on\n  surface   desktop\n  provider  gateway/);
+    assert.match(report, /^\n  routing   on\n  surface   desktop\n  provider  gateway/);
     assert.match(report, /budget\s+1500ms/);
   });
 
@@ -305,7 +305,7 @@ describe("attemptOf", () => {
       ms: 1,
       decision: { ...decision, effort: "high", cappedEffort: "max", askedEffort: "medium" },
     };
-    assert.deepEqual(reasonsOf(still), ["capped from max", "1st request runs medium as high"]);
+    assert.deepEqual(reasonsOf(still), ["capped max→medium; 1st request runs it as high"]);
   });
 });
 
@@ -438,7 +438,7 @@ describe("the reply summary", () => {
     };
     addUsage(agent, usageOf("claude-haiku-4-5", { cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0 }));
     const s = replySummary([main, agent])!;
-    assert.match(s, /agents: Explore haiku \$0\.013/);
+    assert.match(s, /agents: Explore haiku-4-5 \$0\.013/);
     assert.match(s, /\$0\.37 · /);
     assert.match(s, /fable-5-1 ✓/, "one main turn still reads as one");
   });
@@ -465,8 +465,34 @@ describe("the reply summary", () => {
     addUsage(afterForced, usageOf("claude-fable-5-1"));
     const s = replySummary([afterForced])!;
     assert.doesNotMatch(s, /sure/);
-    assert.match(s, /^```\nfable-5-1 ✓ xhigh · \$/);
+    assert.match(s, /^```\nfable-5-1 ✓ xhigh · continuing · \$/);
     assert.doesNotMatch(liveLine(afterForced), /sure/);
+  });
+
+  test("✓ holds across the engine's [1m] and a dated id, and not across different models", () => {
+    const on1m: Attempt = { prompt: "x", ms: 1, decision: { ...decision, tier: "opus", model: "claude-opus-5-5[1m]" } };
+    addUsage(on1m, usageOf("claude-opus-5-5-20260901"));
+    assert.match(replySummary([on1m])!, /opus-5-5 ✓/);
+    const near: Attempt = { prompt: "x", ms: 1, decision: { ...decision, tier: "opus", model: "claude-opus-5" } };
+    addUsage(near, usageOf("claude-opus-5-5"));
+    assert.match(replySummary([near])!, /opus-5-5 ⚠ asked opus-5/);
+  });
+
+  test("a go-ahead with nothing to continue says so once, not also 'continuing'", () => {
+    const skipped = continuationSkipped("yes");
+    addUsage(skipped, usageOf("claude-opus-5"));
+    const s = replySummary([skipped])!;
+    assert.match(s, /not routed: nothing to continue/);
+    assert.doesNotMatch(s, /continuing/);
+    assert.equal(s.split("\n").length, 3, "one line inside the fence");
+  });
+
+  test("an agent line names the model that ran it", () => {
+    const main: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(main, usageOf("claude-fable-5-1"));
+    const left: Attempt = { prompt: "hi", ms: 0, kind: "agent", agent: { type: "general-purpose", label: "hi" }, skipped: "not routed at spawn" };
+    addUsage(left, usageOf("claude-sonnet-5"));
+    assert.match(replySummary([main, left])!, /agents: general-purpose sonnet-5 \$/);
   });
 
   test("a go-ahead and a capped turn are noted; a forced one is not, since you asked", () => {

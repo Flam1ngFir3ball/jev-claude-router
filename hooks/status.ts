@@ -132,11 +132,17 @@ export function reasonsOf(attempt: Attempt): string[] {
     );
   }
   if (d.forced) out.push("your pick");
-  // A first request that runs the capped effort as the one Jev wanted has
-  // not been capped in any way that matters.
-  if (d.cappedEffort !== undefined && d.cappedEffort !== d.effort)
-    out.push(`capped from ${d.cappedEffort}`);
-  if (d.askedEffort !== undefined)
+  // The ceiling, and the engine running the capped effort higher on a
+  // conversation's first request, read as one fact: what Jev wanted, what
+  // the ceiling allowed, what actually ran. A first request that ran what
+  // Jev wanted anyway was not capped in any way that matters.
+  const capped = d.cappedEffort !== undefined && d.cappedEffort !== d.effort;
+  if (capped && d.askedEffort !== undefined)
+    out.push(
+      `capped ${d.cappedEffort}→${d.askedEffort}; 1st request runs it as ${d.effort}`,
+    );
+  else if (capped) out.push(`capped from ${d.cappedEffort}`);
+  else if (d.askedEffort !== undefined)
     out.push(`1st request runs ${d.askedEffort} as ${d.effort}`);
   return out;
 }
@@ -534,11 +540,24 @@ function answeredBy(attempt: Attempt): string {
   const got = shortModel(usage.model);
   if (!("decision" in attempt)) return got;
   const asked = attempt.decision.model;
-  const matches =
-    usage.model === asked ||
-    usage.model.startsWith(`${asked}-`) ||
-    baseModel(asked) === usage.model;
-  return matches ? `${got} ✓` : `${got} ⚠ asked ${shortModel(asked)}`;
+  return sameModel(asked, usage.model)
+    ? `${got} ✓`
+    : `${got} ⚠ asked ${shortModel(asked)}`;
+}
+
+/**
+ * Whether the model the API reports is the one asked for: the same id, give
+ * or take the engine's `[1m]` and a trailing date. `claude-opus-5-5` does not
+ * confirm `claude-opus-5`, although one begins with the other.
+ */
+function sameModel(asked: string, got: unknown): boolean {
+  if (typeof got !== "string") return false;
+  const base = baseModel(asked);
+  return (
+    got === asked ||
+    got === base ||
+    (got.startsWith(base) && /^-\d{8}$/.test(got.slice(base.length)))
+  );
 }
 
 /** `$0.50 · 47k in (49% cached) · 0k out`. */
@@ -596,7 +615,13 @@ export function replySummary(turns: readonly Attempt[]): string | null {
       head.push(
         `${only.usage ? answeredBy(only) : shortModel(d.model)} ${d.effort}`,
       );
-      const how = d.forced ? "your pick" : sureOf(d, only.kind);
+      // How the tier was settled, always in this spot: Jev's confidence, the
+      // prompt's own pick, or a go-ahead carrying the last one on.
+      const how = d.forced
+        ? "your pick"
+        : only.kind === "continue" || only.kind === "nudge"
+          ? "continuing"
+          : sureOf(d, only.kind);
       if (how !== "") head.push(how);
     } else {
       head.push(only.usage ? answeredBy(only) : "session model");
@@ -644,20 +669,24 @@ export function replySummary(turns: readonly Attempt[]): string | null {
   if (agents.length > 0) {
     const legs = agents.map((a) => {
       const name = a.agent?.type ?? "agent";
-      const on = "decision" in a ? a.decision.tier : "own model";
+      // What ran it: the model the API reported, else the tier routed to.
+      const on = a.usage
+        ? shortModel(a.usage.model)
+        : "decision" in a
+          ? a.decision.tier
+          : "its own model";
       return `${name} ${on}${a.cost !== undefined ? ` ${usd(a.cost)}` : ""}`;
     });
     rows.push(`agents: ${legs.join(", ")}`);
   }
 
   // Why a turn did not run exactly as Jev asked.
+  // (How the tier was settled is on the first line already; a multi-turn
+  // reply counts its wake-ups and nudges there.)
   main.forEach((t, i) => {
     const why = reasonsOf(t).filter((r) => r !== "your pick");
-    const origin =
-      t.kind === "continue" || t.kind === "nudge" ? originOf(t) : null;
-    const all = [...why, ...(origin ? [origin] : [])];
-    if (all.length === 0) return;
-    rows.push(`${main.length > 1 ? `turn ${i + 1}: ` : ""}${all.join("; ")}`);
+    if (why.length === 0) return;
+    rows.push(`${main.length > 1 ? `turn ${i + 1}: ` : ""}${why.join("; ")}`);
   });
 
   return ["```", ...rows, "```"].join("\n");
@@ -686,7 +715,8 @@ export function ceilingLine(ceiling: Ceiling): string {
  * the thing is on at all, which is the question that brings people here.
  */
 export function statusReport(status: Status): string {
-  const lines: string[] = ["jev-router"];
+  // The engine prefixes the plugin's name; a header here said it twice.
+  const lines: string[] = [""];
 
   lines.push(`  routing   ${status.enabled ? "on" : "off (/jev on)"}`);
   lines.push(`  surface   ${status.surface ?? "unknown"}`);
@@ -779,7 +809,7 @@ function cacheLine(status: Status): string {
       parts.push(
         be === 0
           ? `${from}→${to} never pays`
-          : `${from}→${to} pays below ${kOf(be)}`,
+          : `${from}→${to} pays below ${be < 1000 ? "1k" : kOf(be)}`,
       );
     }
   }
