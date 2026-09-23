@@ -327,9 +327,9 @@ later; the transcript is scored once and the new messages appended.
 
 `/jev compact off` restores the engine's summary; `/jev compact on` brings
 Jev back. `JEV_ROUTER_COMPACT=0` starts a session with it off, and
-`/jev off` turns compaction off along with routing. The scoring is the
-MIT-licensed [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
-library, vendored under `hooks/compaction/`.
+`/jev off` turns compaction off along with routing. The scoring comes from
+[fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+(MIT), vendored under `hooks/compaction/`; see *Credits*.
 
 ## Commands
 
@@ -492,3 +492,19 @@ Both backends take the same `choice` and `score` questions and return the same
 | Body | `{ model, state, questions }` | `{ model, state, questions }` (model ignored) |
 | Precision | four decimal places | two decimal places |
 | Question types | `choice`, `score`, `noul` | `choice`, `score` |
+
+## Credits
+
+Compaction by Jev is built on
+[fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) by
+[tamaratran](https://github.com/tamaratran): the idea of scoring every tool
+call with Jev and keeping the conversation verbatim, and the scoring library
+itself, are that project's. Its `src/` (commit `e3f262a7f4d4`) is vendored
+unchanged under `hooks/compaction/` with its MIT licence in
+`LICENSE-fast-jev-compaction`. jev-router adds the wiring to its own
+provider and settings, the `/jev compact` toggle, the fallback rules, the
+cache across the engine's precompute and real compaction, and the `/jev`
+reporting.
+
+Routing is built with [Jev](https://docs.typesafe.ai), TypeSafe's decision
+model, over the TypeSafe API or the Vercel AI Gateway.
