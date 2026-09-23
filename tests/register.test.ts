@@ -714,6 +714,44 @@ describe("register: the sticky subcommand", () => {
     return sent;
   }
 
+  test("/jev sticky before the first turn is not overwritten by a late env seed", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_STICKY: "1",
+      JEV_ROUTER_STICKY_CONFIDENCE: "0.9",
+    });
+    // No session.start — sticky must still honour the command.
+    await run(hooks, $, "sticky 0.3");
+    assert.match((await run(hooks, $, "")).text, /switch needs 30%/);
+    setTier("opus", 0.9);
+    await turn(hooks, $, "seed1");
+    assert.match(
+      (await run(hooks, $, "")).text,
+      /switch needs 30%/,
+      "env seed must not clobber the command",
+    );
+    setTier("haiku", 0.4);
+    assert.equal(
+      (await turn(hooks, $, "seed2")).model,
+      "claude-haiku-4-5",
+      "0.4 clears the 0.3 bar",
+    );
+  });
+
+  test("/jev sticky off before the first turn stays off when env asked for sticky", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_STICKY: "1",
+      JEV_ROUTER_STICKY_CONFIDENCE: "0.9",
+    });
+    await run(hooks, $, "sticky off");
+    setTier("opus", 0.9);
+    await turn(hooks, $, "off1");
+    setTier("haiku", 0.4);
+    assert.equal((await turn(hooks, $, "off2")).model, "claude-haiku-4-5");
+    assert.match((await run(hooks, $, "")).text, /sticky\s+off/);
+  });
+
   test("/jev sticky turns it on for the session, with no env var set", async () => {
     const { hooks, $, setTier } = load();
     await turn(hooks, $, "h1");

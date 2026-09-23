@@ -134,6 +134,8 @@ export function register(on: On) {
    * from then on, so retuning does not mean restarting the session.
    */
   let sticky: number | null = null;
+  /** True once sticky has been seeded from env or set by `/jev sticky`. */
+  let stickyReady = false;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
   /**
@@ -205,6 +207,14 @@ export function register(on: On) {
     running = null;
   };
 
+  const seedSticky = async ($: Engine) => {
+    if (stickyReady) return;
+    sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
+      ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
+      : null;
+    stickyReady = true;
+  };
+
   const record = (attempt: Attempt) => {
     attempts.unshift(attempt);
     attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
@@ -216,9 +226,7 @@ export function register(on: On) {
       description: "Jev routing: status, or `on` / `off`.",
     });
     surface = await $.session.surface();
-    sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
-      ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
-      : null;
+    await seedSticky($);
     return next(e);
   });
 
@@ -240,11 +248,15 @@ export function register(on: On) {
     // for, and refusing it would teach nothing.
     const sub = arg.replace(/^-+/, "");
     if (sub === "sticky" || sub.startsWith("sticky ")) {
+      await seedSticky($);
       const result = stickyCommand(sub.slice("sticky".length), sticky);
       sticky = result.sticky;
+      stickyReady = true;
       return { text: result.text };
     }
 
+    await seedSticky($);
+    if (surface === null) surface = await $.session.surface();
     const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
     const provider = providerOf({
       TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
@@ -255,7 +267,7 @@ export function register(on: On) {
     return {
       text: statusReport({
         enabled,
-        surface: surface ?? (await $.session.surface()),
+        surface,
         provider,
         timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
         sticky,
@@ -270,14 +282,8 @@ export function register(on: On) {
   on("turn.start", async ($, e, next) => {
     if (!enabled) return next(e);
 
-    // session.start normally seeds sticky and surface; if the host skipped it,
-    // do that once here so JEV_ROUTER_STICKY is not silently ignored.
-    if (surface === null) {
-      surface = await $.session.surface();
-      sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
-        ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
-        : null;
-    }
+    await seedSticky($);
+    if (surface === null) surface = await $.session.surface();
 
     const offered = offeredTiers(
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),

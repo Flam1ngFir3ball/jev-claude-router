@@ -253,10 +253,11 @@ const OVERRIDE =
 
 /**
  * Negation starters. Bare `\bnot` is omitted on purpose: "why not use opus"
- * is an affirmative ask. `do not` is included instead.
+ * is an affirmative ask. Spaced `do not` / `can not` are included; so are the
+ * common `*n't` forms (`doesn't`, `shouldn't`, …).
  */
 const OVERRIDE_NEGATION_AT =
-  /\b(?:do\s*n'?t|won'?t|can(?:'?t|not)|never|avoid|stop|do\s+not)\b/gi;
+  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|can(?:'?t|not|\s+not)|never|avoid|stop|do\s+not)\b/gi;
 
 export function parseOverride(
   text: string,

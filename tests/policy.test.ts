@@ -300,6 +300,12 @@ describe("a tier named in the prompt", () => {
     assert.equal(parseOverride("don't use haiku use opus"), "opus");
     assert.equal(parseOverride("don't use haiku and use opus"), "opus");
     assert.equal(parseOverride("won't use haiku then use opus"), "opus");
+    assert.equal(parseOverride("doesn't use opus"), null);
+    assert.equal(parseOverride("didn't use opus"), null);
+    assert.equal(parseOverride("shouldn't use opus"), null);
+    assert.equal(parseOverride("wouldn't use opus"), null);
+    assert.equal(parseOverride("mustn't use opus"), null);
+    assert.equal(parseOverride("can not use opus"), null);
   });
 
   test("a tier the environment excluded cannot be named back in", () => {
