@@ -12,6 +12,7 @@ import type { JevResult } from "./jev.ts";
 import {
   capTo,
   ceilingAt,
+  MODEL_OF,
   decisionOf,
   DEFAULT_STICKY_CONFIDENCE,
   effortNamed,
@@ -118,6 +119,7 @@ export function reasonsOf(attempt: Attempt): string[] {
     const wanted =
       d.heldModel !== undefined && d.held === d.tier ? d.heldModel : d.held;
     const kept = d.held === d.tier ? d.model : d.tier;
+    if (d.outgrew !== undefined) out.push(`${d.outgrew} too long, moved up only to ${d.tier}`);
     out.push(
       d.heldWindow !== undefined
         ? `kept ${kept}: too long for ${wanted} (${kOf(d.heldWindow)})`
@@ -205,9 +207,12 @@ export function addUsage(
       (prior?.cache_creation_input_tokens ?? 0) +
       usage.cache_creation_input_tokens,
   };
-  const cost = usageCost(attempt.usage.model, attempt.usage, ttl);
-  if (cost === null) delete attempt.cost;
-  else attempt.cost = cost;
+  // Each step at the model that answered it: a turn whose steps ran on
+  // different models (a fallback) is not priced wholly at the last one's.
+  const step = usageCost(usage.model, usage, ttl);
+  if (step === null || (prior !== undefined && attempt.cost === undefined))
+    delete attempt.cost;
+  else attempt.cost = (attempt.cost ?? 0) + step;
 }
 
 /**
@@ -268,6 +273,8 @@ export type Status = {
   sticky: number | null;
   /** The most an upgrade may cost over staying, or null for no limit. */
   upgradeMax?: number | null;
+  /** The price checks: on, off, or absent on older callers. */
+  price?: boolean;
   /** The most effort each tier may be asked for. */
   ceiling: Ceiling;
   /** Compaction by Jev: on, and the last one; absent on older callers. */
@@ -318,6 +325,8 @@ type Hold = {
   economics?: Economics;
   /** The most an upgrade may cost over staying; null or absent for no limit. */
   upgradeMax?: number | null;
+  /** The downgrade and upgrade price checks; absent reads as off. */
+  price?: boolean;
 };
 
 /** A typical turn's output when the session has not produced one yet. */
@@ -386,7 +395,8 @@ export function attemptOf(
   // What Jev (or the prompt) picked, before any hold: what a hold that does
   // not fit gives way to.
   const picked: Decision | null = decision;
-  if (hold.sticky !== null && !decision.forced) {
+  const priced = hold.price === true;
+  if ((hold.sticky !== null || priced) && !decision.forced) {
     const running = hold.running;
     const downgrade =
       running !== null && isDowngrade(running.tier, decision.tier);
@@ -402,7 +412,7 @@ export function attemptOf(
     const upgrade =
       running !== null && !downgrade && !lateral && running.tier !== decision.tier;
     const verdict =
-      running === null || fromPrice === null || hold.economics === undefined
+      !priced || running === null || fromPrice === null || hold.economics === undefined
         ? null
         : downgrade || lateral
           ? switchVerdict(
@@ -428,11 +438,13 @@ export function attemptOf(
             : null;
     // An upgrade writes the whole context to the dearer tier; past 100k it
     // has to be surer than the bar.
-    const bar = lateral
-      ? 0
-      : !downgrade && hold.economics !== undefined
-        ? upgradeBar(hold.sticky, hold.economics.contextTokens)
-        : hold.sticky;
+    // Sticky off: no confidence bar, the price checks stand on their own.
+    const bar =
+      lateral || hold.sticky === null
+        ? 0
+        : !downgrade && hold.economics !== undefined
+          ? upgradeBar(hold.sticky, hold.economics.contextTokens)
+          : hold.sticky;
     decision = stickyDecision(decision, running, bar, verdict);
   }
   // A forced turn named its tier; effort comes from Jev when it was asked,
@@ -461,7 +473,26 @@ export function attemptOf(
     !fitsWindow(decision.tier, hold.economics.contextTokens) &&
     picked !== null
   ) {
-    decision = picked;
+    // The tier the hold kept is outgrown, but what held the move (doubt,
+    // or an upgrade over the limit) still stands: go up only as far as the
+    // context needs, the cheapest tier that fits, not all the way to Jev's
+    // pick. When that is Jev's pick, it runs as picked.
+    const held = decision;
+    const ctx = hold.economics.contextTokens;
+    const from = TIERS.indexOf(held.tier);
+    const to = TIERS.indexOf(picked.tier);
+    const step = TIERS.find(
+      (t, i) => i > from && i <= to && offered.includes(t) && fitsWindow(t, ctx),
+    );
+    decision =
+      step === undefined || step === picked.tier
+        ? picked
+        : {
+            ...held,
+            tier: step,
+            model: MODEL_OF[step],
+            outgrew: held.tier,
+          };
   }
   decision = capTo(decision, hold.ceiling ?? ceilingAt("max"));
   return { ...head, ms: result.ms, decision };
@@ -811,12 +842,20 @@ export function statusReport(status: Status): string {
         ? "off (JEV_ROUTER_STICKY=0)"
         : `on, switch needs ${pct(status.sticky)} ` +
           `(${pct(upgradeBar(status.sticky, UPGRADE_CONTEXT_TOKENS))} up past ` +
-          `${kOf(UPGRADE_CONTEXT_TOKENS)}), a downgrade has to pay` +
-          (status.upgradeMax != null
-            ? `, an upgrade may cost ${usd(status.upgradeMax)} over staying`
-            : "")
+          `${kOf(UPGRADE_CONTEXT_TOKENS)})`
     }`,
   );
+  if (status.price !== undefined)
+    lines.push(
+      `  price     ${
+        status.price
+          ? "on, a downgrade has to pay" +
+            (status.upgradeMax != null
+              ? `, an upgrade may cost ${usd(status.upgradeMax)} over staying`
+              : "")
+          : "off (/jev price on)"
+      }`,
+    );
   lines.push(`  ceiling   ${ceilingLine(status.ceiling)}`);
   if (status.compactOn !== undefined)
     lines.push(

@@ -102,6 +102,7 @@ Anything that changed Jev's pick is written in plain words:
 | `kept fable: haiku costs $4.41 vs $0.13` | The downgrade would have cost more than staying, cache included. |
 | `kept opus: fable costs $5.03 vs $0.08, over the $1.00 limit` | The upgrade would have cost more than the limit over staying. |
 | `kept fable: too long for haiku (310k)` | The context does not fit haiku's window. |
+| `haiku too long, moved up only to sonnet` | The running tier outgrew its window; the turn went to the cheapest tier that fits, not Jev's pick. |
 | `capped from xhigh` | Jev asked for more effort than the ceiling allows. |
 | `your pick` | The prompt named the tier. |
 | `1st request runs medium as high` | Fable runs `medium` as `high` on a conversation's first request, so the router sends `high` and says so. |
@@ -159,7 +160,8 @@ jev-router:
   surface   desktop
   provider  typesafe · TYPESAFE_API_KEY is set · jev-latest
   budget    1500ms
-  sticky    on, switch needs 75% (90% up past 100k), a downgrade has to pay, an upgrade may cost $1.00 over staying
+  sticky    on, switch needs 75% (90% up past 100k)
+  price     on, a downgrade has to pay, an upgrade may cost $1.00 over staying
   ceiling   medium (fable: xhigh)
   compact   on, Jev prunes tool calls · last: kept 41/87 messages, 63% smaller (12 calls kept, 9 cut, 30 dropped) · 2.1s
   session   claude-opus-5, running on fable
@@ -201,6 +203,12 @@ A turn is never sent to a tier whose context window it does not fit. Haiku
 for the prompt and reply. This applies whatever Jev said and even when the
 prompt named the tier. The turn stays on the tier already running, or on the
 session model if nothing is running yet.
+
+When the tier already running is the one that no longer fits (haiku past
+184k) and Jev's pick was held back by doubt or by the upgrade limit, the
+turn moves up only as far as it must: to the cheapest tier that fits, not
+all the way to Jev's pick. The line says `haiku too long, moved up only to
+sonnet`.
 
 ### The confidence bar and the price check
 
@@ -338,7 +346,8 @@ Jev back. `JEV_ROUTER_COMPACT=0` starts a session with it off, and
 | `/jev` | Status and recent turns. |
 | `/jev on`, `/jev off` | Turn routing on or off. |
 | `/jev quiet`, `/jev loud` | Hide or show the line and summary. Routing and history continue. |
-| `/jev sticky`, `/jev sticky 0.6`, `/jev sticky off` | Turn the confidence bar and price check on, set the bar, or switch freely. |
+| `/jev sticky`, `/jev sticky 0.6`, `/jev sticky off` | Turn the confidence bar on, set it, or turn it off. The price checks are separate. |
+| `/jev price`, `/jev price on`, `/jev price off` | Show, turn on, or turn off the downgrade and upgrade price checks. Off, switches follow Jev and the confidence bar alone. |
 | `/jev ceiling` | Show the effort ceiling. |
 | `/jev ceiling xhigh`, `/jev xhigh` | Raise every tier's ceiling. |
 | `/jev ceiling xhigh fable`, `/jev xhigh fable` | Raise one tier's ceiling. |
@@ -362,6 +371,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev. Capped at 8000. |
 | `JEV_ROUTER_STICKY` | on | `0` switches freely. |
 | `JEV_ROUTER_STICKY_CONFIDENCE` | `0.75` | The confidence bar. |
+| `JEV_ROUTER_PRICE_CHECK` | on | `0` turns the downgrade and upgrade price checks off. |
 | `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying, or `off` for no limit. |
 | `JEV_ROUTER_CEILING` | `medium` | Effort ceiling: `xhigh` for all tiers, or per tier, e.g. `fable:xhigh,opus:high`. |
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |

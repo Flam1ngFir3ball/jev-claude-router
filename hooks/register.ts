@@ -17,6 +17,7 @@ import {
   isContinuation,
   isEngineNudge,
   notifyContinueOf,
+  priceCheckOf,
   upgradeMaxOf,
   offeredTiers,
   overrideAllowedOf,
@@ -182,6 +183,8 @@ type Settings = {
   allowOverride: boolean;
   notifyContinue: boolean;
   upgradeMax: number | null;
+  /** The downgrade and upgrade price checks; `/jev price` owns it after the environment. */
+  priceCheck: boolean;
   /** Compaction by Jev: on, how long it may take, how much it must remove. */
   compactOn: boolean;
   compactTimeoutMs: number;
@@ -227,6 +230,7 @@ async function seedSettings(
       await $.env.get("JEV_ROUTER_NOTIFY_CONTINUE"),
     ),
     upgradeMax: upgradeMaxOf(await $.env.get("JEV_ROUTER_UPGRADE_MAX")),
+    priceCheck: priceCheckOf(await $.env.get("JEV_ROUTER_PRICE_CHECK")),
     compactOn: compactOnOf(await $.env.get("JEV_ROUTER_COMPACT")),
     compactTimeoutMs: compactTimeoutOf(
       await $.env.get("JEV_ROUTER_COMPACT_TIMEOUT_MS"),
@@ -321,6 +325,10 @@ async function saveSnapshot(
         await $.store.delete(stale);
         await $.store.delete(`${OWNER_PREFIX}${stale}`);
       }
+      // Keys are kept in the order they were first written, and the oldest
+      // are dropped; moving this session to the end makes that the order
+      // of last use, so a long-lived session in use is never the one dropped.
+      await $.store.delete(key);
     }
     await $.store.set(key, pack(state));
   } catch {
@@ -398,6 +406,10 @@ async function claimTurn(
       return false;
     }
     await $.store.set(at, { birth, at: now });
+    // Another process may have written between the read and the write;
+    // whichever claim the store holds now decides, newest winning.
+    const after = (await $.store.get(at)) as { birth?: unknown } | undefined;
+    if (typeof after?.birth === "number" && after.birth > birth) return false;
     const claims = (await $.store.keys()).filter((k) => k.startsWith(TURN_PREFIX));
     for (const old of claims.slice(0, Math.max(0, claims.length - TURN_CLAIMS_KEPT)))
       await $.store.delete(old);
@@ -702,6 +714,8 @@ export function register(on: On) {
     sticky: settings?.sticky ?? null,
     ceiling: settings?.ceiling ?? ceilingAt("medium"),
     compactOn: settings?.compactOn ?? true,
+    priceCheck: settings?.priceCheck ?? true,
+    summarisedAgents: [...summarisedAgents],
     compaction: lastCompaction,
   });
 
@@ -731,10 +745,13 @@ export function register(on: On) {
     announce = s.announce;
     answered = s.answered;
     lastCompaction = s.compaction;
+    summarisedAgents.clear();
+    for (const id of s.summarisedAgents) summarisedAgents.add(id);
     if (settings !== null) {
       settings.sticky = s.sticky;
       settings.ceiling = s.ceiling;
       settings.compactOn = s.compactOn;
+      settings.priceCheck = s.priceCheck;
     }
   };
 
@@ -859,13 +876,16 @@ export function register(on: On) {
         ? prunedCache
         : null;
     if (enabled && settings.compactOn && !instructed && transcript.length > 0 && cached !== null) {
+      const tail = transcript.slice(cached.handles.length);
       pruned = {
-        messages: [
-          ...(cached.messages as unknown as typeof e.messages),
-          ...transcript.slice(cached.handles.length),
-        ],
+        messages: [...(cached.messages as unknown as typeof e.messages), ...tail],
       };
-      reduction = cached.reduction;
+      // The scoring's reduction covers the part it scored; the appended
+      // tail is kept whole, so the share removed overall is smaller.
+      const size = (ms: readonly (typeof e.messages)[number][]) =>
+        ms.reduce((n, m) => n + m.text.length + JSON.stringify(m.toolUses).length + JSON.stringify(m.toolResults ?? []).length, 0);
+      const all = size(transcript);
+      reduction = all > 0 ? cached.reduction * (1 - size(tail) / all) : cached.reduction;
     } else if (
       enabled &&
       settings.compactOn &&
@@ -957,6 +977,21 @@ export function register(on: On) {
       return { text: toggleReply(enabled) };
     }
 
+    if (sub === "price" || sub.startsWith("price ")) {
+      const want = sub.slice("price".length).trim();
+      if (want === "on" || want === "off") {
+        settings.priceCheck = want === "on";
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      } else if (want !== "") {
+        return { text: unknownCommandReply(sub, false) };
+      }
+      return {
+        text: settings.priceCheck
+          ? "price checks on: a move to a cheaper tier has to save money, cache included, and a move to a dearer one may cost at most the upgrade limit over staying. /jev price off switches on Jev's word and the confidence bar alone."
+          : "price checks off: switches follow Jev and the confidence bar, whatever the cache costs. /jev price on to weigh the cost again.",
+      };
+    }
+
     if (sub === "compact" || sub.startsWith("compact ")) {
       const want = sub.slice("compact".length).trim();
       if (want === "on" || want === "off") {
@@ -967,7 +1002,7 @@ export function register(on: On) {
       }
       return {
         text:
-          `jev-router: compaction by Jev ${settings.compactOn ? "on" : "off"}` +
+          `compaction by Jev ${settings.compactOn ? "on" : "off"}` +
           (settings.compactOn
             ? ": at each compaction, Jev scores every tool call and the stale ones are dropped or cut; the conversation stays verbatim. /jev compact off restores the engine's summary."
             : ": the engine's own summary runs. /jev compact on to prune with Jev instead."),
@@ -1026,6 +1061,7 @@ export function register(on: On) {
         timeoutMs: settings.timeoutMs,
         sticky: settings.sticky,
         upgradeMax: settings.upgradeMax,
+        price: settings.priceCheck,
         ceiling: settings.ceiling,
         compactOn: settings.compactOn,
         compaction: lastCompaction,
@@ -1179,6 +1215,7 @@ export function register(on: On) {
           forced,
           ceiling,
           upgradeMax: settings.upgradeMax,
+          price: settings.priceCheck,
           ...(economics !== undefined ? { economics } : {}),
         },
       );

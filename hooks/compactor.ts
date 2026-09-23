@@ -84,6 +84,7 @@ export type PruneResult =
 function askerOf(
   provider: Extract<ProviderResult, { ok: true }>,
   fetch: (url: string, init?: HttpInitLike) => Promise<HttpResponseLike>,
+  signal?: AbortSignal,
 ): JevAsker {
   return {
     async ask(state, questions) {
@@ -96,6 +97,10 @@ function askerOf(
         method: request.method,
         headers: request.headers,
         body: request.body,
+        // Passed for a fetch that honours it; the engine's does not yet,
+        // so a timed-out request still runs to completion (at Jev's flat
+        // per-call price).
+        ...(signal !== undefined ? { signal } : {}),
       });
       return parseJevResponse(response.status, response.ok, response.text);
     },
@@ -188,10 +193,11 @@ export async function pruneTranscript(args: {
     return none("the gateway does not answer yes/no questions; needs TYPESAFE_API_KEY");
 
   const TIMED_OUT = Symbol("timed-out");
+  const controller = new AbortController();
   try {
     const work = compact(
       args.messages,
-      askerOf(args.provider, args.fetch),
+      askerOf(args.provider, args.fetch, controller.signal),
       resolveOptions(args.options ?? {}),
     );
     const raced = await Promise.race([
@@ -199,6 +205,7 @@ export async function pruneTranscript(args: {
       args.sleep(args.timeoutMs).then(() => TIMED_OUT),
     ]);
     if (raced === TIMED_OUT) {
+      controller.abort();
       void work.catch(() => undefined);
       return none(`timed out after ${args.timeoutMs}ms`);
     }

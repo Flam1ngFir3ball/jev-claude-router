@@ -56,6 +56,10 @@ export type State = {
   ceiling: Ceiling;
   /** Compaction by Jev is on. */
   compactOn: boolean;
+  /** The downgrade and upgrade price checks are on. */
+  priceCheck: boolean;
+  /** Agents whose reply's summary was written: their late wake-up joins no block. */
+  summarisedAgents: string[];
   /** The last compaction Jev was asked about, for /jev. */
   compaction: Compaction | null;
 };
@@ -105,6 +109,8 @@ export function pack(state: State): Packed {
     sticky: state.sticky,
     ceiling: state.ceiling,
     compactOn: state.compactOn,
+    priceCheck: state.priceCheck,
+    summarisedAgents: state.summarisedAgents,
     compaction: state.compaction,
   };
 }
@@ -193,6 +199,10 @@ export function unpack(raw: unknown): State | null {
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
     ceiling: raw.ceiling as Ceiling,
     compactOn: raw.compactOn !== false,
+    priceCheck: raw.priceCheck !== false,
+    summarisedAgents: Array.isArray(raw.summarisedAgents)
+      ? raw.summarisedAgents.filter((a): a is string => typeof a === "string")
+      : [],
     compaction: compactionOf(raw.compaction),
   };
 }

@@ -147,3 +147,21 @@ describe("compaction settings", () => {
     assert.equal(minReductionOf("junk"), 0.25);
   });
 });
+
+describe("a timed-out scoring", () => {
+  test("aborts the requests it started", async () => {
+    let signal: AbortSignal | undefined;
+    await pruneTranscript({
+      messages: transcript(10),
+      provider: typesafe,
+      fetch: (_u, init) => {
+        signal = init?.signal;
+        return new Promise<never>(() => {});
+      },
+      sleep: async () => undefined,
+      timeoutMs: 10,
+      minReduction: 0.25,
+    });
+    assert.equal(signal?.aborted, true);
+  });
+});

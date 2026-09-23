@@ -1465,23 +1465,43 @@ describe("register: a downgrade priced against the context", () => {
     assert.match(t.text, /kept fable: haiku costs \$/);
   });
 
-  test("an upgrade is not priced: a fable pick from haiku goes through at any context", async () => {
+  test("haiku outgrown at 300k with Jev on fable over the upgrade limit moves up only as far as it must", async () => {
     const { hooks, $, setTier, setContext } = await started();
     setTier("haiku", 0.95, 0);
     await turn(hooks, $, "u1", "2+2");
     setContext(300_000);
     setTier("fable", 0.9, 3);
-    assert.equal((await turn(hooks, $, "u2", "plan it")).sent.model, "claude-fable-5-1");
+    const t = await turn(hooks, $, "u2", "plan it");
+    assert.equal(t.sent.model, "claude-sonnet-5", "the cheapest tier that fits, not fable");
+    assert.match(t.text, /haiku too long, moved up only to sonnet/);
+    assert.match(t.text, /fable costs \$\d+\.\d+ vs \$\d+\.\d+, over the \$1\.00 limit/);
   });
 
-  test("/jev sticky off switches freely, price and all", async () => {
+  test("/jev sticky off drops the confidence bar only; /jev price off drops the price checks", async () => {
     const { hooks, $, setTier, setContext } = await started();
     setTier("fable", 0.95, 3);
     await turn(hooks, $, "s1", "plan");
     await run(hooks, $, "sticky off");
     setContext(150_000);
     setTier("haiku", 0.99, 0);
-    assert.equal((await turn(hooks, $, "s2", "2+2")).sent.model, "claude-haiku-4-5");
+    const held = await turn(hooks, $, "s2", "2+2");
+    assert.equal(held.sent.model, "claude-fable-5-1", "the price check still holds");
+    assert.match(held.text, /kept fable: haiku costs/);
+    assert.match((await run(hooks, $, "price off")).text, /^price checks off/);
+    setTier("haiku", 0.99, 0);
+    assert.equal((await turn(hooks, $, "s3", "2+2 again")).sent.model, "claude-haiku-4-5");
+    assert.match((await run(hooks, $, "")).text, /price\s+off \(\/jev price on\)/);
+  });
+
+  test("JEV_ROUTER_PRICE_CHECK=0 seeds the price checks off, and /jev price is kept across a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-PRICE" };
+    const first = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_PRICE_CHECK: "0" }, shared);
+    await first.hooks.get("session.start")!(first.$, {}, async (e: unknown) => e);
+    assert.match((await run(first.hooks, first.$, "")).text, /price\s+off/);
+    await run(first.hooks, first.$, "price on");
+    const again = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_PRICE_CHECK: "0" }, shared);
+    await again.hooks.get("session.start")!(again.$, {}, async (e: unknown) => e);
+    assert.match((await run(again.hooks, again.$, "")).text, /price\s+on/);
   });
 
   test("the five-minute cache is read from the environment and moves the bar", async () => {
@@ -2242,7 +2262,76 @@ describe("register: audit regressions (2026-09-23)", () => {
     setContext(190_000);
     setTier("opus", 0.6, 2);
     const t = await turn(hooks, $, "w2", "now implement it");
-    assert.equal(t.sent.model, "claude-opus-5-5", "the hold gives way; haiku takes 200k");
+    assert.equal(t.sent.model, "claude-sonnet-5", "haiku takes 200k; the doubt about opus still stands, so only one step up");
+    assert.match(t.text, /haiku too long, moved up only to sonnet/);
+  });
+
+  test("a hold that no longer fits goes to Jev's pick when that is the next tier up", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(1_000);
+    setTier("haiku", 0.99, 0);
+    await turn(hooks, $, "wn1", "2+2");
+    setContext(190_000);
+    setTier("sonnet", 0.6, 1);
+    const t = await turn(hooks, $, "wn2", "a small edit");
+    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.doesNotMatch(t.text, /moved up only/);
+  });
+
+  test("a reply summarised before a reload gets no second block from its task's late wake-up", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-B3" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const k = load(env, shared);
+    await k.hooks.get("session.start")!(k.$, {}, async (e: unknown) => e);
+    k.setTier("fable", 0.95, 3);
+    await k.hooks.get("turn.start")!(k.$, { text: "review", turnId: "b3a" }, async (e: unknown) => e);
+    k.setAgentStatus("running");
+    await k.hooks.get("agent.spawn")!(k.$, { prompt: "review cluster", description: "Review" }, async (e: { agentId?: string }) => ({ ...e, agentId: "agent-1" }));
+    k.setAgentStatus("completed");
+    const first = (await collect(k.hooks.get("turn.step")!(k.$, { turnId: "b3a", index: 0 }, (e: { model: string }) => answeredBy(e.model))))
+      .filter((c) => c.kind === "text").map((c) => c.text).join("");
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    const k2 = load(env, shared);
+    await k2.hooks.get("session.start")!(k2.$, {}, async (e: unknown) => e);
+    k2.setTier("fable", 0.95, 3);
+    const xml = '<task-notification><task-id>agent-1</task-id><summary>Agent "Review" completed</summary></task-notification>';
+    const woke = await turn(k2.hooks, k2.$, "b3b", xml);
+    assert.equal((first + woke.text).match(/% cached\)/g)?.length, 1);
+  });
+
+  test("the session in use is the last evicted, not the first created", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-OLDEST" };
+    for (let i = 0; i < 25; i++) shared.store.set(`session:filler-${i}`, { v: 1 });
+    shared.store.delete("session:filler-0");
+    shared.store.set("session:sess-OLDEST", { v: 1 });
+    for (let i = 0; i < 25; i++) shared.store.set(`session:filler-${i}`, { v: 1 });
+    const k = load({ AI_GATEWAY_API_KEY: "gw-key" }, { store: new Map([["session:sess-OLDEST", { v: 1 }], ...[...shared.store.entries()].filter(([key]) => key !== "session:sess-OLDEST")]), id: "sess-OLDEST" });
+    await k.hooks.get("session.start")!(k.$, {}, async (e: unknown) => e);
+    k.setTier("opus", 0.95, 1);
+    await turn(k.hooks, k.$, "ev1", "implement it");
+    const keys = [...(await k.$.store.keys())].filter((key) => key.startsWith("session:"));
+    assert.equal(keys.at(-1), "session:sess-OLDEST", "moved to the end on its first save");
+    assert.ok(keys.includes("session:sess-OLDEST"), "not evicted");
+  });
+
+  test("a turn claim another process overwrote between the read and the write is ceded", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-RACE" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const set = kit.$.store.set;
+    kit.$.store.set = async (k: string, v: unknown) => {
+      await set(k, v);
+      // Another process, loaded later, claims the same turn right after.
+      if (k.startsWith("turn:")) await set(k, { birth: Date.now() + 1e6, at: Date.now() });
+    };
+    kit.setTier("opus", 0.95, 1);
+    const t = await turn(kit.hooks, kit.$, "race1", "implement it");
+    assert.equal(t.sent.model, undefined, "left to the other process");
+    assert.doesNotMatch(t.text, /✳️/);
+  });
+
+  test("the /jev compact reply carries no second prefix", async () => {
+    const { hooks, $ } = await boot();
+    assert.match((await run(hooks, $, "compact")).text, /^compaction by Jev on/);
   });
 
   test("a go-ahead does not continue onto a tier the turn no longer fits", async () => {

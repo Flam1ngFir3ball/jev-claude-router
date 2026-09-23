@@ -628,12 +628,13 @@ describe("a held turn", () => {
     assert.match(statusReport(base), /sticky\s+off/);
     assert.match(
       statusReport({ ...base, sticky: 0.75 }),
-      /sticky\s+on, switch needs 75% \(90% up past 100k\), a downgrade has to pay$/m,
+      /sticky\s+on, switch needs 75% \(90% up past 100k\)$/m,
     );
     assert.match(
-      statusReport({ ...base, sticky: 0.75, upgradeMax: 1 }),
-      /a downgrade has to pay, an upgrade may cost \$1\.00 over staying/,
+      statusReport({ ...base, sticky: 0.75, upgradeMax: 1, price: true }),
+      /price\s+on, a downgrade has to pay, an upgrade may cost \$1\.00 over staying/,
     );
+    assert.match(statusReport({ ...base, price: false }), /price\s+off \(\/jev price on\)/);
   });
 });
 
@@ -796,6 +797,7 @@ describe("a downgrade held on its price", () => {
   test("at a working context the switch is held, whatever Jev's confidence", () => {
     const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
       sticky: 0.75,
+      price: true,
       running: onFable,
       economics: { contextTokens: 150_000, outputTokens: 1500, ttl: "1h" },
     });
@@ -872,6 +874,7 @@ describe("a downgrade held on its price", () => {
     const onSession = { tier: "opus" as const, model: "claude-opus-5", effort: "medium" as const, confidence: 1 };
     const a = attemptOf("implement it", jev("opus"), TIERS, {
       sticky: 0.75,
+      price: true,
       running: onSession,
       economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
     });
@@ -1036,6 +1039,16 @@ describe("ImitationFilter: the same result however the text is split", () => {
     assert.deepEqual(a, []);
     const b = f.push({ kind: "text", index: 1, text: "next" });
     assert.deepEqual(b.map((c) => [c.index, c.text]), [[0, "> "], [1, "next"]]);
+  });
+});
+
+describe("addUsage prices each step at the model that answered it", () => {
+  test("a turn whose steps ran on two models", () => {
+    const a: Attempt = { prompt: "p", ms: 0, decision: { tier: "opus", model: "claude-opus-5-5", effort: "medium", confidence: 1 } };
+    const step = (model: string) => ({ model, input_tokens: 0, output_tokens: 1_000_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+    addUsage(a, step("claude-fable-5-1"));
+    addUsage(a, step("claude-haiku-4-5"));
+    assert.equal(a.cost, 50 + 5, "fable's output price for one step, haiku's for the other");
   });
 });
 

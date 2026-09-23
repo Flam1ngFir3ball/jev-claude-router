@@ -52,6 +52,11 @@ export type Decision = {
    */
   heldCost?: { stay: number; go: number; limit?: number };
   /**
+   * The tier the turn had to leave because the context no longer fits it,
+   * when the move went only as far up as it had to (not to Jev's pick).
+   */
+  outgrew?: Tier;
+  /**
    * The context this turn carries, when that is what held it: the tier Jev
    * named cannot take a prompt this long at all. Absent otherwise.
    */
@@ -775,6 +780,16 @@ export function upgradeMaxOf(raw: string | undefined): number | null {
   if (v === "off" || v === "none") return null;
   const n = Number(v);
   return v !== "" && Number.isFinite(n) && n >= 0 ? n : UPGRADE_MAX_USD;
+}
+
+/**
+ * `JEV_ROUTER_PRICE_CHECK`: the downgrade and upgrade price checks, on
+ * unless `0`, `false`, `no` or `off`. Separate from sticky, which is the
+ * confidence bar alone.
+ */
+export function priceCheckOf(raw: string | undefined): boolean {
+  const flag = (raw ?? "").trim().toLowerCase();
+  return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
 }
 
 /** The bar an upgrade must clear, given the context it would write. */
