@@ -79,6 +79,23 @@ async function classify($: Engine, text: string, offered: readonly Tier[]) {
 }
 
 /**
+ * Seeds sticky from env once per session, and only once: `/jev sticky` may
+ * have already set it, and re-reading env after that would undo the override.
+ * A top-level function for the same reason as `classify` above — `$` may only
+ * reach a function declared here, never a closure inside `register`.
+ */
+async function seedSticky(
+  $: Engine,
+  state: { sticky: number | null; stickyReady: boolean },
+): Promise<{ sticky: number | null; stickyReady: boolean }> {
+  if (state.stickyReady) return state;
+  const sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
+    ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
+    : null;
+  return { sticky, stickyReady: true };
+}
+
+/**
  * Names the subagent a step runs in, from the session's agent list. A row may
  * not be there yet for a loop that only just started; then the id stands in,
  * which still says "not the main loop", the part that matters.
@@ -208,14 +225,6 @@ export function register(on: On) {
     running = null;
   };
 
-  const seedSticky = async ($: Engine) => {
-    if (stickyReady) return;
-    sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
-      ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
-      : null;
-    stickyReady = true;
-  };
-
   const record = (attempt: Attempt) => {
     attempts.unshift(attempt);
     attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
@@ -227,7 +236,7 @@ export function register(on: On) {
       description: "Jev routing: status, or `on` / `off`.",
     });
     surface = await $.session.surface();
-    await seedSticky($);
+    ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
     return next(e);
   });
 
@@ -249,14 +258,14 @@ export function register(on: On) {
     // for, and refusing it would teach nothing.
     const sub = arg.replace(/^-+/, "");
     if (sub === "sticky" || sub.startsWith("sticky ")) {
-      await seedSticky($);
+      ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
       const result = stickyCommand(sub.slice("sticky".length), sticky);
       sticky = result.sticky;
       stickyReady = true;
       return { text: result.text };
     }
 
-    await seedSticky($);
+    ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
     if (surface === null) surface = await $.session.surface();
     const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
     const provider = providerOf({
@@ -283,7 +292,7 @@ export function register(on: On) {
   on("turn.start", async ($, e, next) => {
     if (!enabled) return next(e);
 
-    await seedSticky($);
+    ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
     if (surface === null) surface = await $.session.surface();
 
     const offered = offeredTiers(
