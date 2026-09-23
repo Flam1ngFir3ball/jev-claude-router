@@ -317,6 +317,16 @@ writes to save $0.07 of output. A router that follows Jev's word at that
 size costs more than never routing at all — measured, not modelled: over 255
 routed turns the shipped policy came to $92 where staying put came to $8.
 
+Before either bar, one rule that nothing lifts: **the tier has to take the
+prompt at all.** Haiku 4.5's window is 200k tokens; the rest take a
+million. A turn carrying more than a tier's window (less 16k for the prompt
+and the reply) is not sent there, whatever Jev said, whatever the price,
+and even when the prompt named it — the API would refuse it with "Prompt is
+too long", and a week of transcripts holds three of those, each right after
+a turn at 358k–605k was routed to haiku. The turn stays on the tier already
+running (`stayed on fable: haiku takes 200k and this turn carries 310k`),
+or, with nothing running, on the session model.
+
 So a switch has to clear two bars, and `/jev sticky off` lifts both:
 
 - **Jev's doubt.** A turn that names a different tier than the last one has

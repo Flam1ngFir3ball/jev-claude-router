@@ -107,6 +107,35 @@ export function usageCost(
   );
 }
 
+/**
+ * The context window of each tier's model, in tokens: Haiku 4.5 takes 200K,
+ * the rest 1M (platform.claude.com/docs/en/about-claude/models, 2026-09-23).
+ * A request past it is refused with "Prompt is too long", and a week of
+ * transcripts holds three of those, each right after a turn at 358k–605k
+ * was routed to haiku. Nothing on the ladder is smaller than a session
+ * with a `[1m]` model: the plain ids the router sends were answered at
+ * 737k on fable and 344k on sonnet.
+ */
+export const WINDOW_TOKENS: Record<Tier, number> = {
+  haiku: 200_000,
+  sonnet: 1_000_000,
+  opus: 1_000_000,
+  fable: 1_000_000,
+};
+
+/** Room left for the prompt and the reply when a turn is judged to fit. */
+export const WINDOW_HEADROOM_TOKENS = 16_000;
+
+/** True when a turn carrying `contextTokens` can be sent to `tier` at all. */
+export function fitsWindow(tier: Tier, contextTokens: number): boolean {
+  return contextTokens + WINDOW_HEADROOM_TOKENS <= WINDOW_TOKENS[tier];
+}
+
+/** `claude-opus-5-5[1m]` and `claude-opus-5-5` are one model: the suffix is the engine's. */
+export function baseModel(model: string): string {
+  return model.replace(/\[[^\]]*\]$/, "");
+}
+
 /** Ladder order, low to high, for telling a downgrade from an upgrade. */
 const RANK: Record<Tier, number> = { haiku: 0, sonnet: 1, opus: 2, fable: 3 };
 

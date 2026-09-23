@@ -756,15 +756,16 @@ describe("a downgrade held on its price", () => {
     const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
       sticky: 0.75,
       running: onFable,
-      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+      economics: { contextTokens: 150_000, outputTokens: 1500, ttl: "1h" },
     });
     assert.ok("decision" in a);
     assert.equal(a.decision.tier, "fable");
     assert.equal(a.decision.held, "haiku");
     assert.equal(a.decision.effort, "low", "Jev's effort still applies");
+    // stay: 150k·0.25 + 1.5k·50 = 0.0375 + 0.075; go: 150k·2 + 1.5k·5 + 150k·20 = 0.3 + 0.0075 + 3.0
     assert.equal(
       liveLine(a),
-      "> ✳️ fable · low effort · stayed on fable: haiku would cost $4.41 vs $0.13 · 300ms",
+      "> ✳️ fable · low effort · stayed on fable: haiku would cost $3.31 vs $0.11 · 300ms",
     );
   });
 
@@ -847,11 +848,56 @@ describe("a downgrade held on its price", () => {
     assert.equal(fresh.decision.model, "claude-opus-5-5", "at a small context the ladder's model wins");
   });
 
+  test("a turn too long for the tier Jev named stays where it is, whatever the price or the ask", () => {
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
+      sticky: null,
+      running: onFable,
+      economics: { contextTokens: 300_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "fable");
+    assert.equal(a.decision.heldWindow, 300_000);
+    assert.equal(
+      liveLine(a),
+      "> ✳️ fable · low effort · stayed on fable: haiku takes 200k and this turn carries 300k · 300ms",
+    );
+    const forced = attemptOf("use haiku", { ok: false, ms: 0, reason: "forced" }, TIERS, {
+      sticky: null,
+      running: onFable,
+      forced: "haiku",
+      economics: { contextTokens: 300_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in forced);
+    assert.equal(forced.decision.tier, "fable", "the API would refuse it, so it is not sent");
+  });
+
+  test("a turn too long for the tier Jev named, with nothing to stay on, is left to the session model", () => {
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
+      sticky: null,
+      running: null,
+      economics: { contextTokens: 300_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("skipped" in a);
+    assert.equal(a.skipped, "haiku takes 200k and this turn carries 300k");
+  });
+
+  test("the [1m] spelling of the session's model is kept, and is not a switch", () => {
+    const on1m = { tier: "opus" as const, model: "claude-opus-5-5[1m]", effort: "medium" as const, confidence: 1 };
+    const a = attemptOf("implement it", jev("opus"), TIERS, {
+      sticky: 0.75,
+      running: on1m,
+      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.model, "claude-opus-5-5[1m]");
+    assert.equal(a.decision.held, undefined);
+  });
+
   test("with stickiness off the price is not consulted", () => {
     const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
       sticky: null,
       running: onFable,
-      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+      economics: { contextTokens: 150_000, outputTokens: 1500, ttl: "1h" },
     });
     assert.ok("decision" in a);
     assert.equal(a.decision.tier, "haiku");
@@ -862,7 +908,7 @@ describe("a downgrade held on its price", () => {
       sticky: 0.75,
       running: onFable,
       forced: "haiku",
-      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+      economics: { contextTokens: 150_000, outputTokens: 1500, ttl: "1h" },
     });
     assert.ok("decision" in a);
     assert.equal(a.decision.tier, "haiku");

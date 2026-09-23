@@ -6,7 +6,12 @@
  * `node` in tests.
  */
 
-import { tierOfModel, type SwitchVerdict } from "./pricing.ts";
+import {
+  baseModel,
+  fitsWindow,
+  tierOfModel,
+  type SwitchVerdict,
+} from "./pricing.ts";
 
 export type Tier = "haiku" | "sonnet" | "opus" | "fable";
 
@@ -46,6 +51,11 @@ export type Decision = {
    * cost of the switch and not Jev's doubt that held it. Absent otherwise.
    */
   heldCost?: { stay: number; go: number };
+  /**
+   * The context this turn carries, when that is what held it: the tier Jev
+   * named cannot take a prompt this long at all. Absent otherwise.
+   */
+  heldWindow?: number;
   /**
    * The effort Jev named, when a turn staying on Sonnet kept the previous
    * turn's effort instead (see `holdsSonnetEffort`). Absent otherwise.
@@ -325,8 +335,13 @@ export function stickyDecision(
 ): Decision {
   if (previous === null) return fresh;
   // The model, not the tier: a session on `claude-opus-5` that Jev keeps on
-  // opus is still a switch, to `claude-opus-5-5` and a cold cache.
-  if (fresh.model === previous.model) return fresh;
+  // opus is still a switch, to `claude-opus-5-5` and a cold cache. The
+  // engine's `[1m]` suffix is not a different model, and the session's own
+  // spelling is what is sent back, so nothing changes under it.
+  if (baseModel(fresh.model) === baseModel(previous.model))
+    return fresh.model === previous.model
+      ? fresh
+      : { ...fresh, model: previous.model };
   const shaky = fresh.confidence < threshold;
   const unprofitable = verdict !== null && verdict.hold;
   if (!shaky && !unprofitable) return fresh;
@@ -346,6 +361,35 @@ export function stickyDecision(
     ...(unprofitable
       ? { heldCost: { stay: verdict.stay, go: verdict.go } }
       : {}),
+  };
+}
+
+/**
+ * Keeps a turn off a tier whose window it does not fit: on the tier already
+ * running when that one takes it, otherwise nowhere (null), so the session
+ * model answers. A `use haiku` at 300k is refused the same way; the API
+ * would refuse it with "Prompt is too long", and did, three times in a week.
+ */
+export function withinWindow(
+  decision: Decision,
+  previous: Decision | null,
+  contextTokens: number,
+): Decision | null {
+  if (fitsWindow(decision.tier, contextTokens)) return decision;
+  if (previous === null || !fitsWindow(previous.tier, contextTokens))
+    return null;
+  return {
+    tier: previous.tier,
+    model: previous.model,
+    effort: decision.effort,
+    confidence: decision.confidence,
+    effortConfidence: decision.effortConfidence,
+    ...(decision.probabilities !== undefined
+      ? { probabilities: decision.probabilities }
+      : {}),
+    held: decision.tier,
+    heldModel: decision.model,
+    heldWindow: contextTokens,
   };
 }
 

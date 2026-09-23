@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  baseModel,
   breakEvenTokens,
+  fitsWindow,
   isDowngrade,
   PRICE,
   priceOfModel,
@@ -97,6 +99,21 @@ describe("pricing", () => {
 
   test("an upgrade has no break-even, since the dearer output never saves", () => {
     assert.equal(breakEvenTokens("haiku", "fable", 1_500), 0);
+  });
+
+  test("haiku's window is 200k and the rest take a million", () => {
+    assert.equal(fitsWindow("haiku", 150_000), true);
+    assert.equal(fitsWindow("haiku", 190_000), false, "headroom for the prompt and the reply");
+    assert.equal(fitsWindow("haiku", 300_000), false);
+    assert.equal(fitsWindow("sonnet", 300_000), true);
+    assert.equal(fitsWindow("fable", 900_000), true);
+    assert.equal(fitsWindow("fable", 990_000), false);
+  });
+
+  test("the engine's [1m] suffix does not make a different model", () => {
+    assert.equal(baseModel("claude-opus-5-5[1m]"), "claude-opus-5-5");
+    assert.equal(baseModel("claude-opus-5-5"), "claude-opus-5-5");
+    assert.equal(baseModel("claude-sonnet-5[1m]"), "claude-sonnet-5");
   });
 
   test("dollars read at the precision a turn needs", () => {

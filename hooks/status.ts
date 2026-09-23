@@ -27,6 +27,7 @@ import {
   UPGRADE_CONTEXT_TOKENS,
   upgradeBar,
   withCeiling,
+  withinWindow,
   type Ceiling,
   type Decision,
   type Tier,
@@ -39,6 +40,7 @@ import {
   switchVerdict,
   usageCost,
   usd,
+  WINDOW_TOKENS,
   type Ttl,
 } from "./pricing.ts";
 import type { ProviderResult } from "./provider.ts";
@@ -115,9 +117,11 @@ export function reasonsOf(attempt: Attempt): string[] {
       d.heldModel !== undefined && d.held === d.tier ? d.heldModel : d.held;
     const kept = d.held === d.tier ? d.model : d.tier;
     out.push(
-      d.heldCost !== undefined
-        ? `stayed on ${kept}: ${wanted} would cost ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
-        : `stayed on ${kept}: Jev wanted ${wanted}, only ${pct(d.confidence)} sure`,
+      d.heldWindow !== undefined
+        ? `stayed on ${kept}: ${wanted} takes ${kOf(WINDOW_TOKENS[d.held])} and this turn carries ${kOf(d.heldWindow)}`
+        : d.heldCost !== undefined
+          ? `stayed on ${kept}: ${wanted} would cost ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
+          : `stayed on ${kept}: Jev wanted ${wanted}, only ${pct(d.confidence)} sure`,
     );
   }
   if (d.heldEffort !== undefined) {
@@ -296,6 +300,31 @@ export function attemptOf(
       ms: result.ms,
       skipped: "Jev answered but named no tier we offered",
     };
+  }
+  // First of all, can the tier take a prompt this long? Haiku's window is
+  // 200k; a turn carrying more is refused by the API, forced or not.
+  if (hold.economics !== undefined) {
+    const fits = withinWindow(
+      decision,
+      hold.running,
+      hold.economics.contextTokens,
+    );
+    if (fits === null) {
+      return {
+        ...head,
+        ms: result.ms,
+        skipped:
+          `${decision.tier} takes ${kOf(WINDOW_TOKENS[decision.tier])} and ` +
+          `this turn carries ${kOf(hold.economics.contextTokens)}`,
+      };
+    }
+    if (fits.heldWindow !== undefined) {
+      return {
+        ...head,
+        ms: result.ms,
+        decision: capTo(fits, hold.ceiling ?? ceilingAt("max")),
+      };
+    }
   }
   if (hold.sticky !== null && !decision.forced) {
     const running = hold.running;

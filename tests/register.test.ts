@@ -1413,7 +1413,7 @@ describe("register: a downgrade priced against the context", () => {
     const { hooks, $, setTier, setContext } = await started();
     setTier("fable", 0.95, 3);
     await turn(hooks, $, "p1", "plan the migration");
-    setContext(200_000);
+    setContext(150_000);
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "p2", "what is 2+2");
     assert.equal(t.sent.model, "claude-fable-5-1");
@@ -1460,7 +1460,7 @@ describe("register: a downgrade priced against the context", () => {
     setTier("fable", 0.95, 3);
     await turn(hooks, $, "s1", "plan");
     await run(hooks, $, "sticky off");
-    setContext(200_000);
+    setContext(150_000);
     setTier("haiku", 0.99, 0);
     assert.equal((await turn(hooks, $, "s2", "2+2")).sent.model, "claude-haiku-4-5");
   });
@@ -1508,7 +1508,7 @@ describe("register: a downgrade priced against the context", () => {
     const { hooks, $, setTier, setContext } = await started();
     setTier("fable", 0.95, 3);
     await turn(hooks, $, "x1", "plan");
-    setContext(200_000);
+    setContext(150_000);
     await hooks.get("session.compact")!($, { trigger: "precompute" }, async (e: unknown) => e);
     setTier("haiku", 0.99, 0);
     assert.equal((await turn(hooks, $, "x2", "2+2")).sent.model, "claude-fable-5-1");
@@ -1826,10 +1826,10 @@ describe("register: a session that was already running", () => {
 
   test("a resumed session's first routed turn is priced against the session model's warm cache", async () => {
     const { hooks, $, setTier, setContext } = await started();
-    setContext(200_000);
+    setContext(150_000);
     await hooks.get("classic.SessionStart")!(
       $,
-      { source: "resume", model: "claude-opus-5", context_tokens: 200_000, prompt_cache_likely_expired: false },
+      { source: "resume", model: "claude-opus-5", context_tokens: 150_000, prompt_cache_likely_expired: false },
       async (e: unknown) => e,
     );
     setTier("haiku", 0.99, 0);
@@ -1908,6 +1908,32 @@ describe("register: a session that was already running", () => {
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "s6", "2+2");
     assert.equal(t.sent.model, "claude-haiku-4-5", "nothing to hold to");
+  });
+
+  test("a 300k turn is never sent to haiku, even with sticky off and a named tier", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "w1", "plan it");
+    await run(hooks, $, "sticky off");
+    setContext(300_000);
+    setTier("haiku", 1, 0);
+    const t = await turn(hooks, $, "w2", "what is 2+2");
+    assert.equal(t.sent.model, "claude-fable-5-1");
+    assert.match(t.text, /stayed on fable: haiku takes 200k and this turn carries 300k/);
+    const forced = await turn(hooks, $, "w3", "use haiku for this");
+    assert.equal(forced.sent.model, "claude-fable-5-1");
+  });
+
+  test("a [1m] session model is the ladder's model, spelled the engine's way", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    kit.setSessionModel("claude-opus-5-5[1m]");
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const { hooks, $, setTier, setContext } = kit;
+    setContext(200_000);
+    setTier("opus", 0.95, 1);
+    const t = await turn(hooks, $, "m3");
+    assert.equal(t.sent.model, "claude-opus-5-5[1m]", "nothing changes under the loop");
+    assert.doesNotMatch(t.text, /stayed on/);
   });
 
   test("what the session spends is counted while routing is off", async () => {
