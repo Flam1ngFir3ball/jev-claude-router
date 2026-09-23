@@ -856,6 +856,17 @@ describe("register: a tier named in the prompt", () => {
     assert.equal(t.sent.model, "claude-opus-5-5", "Jev’s pick stands");
     assert.doesNotMatch(t.text, /forced/);
   });
+
+  test("a forced Sonnet turn is not effort-held, and the line says forced", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("sonnet", 0.9, 1, 0.9);
+    await turn(hooks, $, "fs1", "small edit");
+    setTier("sonnet", 0.9, 3, 0.2);
+    const t = await turn(hooks, $, "fs2", "use sonnet for this");
+    assert.equal(t.sent.effort, "xhigh", "Jev’s effort still applies");
+    assert.match(t.text, /forced/);
+    assert.doesNotMatch(t.text, /held-effort/);
+  });
 });
 
 describe("register: a bare go-ahead", () => {
@@ -939,6 +950,20 @@ describe("register: a bare go-ahead", () => {
     setTier("haiku", 0.4);
     const t = await turn(hooks, $, "g9", "and the tests");
     assert.equal(t.sent.model, "claude-fable-5-1", "held to fable, via the go-ahead");
+  });
+
+  test("after an unrouted turn, a go-ahead asks Jev rather than replaying a stale route", async () => {
+    const { hooks, $, setTier, fail, fetches } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "u1", "plan it");
+    fail();
+    await turn(hooks, $, "u2", "timeout turn");
+    const asked = fetches();
+    setTier("haiku", 1, 0);
+    const go = await turn(hooks, $, "u3", "yes");
+    assert.equal(fetches(), asked + 1, "Jev is asked; continueFrom was cleared");
+    assert.equal(go.sent.model, "claude-haiku-4-5");
+    assert.doesNotMatch(go.text, /continue/);
   });
 });
 

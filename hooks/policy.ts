@@ -214,6 +214,9 @@ export function stickyDecision(
     model: previous.model,
     effort: fresh.effort,
     confidence: fresh.confidence,
+    // Sonnet effort gating reads this next; dropping it made every held
+    // Sonnet turn look like effort confidence 0 and always hold effort.
+    effortConfidence: fresh.effortConfidence,
     held: fresh.tier,
   };
 }
@@ -224,34 +227,44 @@ export function stickyDecision(
  * "y" 0.98, "go ahead" 0.79, measured 2026-09-22), which is right about the
  * text and wrong about the work: the work is whatever the last turn proposed,
  * on whatever tier it ran. Stickiness cannot catch this, since its bar is a
- * confidence and these clear any bar. Trailing punctuation is tolerated;
- * anything longer is a real prompt and goes to Jev.
+ * confidence and these clear any bar. Trailing punctuation (`.`, `!`, `?`,
+ * `,`) is tolerated; anything longer is a real prompt and goes to Jev.
  */
 const CONTINUATION =
-  /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!]*$/i;
+  /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!,?]*$/i;
 
 export function isContinuation(text: string): boolean {
   return CONTINUATION.test(text.trim());
 }
 
 /**
- * A tier named in the prompt: "use opus", "with fable, do more research",
- * "switch to haiku", "run this on sonnet". Only verbs that actually mean
- * "run on" are accepted; the first cut also took bare "on" and "for", which
- * turned "search for opus docs" and "notes on haiku" into routes. A model id
- * ("use claude-opus-5-5") names its tier too. Returns the tier, or null when
- * none is named or the named one is not offered: an exclusion is a standing
- * decision, and a prompt does not overrule the environment.
+ * A tier named in the prompt: "use opus", "go with fable", "switch to haiku",
+ * "run this on sonnet". Only verbs that actually mean "run on" are accepted;
+ * bare "on"/"for"/"with" are not (they turned "search for opus docs", "notes
+ * on haiku", and "happy with opus" into routes). Negations are skipped, and
+ * the last affirmative match wins, so "don't use haiku, use opus" is opus. A
+ * model id ("use claude-opus-5-5") names its tier too. Returns the tier, or
+ * null when none is named or the named one is not offered: an exclusion is a
+ * standing decision, and a prompt does not overrule the environment.
  */
 const OVERRIDE =
-  /\b(?:use|using|switch(?:ing)? to|route to|run (?:it |this )?on|go with|with)\s+(?:claude-)?(haiku|sonnet|opus|fable)\b/i;
+  /\b(?:use|using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)\b/gi;
+
+/** Words immediately before a match that mean "do not run on". */
+const OVERRIDE_NEGATION = /(?:\bdo\s*n'?t|\bnever|\bnot)\s+$/i;
 
 export function parseOverride(
   text: string,
   offered: readonly Tier[] = TIERS,
 ): Tier | null {
-  const named = OVERRIDE.exec(text)?.[1]?.toLowerCase() as Tier | undefined;
-  return named !== undefined && offered.includes(named) ? named : null;
+  let named: Tier | null = null;
+  for (const match of text.matchAll(OVERRIDE)) {
+    const at = match.index ?? 0;
+    if (OVERRIDE_NEGATION.test(text.slice(0, at))) continue;
+    const tier = match[1]?.toLowerCase() as Tier | undefined;
+    if (tier !== undefined && offered.includes(tier)) named = tier;
+  }
+  return named;
 }
 
 /** A decision forced to a named tier; Jev's effort is kept, its tier is not. */

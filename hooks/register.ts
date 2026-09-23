@@ -135,6 +135,12 @@ export function register(on: On) {
   let sticky: number | null = null;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
+  /**
+   * What a bare go-ahead continues. Cleared on an unrouted turn: that turn
+   * ran on the session model, so re-applying the older routed decision would
+   * be wrong. Stickiness still holds to `running` (last routed).
+   */
+  let continueFrom: Decision | null = null;
   let enabled = true;
   let announce = true;
   let surface: string | null = null;
@@ -235,8 +241,8 @@ export function register(on: On) {
     // these (it grades the text, which is trivial, not the task, which is
     // whatever was just proposed). Nothing to continue on the first turn.
     const attempt =
-      isContinuation(e.text) && running !== null
-        ? continuationOf(e.text, running)
+      isContinuation(e.text) && continueFrom !== null
+        ? continuationOf(e.text, continueFrom)
         : attemptOf(e.text, await classify($, e.text, offered), offered, {
             sticky,
             running,
@@ -264,6 +270,11 @@ export function register(on: On) {
       // What the next turn holds to is the tier actually running, which on a
       // held turn is the previous one, not the one Jev named.
       running = attempt.decision;
+      continueFrom = attempt.decision;
+    } else {
+      // Unrouted: the session model answered. A following go-ahead must not
+      // re-apply the last routed tier as if that were the previous turn.
+      continueFrom = null;
     }
 
     return next(e);
@@ -295,7 +306,12 @@ export function register(on: On) {
       // row rather than opening one each. Recording it again here listed
       // every routed subagent twice.
       attempt = spawned.get(e.agentId);
-      if (attempt === undefined) {
+      if (attempt !== undefined) {
+        // Touch for LRU: an active agent's decision must outlive a burst of
+        // newer spawns, or its later steps miss the row and run unrouted.
+        spawned.delete(e.agentId);
+        spawned.set(e.agentId, attempt);
+      } else {
         // A fork, or a spawn from before the router loaded: nothing was
         // decided for it, and it runs on whatever the engine resolved.
         const agent = await agentTagOf($, e.agentId);

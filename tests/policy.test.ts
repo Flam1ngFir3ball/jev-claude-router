@@ -146,6 +146,21 @@ describe("sticky routing", () => {
     );
   });
 
+  test("a held switch keeps Jev’s effort confidence for Sonnet gating", () => {
+    const fresh = {
+      ...at("haiku", "high", 0.4),
+      effortConfidence: 0.95,
+    };
+    const d = stickyDecision(fresh, at("sonnet", "low"), 0.75);
+    assert.equal(d.tier, "sonnet");
+    assert.equal(d.effortConfidence, 0.95);
+    assert.equal(
+      holdsSonnetEffort(d, at("sonnet", "low"), 0.75),
+      false,
+      "high effort confidence must still clear the bar after a tier hold",
+    );
+  });
+
   test("a confident switch goes through", () => {
     const d = stickyDecision(at("haiku", "low", 0.8), at("fable"), 0.75);
     assert.equal(d.tier, "haiku");
@@ -193,6 +208,11 @@ describe("a bare go-ahead", () => {
       "k",
       "go ahead",
       "Go ahead.",
+      "go ahead,",
+      "yes,",
+      "ok,",
+      "sure,",
+      "yes?",
       "continue",
       "proceed",
       "do it",
@@ -226,7 +246,7 @@ describe("a bare go-ahead", () => {
 describe("a tier named in the prompt", () => {
   test("is read from the verbs that mean 'run on'", () => {
     assert.equal(parseOverride("use opus for this"), "opus");
-    assert.equal(parseOverride("with fable, do more research"), "fable");
+    assert.equal(parseOverride("go with fable, do more research"), "fable");
     assert.equal(parseOverride("switch to haiku"), "haiku");
     assert.equal(parseOverride("run this on sonnet"), "sonnet");
     assert.equal(parseOverride("do it using opus"), "opus");
@@ -240,11 +260,11 @@ describe("a tier named in the prompt", () => {
 
   test("case does not matter", () => {
     assert.equal(parseOverride("USE OPUS"), "opus");
-    assert.equal(parseOverride("With Fable"), "fable");
+    assert.equal(parseOverride("Go With Fable"), "fable");
   });
 
   test("the tier names as ordinary words are left alone", () => {
-    // Each of these routed under the first cut, which took bare "on" / "for".
+    // Each of these routed under earlier cuts (bare on/for/with).
     for (const text of [
       "search for opus docs",
       "notes on haiku poetry",
@@ -252,9 +272,20 @@ describe("a tier named in the prompt", () => {
       "what is the fable about",
       "the opus tier is expensive",
       "for haiku, what is the price",
+      "I'm happy with opus so far",
+      "compatible with haiku",
+      "deal with fable later",
     ]) {
       assert.equal(parseOverride(text), null, text);
     }
+  });
+
+  test("negations are skipped and the last affirmative match wins", () => {
+    assert.equal(parseOverride("don't use haiku, use opus"), "opus");
+    assert.equal(parseOverride("Dont use haiku, use opus"), "opus");
+    assert.equal(parseOverride("never use fable for this"), null);
+    assert.equal(parseOverride("do not use sonnet"), null);
+    assert.equal(parseOverride("not using opus today"), null);
   });
 
   test("a tier the environment excluded cannot be named back in", () => {

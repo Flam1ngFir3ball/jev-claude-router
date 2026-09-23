@@ -27,7 +27,7 @@ turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
 | --- | --- | --- |
 | `haiku` | Trivial. A lookup, a rename, a yes or no. | `claude-haiku-4-5` |
 | `sonnet` | Straightforward and minor, no real decision to make. | `claude-sonnet-5` |
-| `opus` | Plain implementation carrying some complexity. | `claude-opus-5` |
+| `opus` | Plain implementation carrying some complexity. | `claude-opus-5-5` |
 | `fable` | Planning, brainstorming, architecture, systematic debugging. | `claude-fable-5-1` |
 
 The policy lives in `TIER_CRITERIA` in `hooks/policy.ts`. Those strings are
@@ -294,7 +294,9 @@ same bar; the footer says `held-effort:xhigh` for what Jev wanted.
 
 What the next turn holds to is the tier actually running, not the one Jev
 named. Three shaky haiku calls in a row will not creep the session onto haiku
-one turn at a time. An unrouted turn changes nothing, since nothing ran.
+one turn at a time. An unrouted turn leaves the sticky hold alone (nothing
+routed to hold to), but clears what a bare go-ahead would continue: that turn
+ran on the session model, so "yes" must not re-apply the older routed tier.
 
 The bar starts at 0.75, which is a starting point rather than a measured
 optimum. Retune it in place with `/jev sticky 0.6` and watch the next few
@@ -318,10 +320,12 @@ effort without asking Jev, tagged `continue`. Anything longer is a prompt.
 
 **A tier you named.** "use opus for this" scores opus at 0.43, under the bar,
 so stickiness refused it. A tier named with a run-on verb (`use`, `using`,
-`switch to`, `route to`, `run this on`, `go with`, `with`) is taken as read,
+`switch to`, `route to`, `run this on`, `go with`) is taken as read,
 needs no answer from Jev, and is tagged `forced`. Jev's effort still applies.
-Bare "on" and "for" are not verbs here: "search for opus docs" is a search.
-A tier the environment excluded cannot be named back in.
+Bare "on", "for", and "with" are not verbs here: "search for opus docs" is a
+search, "happy with opus" is not a route. Negations are skipped and the last
+affirmative match wins ("don't use haiku, use opus" → opus). A tier the
+environment excluded cannot be named back in.
 
 ## Subagents
 
