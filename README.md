@@ -88,8 +88,7 @@ when the switch is worth it, and says so when it is not.
    does nothing.
 3. **Install it.** Place the folder at `~/.claude/skills/jev-claude-router/` to load
    it in every session, or run `claude --plugin-dir /path/to/jev-claude-router` for
-   one session. If an older `jev-router` folder is installed, remove it: both
-   copies would load.
+   one session.
 4. **Check it.** `npm run check-jev` reports the provider and whether it
    answers. In a session, `/jev` shows the router's state.
 
