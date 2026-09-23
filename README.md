@@ -18,7 +18,7 @@ turn.start    ask Jev  →  tier: fable   effort: 3
 turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
               first text chunk ← '> ✳️ fable · xhigh effort · Jev 97% sure · 641ms\n\n---\n\n' + text
               ↓
-/jev          the full history, with reasons for anything unrouted
+/jev          the last five turns, with reasons for anything unrouted
 ```
 
 ## The ladder
@@ -80,7 +80,7 @@ route to see which provider is configured and whether it's serving.
 Then run Claude Code with the mod:
 
 ```
-claude --plugin-dir ~/Desktop/jev-router
+claude --plugin-dir /path/to/jev-router
 ```
 
 To keep it on permanently, move the folder to `~/.claude/skills/jev-router/`,
@@ -90,7 +90,7 @@ where it loads on its own next session.
 
 Four signals, in order of how much you can trust them.
 
-**`/jev`** prints the full state. A command's output row draws on every
+**`/jev`** prints the state and the last five turns. A command's output row draws on every
 surface, so this always works:
 
 ```
@@ -114,16 +114,17 @@ jev-router
           answered by claude-opus-5-5 · $0.023 · 22k in, 82% cached · 0k out
    641ms  fable·medium  Jev 97% sure; capped from xhigh  help me plan the architecture
           answered by claude-fable-5-1 ✓ · $0.14 · 130k in, 91% cached · 2k out
-   352ms  fable·low  stayed on fable: haiku would cost $1.02 vs $0.02  what is 2+2
-          answered by claude-fable-5-1 ✓ · $0.02 · 47k in, 99% cached · 0k out
+   352ms  fable·low  stayed on fable: haiku would cost $1.02 vs $0.020  what is 2+2
+          answered by claude-fable-5-1 ✓ · $0.020 · 47k in, 99% cached · 0k out
     12ms  not routed — gateway said HTTP 403 (customer_verification_required)
 ```
 
 Everything here is in words. `Jev 61% sure` is Jev's confidence in the tier;
 `only` appears under 50%. What follows the confidence is why the turn did not
-run exactly as Jev asked: `stayed on fable: haiku would cost $1.02 vs $0.02`
+run exactly as Jev asked: `stayed on fable: haiku would cost $1.02 vs $0.020`
 is a downgrade the price held (see below), `stayed on fable: Jev wanted
-haiku, only 61% sure` one the bar held, `capped from xhigh` the ceiling,
+haiku, 61% sure, needs 75%` one the bar held (it names the bar: 90% for
+a move up past 100k), `capped from xhigh` the ceiling,
 `as you asked` a tier the prompt named, `medium runs as high on a first
 request` an engine quirk (see *Commands and switches*).
 
@@ -182,7 +183,7 @@ An unrouted turn opens with `> ⚠️ not routed · <why> · the session model
 answers`. A held or capped turn says so in the same words as `/jev`:
 
 ```markdown
-> ✳️ fable · low effort · stayed on fable: haiku would cost $1.02 vs $0.02 · 352ms
+> ✳️ fable · low effort · stayed on fable: haiku would cost $1.02 vs $0.020 · 352ms
 ```
 
 **The summary under every finished reply**, once, however many turns the
@@ -295,6 +296,9 @@ model, which this mod does not touch — the rewrite happens per request, in
   no rung above it). **The default is `medium` on every tier.** A turn Jev
   wanted higher is cut to the ceiling and the route line says
   `capped from xhigh` for what it wanted.
+- `/jev medium`, `/jev xhigh fable`: an effort on its own is shorthand for
+  `/jev ceiling`. The old toggles (`/jev xhigh on`) say what replaced them;
+  any other unknown argument says so rather than printing the status.
 - `JEV_ROUTER_CEILING=xhigh`, or `fable:xhigh,opus:high` for some tiers,
   seeds the ceiling; the command overrides it from then on. Two engine facts,
   measured 2026-09-23 on Claude Code 2.1.280 by the transcript's
@@ -356,7 +360,7 @@ So a switch has to clear two bars, and `/jev sticky off` lifts both:
 Held either way, the turn runs on the tier already loaded, and says so:
 
 ```
-> ✳️ fable · low effort · stayed on fable: Jev wanted haiku, only 61% sure · 512ms
+> ✳️ fable · low effort · stayed on fable: Jev wanted haiku, 61% sure, needs 75% · 512ms
 > ✳️ fable · low effort · stayed on fable: haiku would cost $4.41 vs $0.13 · 301ms
 ```
 
@@ -456,7 +460,7 @@ and `/jev` says so.
 ## Checking and tuning
 
 ```
-npm run check-jev        # is the configured provider serving?
+npm run check-jev        # is the configured provider serving? (check-gateway is an alias)
 npm run try-prompts      # what tier does Jev give a spread of prompts?
 npm run try-prompts -- "your prompt"
 ```
@@ -497,7 +501,11 @@ as it would without the mod:
 - the provider refuses the key, errors, or returns a body we cannot read
 - Jev names a tier that was not offered
 
-The only cost of a failure is the latency spent waiting, capped at the timeout.
+The only cost of a failure is the latency spent waiting, capped at the timeout
+(itself held under 8 seconds, since the wait counts against the hook's
+10-second budget). A very long prompt is cut to its first 12,000 characters
+before Jev sees it: the decision is made on how a request opens, and Jev's
+own guidance is that unrelated text lowers its accuracy.
 
 Low confidence is not a failure. The pick is used and the line marks it, so
 `> ✳️ opus · high effort · Jev only 40% sure` means Jev was under 50% sure of the tier.
@@ -511,13 +519,14 @@ An unrouted turn announces itself too, with the reason:
 ## Layout
 
 ```
-hooks/register.ts   the seven hooks, the settings read once, the turn history
+hooks/register.ts   the nine hooks, the settings read once, the turn history
 hooks/jev.ts        the request shape, timeout, named failures
 hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
 hooks/policy.ts     the tiers, the criteria, answers → model and effort,
                     the ceiling, what a hold is
 hooks/pricing.ts    Anthropic's list prices; what a turn cost, what a switch
                     would cost
+hooks/persist.ts    the session's state as data for $.store, and back
 hooks/label.ts      decision → SessionMode label
 hooks/status.ts     the per-turn line, what /jev prints, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks
@@ -551,7 +560,7 @@ pre-commit hook exists for that. It also catches shape errors that are easy to
 get wrong, such as `turn.step` needing to be an `async function*` because it
 streams.
 
-There is no `claude plugin test` in Claude Code 2.1.275, so the engine-level
+There is no `claude plugin test` in Claude Code 2.1.280, so the engine-level
 test kit described in the upstream `mods/README.md` is not available yet.
 
 ## Backends
