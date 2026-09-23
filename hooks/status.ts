@@ -131,6 +131,8 @@ export function reasonsOf(attempt: Attempt): string[] {
             (d.heldBar !== undefined ? `, needs ${pct(d.heldBar)}` : ""),
     );
   }
+  if (d.jevFailed !== undefined)
+    out.push(`kept ${d.tier}: Jev ${d.jevFailed}`);
   if (d.outgrew !== undefined)
     out.push(
       `${d.outgrew} too long, moved up only to ${d.tier}` +
@@ -385,8 +387,30 @@ export function attemptOf(
       : { prompt: kept(summary), kind: "notify" as const };
   const forced = hold.forced ?? null;
 
-  if (!result.ok && forced === null)
+  if (!result.ok && forced === null) {
+    // No answer from Jev: stay on the tier already running rather than drop
+    // to the session model, which could be a cold cache and a switch back
+    // afterwards. With nothing running, or nothing that fits, the turn is
+    // left to the session model as before.
+    // Only a tier Jev actually routed: a placeholder seeded from the
+    // session model (no key, nothing routed yet) is the session model.
+    if (hold.running !== null && hold.running.effortConfidence !== undefined) {
+      const stay = continuationOf(
+        text,
+        hold.running,
+        hold.ceiling ?? ceilingAt("max"),
+        hold.economics?.contextTokens ?? null,
+        offered,
+      );
+      if ("decision" in stay)
+        return {
+          ...head,
+          ms: result.ms,
+          decision: { ...stay.decision, confidence: 0, jevFailed: result.reason },
+        };
+    }
     return { ...head, ms: result.ms, skipped: result.reason };
+  }
 
   const fresh = result.ok ? decisionOf(result.answers, offered) : null;
   let decision = forced !== null ? forcedDecision(forced, fresh) : fresh;
@@ -677,6 +701,7 @@ function shorten(text: string, width = 44): string {
 function sureOf(d: Decision, kind?: Attempt["kind"]): string {
   if (kind === "continue" || kind === "nudge") return "";
   if (d.forced && d.confidence === 0) return "";
+  if (d.jevFailed !== undefined) return "";
   return `Jev ${pct(d.confidence)}`;
 }
 

@@ -46,6 +46,8 @@ summary. See the [README](README.md) for how each feature works.
   confidence floor.
 - **Tier exclusion, version pin, timeout.** `JEV_ROUTER_EXCLUDE`,
   `JEV_ROUTER_JEV_MODEL`, `JEV_ROUTER_TIMEOUT_MS`.
+- **Stays put when Jev fails.** A timeout or error keeps the turn on the
+  tier already running instead of dropping to the session model.
 - **Two backends.** TypeSafe direct or the Vercel AI Gateway, with custom
   bases allowed only when opted in.
 
@@ -83,8 +85,9 @@ summary. See the [README](README.md) for how each feature works.
 
 ### Reliability
 
-- **Fails open**: any failure leaves the turn as it would run without the
-  plugin, with the reason on the line.
+- **Fails safe**: when Jev is slow or errors, the turn stays on the tier
+  already running; with nothing running, it runs as it would without the
+  plugin. The line says why either way.
 - **State survives reloads**: history, spend, holds, the open reply and every
   setting are saved per session; the 20 most recently used sessions are kept.
 - **One copy acts** however many are loaded, by an in-process stamp, a
@@ -95,7 +98,7 @@ summary. See the [README](README.md) for how each feature works.
 ### Tooling
 
 - `check-jev`, `try-prompts`, `measure-switch-cost`, `bench-overhead`.
-- 412 tests; `claude plugin validate` in the pre-commit hook.
+- 413 tests; `claude plugin validate` in the pre-commit hook.
 
 ### Credits
 

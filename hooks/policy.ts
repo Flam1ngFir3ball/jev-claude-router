@@ -59,6 +59,11 @@ export type Decision = {
   /** Jev's pick, when the turn moved up only part of the way to it. */
   wanted?: Tier;
   /**
+   * Why Jev gave no answer (a timeout, an error), when the turn stayed on the
+   * tier already running instead of dropping to the session model.
+   */
+  jevFailed?: string;
+  /**
    * The context this turn carries, when that is what held it: the tier Jev
    * named cannot take a prompt this long at all. Absent otherwise.
    */

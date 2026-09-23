@@ -119,7 +119,8 @@ When a check changed Jev's pick, the reason is written in plain words:
 | `capped from xhigh` | Jev asked for more effort than the ceiling allows. |
 | `your pick` | You named the tier in your prompt. |
 | `1st request runs medium as high` | Fable runs `medium` as `high` on a conversation's first request, so that is what is sent. |
-| `> ⚠️ not routed: <reason>` | Routing failed; the turn ran on the session model. |
+| `kept opus: Jev timed out after 1500ms` | Jev did not answer in time; the turn stayed on the tier already running. |
+| `> ⚠️ not routed: <reason>` | Routing failed with nothing running to stay on; the turn ran on the session model. |
 
 The line is part of the reply's text because that is the one channel every
 Claude Code surface draws: terminal, desktop app and IDE. The app's own model
@@ -330,9 +331,10 @@ compaction by Jev off along with routing.
 
 ## Reliability
 
-**It fails open.** A turn the router cannot decide runs exactly as it would
-without the plugin, and the line says why: no key, Jev too slow, an error or
-an unreadable answer, or a tier that was not offered. The only cost is the
+**It fails safe.** When Jev is too slow or errors, the turn stays on the
+tier already running, so a hiccup never costs a cold cache and a switch
+back; the line says so. With nothing running yet, or no key at all, the turn
+runs exactly as it would without the plugin, and the line says why. The only cost is the
 wait, capped at the timeout. Prompts are cut to their first 12,000
 characters before Jev sees them.
 

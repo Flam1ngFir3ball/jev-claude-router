@@ -1051,18 +1051,20 @@ describe("register: a bare go-ahead", () => {
     assert.equal(t.sent.model, "claude-fable-5-1", "held to fable, via the go-ahead");
   });
 
-  test("after an unrouted turn, a go-ahead stays on the session model without asking Jev", async () => {
+  test("when Jev fails, the turn stays on the tier running, and a go-ahead continues it", async () => {
     const { hooks, $, setTier, fail, fetches } = await started();
     setTier("fable", 0.9, 3);
     await turn(hooks, $, "u1", "plan it");
     fail();
-    await turn(hooks, $, "u2", "timeout turn");
+    const failed = await turn(hooks, $, "u2", "timeout turn");
+    assert.equal(failed.sent.model, "claude-fable-5-1", "stayed on fable, not a switch to the session model");
+    assert.match(failed.text, /kept fable: Jev /);
+    assert.doesNotMatch(failed.text, /Jev 0%/);
     const asked = fetches();
     setTier("haiku", 1, 0);
     const go = await turn(hooks, $, "u3", "yes");
     assert.equal(fetches(), asked, "Jev is not asked");
-    assert.equal(go.sent.model, undefined, "session model, not a stale fable or a haiku flip");
-    assert.match(go.text, /nothing to continue/);
+    assert.equal(go.sent.model, "claude-fable-5-1");
   });
 
   test("after /jev off then on, a go-ahead does not replay the pre-off route", async () => {
@@ -2742,29 +2744,27 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal((await turn(named.hooks, named.$, "n2", "use fable to plan the migration")).sent.model, "claude-fable-5-1");
   });
 
-  test("an unrouted turn warms the session model, and the next turn is priced from there", async () => {
-    // Jev timed out on a fable session: the turn ran on the session model
-    // (opus) and rewrote the cache there. Holding to fable afterwards would
-    // send the next turn to a cold fable cache while calling it a stay.
+  test("a Jev timeout on a fable session keeps fable warm, so nothing is rewritten either way", async () => {
     const { hooks, $, setTier, setContext, fail } = await boot();
     setContext(20_000);
     setTier("fable", 0.97, 3);
     assert.equal((await turn(hooks, $, "w1", "plan the migration")).sent.model, "claude-fable-5-1");
     setContext(250_000);
     fail();
-    await hooks.get("turn.start")!($, { text: "2", turnId: "w2" }, async (e: unknown) => e);
-    let sent: { model?: string } = { model: "unset" };
-    await collect(
-      hooks.get("turn.step")!($, { turnId: "w2", index: 0 }, (e: { model?: string }) => {
-        sent = e;
-        return answeredBy(e.model ?? "claude-opus-5-5");
-      }),
-    );
-    assert.equal(sent.model, undefined, "unrouted: left on the session model");
-    setTier("fable", 0.97, 3);
-    const t = await turn(hooks, $, "w3", "do one more audit");
-    assert.equal(t.sent.model, "claude-opus-5-5", "opus is what is warm now");
-    assert.match(t.text, /kept opus: fable costs \$\d+\.\d+ vs \$0\.\d+, over the \$1\.00 limit/);
+    const failed = await turn(hooks, $, "w2", "2");
+    assert.equal(failed.sent.model, "claude-fable-5-1", "no drop to the session model's cold cache");
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "w3", "3");
+    assert.equal(t.sent.model, "claude-fable-5-1", "still priced from fable, where the cache is");
+    assert.match(t.text, /kept fable: /);
+  });
+
+  test("with nothing Jev routed yet, a failure leaves the turn to the session model", async () => {
+    const { hooks, $, fail } = await boot();
+    fail();
+    const t = await turn(hooks, $, "nf1", "first prompt");
+    assert.equal(t.sent.model, undefined);
+    assert.match(t.text, /not routed/);
   });
 
   test("two sessions typing the same short prompt in the same minute are both routed", async () => {
