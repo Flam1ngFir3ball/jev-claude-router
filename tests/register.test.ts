@@ -2460,7 +2460,8 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(kit.fetches(), asked, "Jev was not asked about the XML");
     assert.equal(t.sent.model, "claude-fable-5-1", "the reply's own route continues");
     assert.doesNotMatch(t.text, /✳️/, "no second line under the open reply");
-    assert.match(t.text, /fable-5-1 ✓ medium/, "summarised on what answered");
+    // The reply it woke was summarised already: no second block.
+    assert.doesNotMatch(t.text, /% cached\)/, "no second summary under a closed reply");
     assert.match((await run(kit.hooks, kit.$, "")).text, /\[task finished\] Agent "reviewer" completed/);
   });
 
@@ -2640,6 +2641,23 @@ describe("register: audit regressions (2026-09-23)", () => {
     kit.setTier("opus", 0.95, 1);
     await turn(kit.hooks, kit.$, "long1", "x".repeat(200_000));
     assert.ok(JSON.stringify(shared.store.get("session:sess-LONG")).length < 20_000);
+  });
+
+  test("an agent that finishes before its reply's last response gets one summary, not two", async () => {
+    // agent.list says completed at the stop, so the summary is written
+    // there; the task's notification then wakes the loop once more.
+    const { hooks, $, setTier, setAgentStatus } = await boot();
+    setTier("fable", 0.95, 3);
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "q1" }, async (e: unknown) => e);
+    setAgentStatus("running");
+    await hooks.get("agent.spawn")!($, { prompt: "review the cluster", description: "Review", agentId: "agent-1" }, async (e: { agentId?: string }) => ({ ...e, agentId: "agent-1" }));
+    setAgentStatus("completed");
+    const first = (await collect(hooks.get("turn.step")!($, { turnId: "q1", index: 0 }, (e: { model: string }) => answeredBy(e.model))))
+      .filter((c) => c.kind === "text").map((c) => c.text).join("");
+    const xml = '<task-notification><task-id>agent-1</task-id><summary>Agent "Review" completed</summary></task-notification>';
+    const second = await turn(hooks, $, "q2", xml);
+    const both = first + second.text;
+    assert.equal(both.match(/% cached\)/g)?.length, 1, "one summary across the reply and its wake-up");
   });
 
   test("a prompt repeated by the same copy is routed each time", async () => {

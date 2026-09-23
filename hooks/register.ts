@@ -951,6 +951,11 @@ export function register(on: On) {
       : null;
     const softNotify =
       settings.notifyContinue && notification && continueFrom !== null;
+    // A task that finished before its reply's last response was summarised
+    // (its agent read as completed at that stop) wakes the loop after the
+    // summary. That turn is the tail of a reply already closed: it is
+    // counted and listed, and writes no second block.
+    const afterSummary = softNotify && reply.length === 0;
 
     // Jev is the long pole of the turn, so it is asked first and the
     // engine's own answers (context, surface) are read while it thinks.
@@ -1036,7 +1041,12 @@ export function register(on: On) {
 
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
-    record(attempt);
+    if (afterSummary) {
+      attempts.unshift(attempt);
+      attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
+    } else {
+      record(attempt);
+    }
     byTurn.set(e.turnId, attempt);
     trimByTurn();
 
