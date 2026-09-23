@@ -24,6 +24,10 @@ const stateWith = (shared: Attempt): State => ({
   reply: [shared],
   replyAgents: ["agent-1"],
   spawned: [["agent-1", shared]],
+  turns: [["turn-1", shared]],
+  decisions: [["turn-1", decision]],
+  pending: ["turn-1"],
+  stepped: ["agent-1"],
   running: decision,
   continueFrom: decision,
   latest: decision,
@@ -63,6 +67,28 @@ describe("persist", () => {
     // Usage folded into one after a reload shows in all three.
     (back.spawned[0]![1] as Attempt).cost = 0.5;
     assert.equal(back.attempts[0]!.cost, 0.5);
+  });
+
+  test("the turns in flight come back, sharing their attempt with the history", () => {
+    const shared: Attempt = { prompt: "plan it", ms: 1, decision };
+    const back = roundTrip(stateWith(shared))!;
+    assert.equal(back.turns[0]![0], "turn-1");
+    assert.equal(back.turns[0]![1], back.attempts[0]);
+    assert.deepEqual(back.decisions, [["turn-1", decision]]);
+    assert.deepEqual(back.pending, ["turn-1"]);
+    assert.deepEqual(back.stepped, ["agent-1"]);
+  });
+
+  test("a snapshot from before those fields existed still restores, with nothing in flight", () => {
+    const packed = JSON.parse(JSON.stringify(pack(stateWith({ prompt: "x", ms: 1, decision }))));
+    delete packed.turns;
+    delete packed.decisions;
+    delete packed.pending;
+    delete packed.stepped;
+    const back = unpack(packed)!;
+    assert.notEqual(back, null);
+    assert.deepEqual(back.turns, []);
+    assert.deepEqual(back.pending, []);
   });
 
   test("anything that is not a snapshot of this version is refused", () => {

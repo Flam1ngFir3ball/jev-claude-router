@@ -31,6 +31,16 @@ export type State = {
   reply: Attempt[];
   replyAgents: string[];
   spawned: [string, Attempt][];
+  /**
+   * The turns in flight: their attempts, their decisions, and which still
+   * await their route line. A reload mid-turn used to leave the rest of
+   * that turn unrouted, since its next step found nothing under its id.
+   */
+  turns: [string, Attempt][];
+  decisions: [string, Decision][];
+  pending: string[];
+  /** Agents whose first request has run, so a resumed one is not re-snapped. */
+  stepped: string[];
   running: Decision | null;
   continueFrom: Decision | null;
   latest: Decision | null;
@@ -43,12 +53,13 @@ export type State = {
   ceiling: Ceiling;
 };
 
-type Packed = Omit<State, "attempts" | "reply" | "spawned"> & {
+type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
   v: number;
   pool: Attempt[];
   attempts: number[];
   reply: number[];
   spawned: [string, number][];
+  turns: [string, number][];
 };
 
 /** The state as JSON data, attempts written once each. */
@@ -71,6 +82,10 @@ export function pack(state: State): Packed {
     reply: state.reply.map(ref),
     replyAgents: [...state.replyAgents],
     spawned: state.spawned.map(([id, a]) => [id, ref(a)]),
+    turns: state.turns.map(([id, a]) => [id, ref(a)]),
+    decisions: state.decisions,
+    pending: [...state.pending],
+    stepped: [...state.stepped],
     running: state.running,
     continueFrom: state.continueFrom,
     latest: state.latest,
@@ -111,13 +126,30 @@ export function unpack(raw: unknown): State | null {
   if (attempts === null || reply === null) return null;
   if (!Array.isArray(raw.spawned) || !Array.isArray(raw.replyAgents))
     return null;
-  const spawned: [string, Attempt][] = [];
-  for (const pair of raw.spawned) {
-    if (!Array.isArray(pair) || typeof pair[0] !== "string") return null;
-    const a = at(pair[1]);
-    if (a === null) return null;
-    spawned.push([pair[0], a]);
-  }
+  const pairs = (v: unknown): [string, Attempt][] | null => {
+    // Absent in a snapshot from before the field existed: nothing in flight.
+    if (v === undefined) return [];
+    if (!Array.isArray(v)) return null;
+    const out: [string, Attempt][] = [];
+    for (const pair of v) {
+      if (!Array.isArray(pair) || typeof pair[0] !== "string") return null;
+      const a = at(pair[1]);
+      if (a === null) return null;
+      out.push([pair[0], a]);
+    }
+    return out;
+  };
+  const spawned = pairs(raw.spawned);
+  const turns = pairs(raw.turns);
+  if (spawned === null || turns === null) return null;
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  const decisions: [string, Decision][] = Array.isArray(raw.decisions)
+    ? raw.decisions.filter(
+        (p): p is [string, Decision] =>
+          Array.isArray(p) && typeof p[0] === "string" && isRecord(p[1]),
+      )
+    : [];
   const decision = (v: unknown) => (isRecord(v) ? (v as Decision) : null);
   const lastUsage =
     isRecord(raw.lastUsage) &&
@@ -133,6 +165,10 @@ export function unpack(raw: unknown): State | null {
       (id): id is string => typeof id === "string",
     ),
     spawned,
+    turns,
+    decisions,
+    pending: strings(raw.pending),
+    stepped: strings(raw.stepped),
     running: decision(raw.running),
     continueFrom: decision(raw.continueFrom),
     latest: decision(raw.latest),

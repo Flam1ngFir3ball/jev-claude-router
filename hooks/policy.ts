@@ -641,7 +641,7 @@ export type Ceiling = Record<Tier, Effort>;
 export const DEFAULT_CEILING: Effort = "medium";
 
 /** Ladder position of an effort, low to high. */
-export function effortRank(effort: Effort): number {
+function effortRank(effort: Effort): number {
   return EFFORTS.indexOf(effort);
 }
 

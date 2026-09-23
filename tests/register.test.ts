@@ -1015,7 +1015,7 @@ describe("register: a bare go-ahead", () => {
     // request ran as high; the go-ahead carries what Jev asked, medium.
     assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "no round trip for a go-ahead");
-    assert.match(second.text, /fable · medium effort · Jev 90% sure · continuing without asking Jev · 0ms/);
+    assert.match(second.text, /fable · medium effort · continuing without asking Jev · 0ms/);
   });
 
   test("does not carry a hold tag over from the turn it continues", async () => {
@@ -2112,6 +2112,56 @@ describe("register: a reload of the module", () => {
     assert.equal((await turn(kit.hooks, kit.$, "f1")).sent.model, "claude-opus-5-5");
   });
 
+  test("a reload in the middle of a turn keeps the rest of that turn routed, with one line", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-M" };
+    const before = await boot(shared);
+    before.setTier("fable", 0.95, 3);
+    await before.hooks.get("turn.start")!(before.$, { text: "plan it", turnId: "m1" }, async (e: unknown) => e);
+    const first = await collect(
+      before.hooks.get("turn.step")!(before.$, { turnId: "m1", index: 0 }, (e: { model: string }) =>
+        answeredBy(e.model, "tool_use"),
+      ),
+    );
+    assert.match(first.filter((c) => c.kind === "text").map((c) => c.text).join(""), /✳️/);
+
+    const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    let sent: { model?: string; effort?: string } = {};
+    const rest = await collect(
+      after.hooks.get("turn.step")!(after.$, { turnId: "m1", index: 1 }, (e: { model: string; effort: string }) => {
+        sent = e;
+        return answeredBy(e.model);
+      }),
+    );
+    const out = rest.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.equal(sent.model, "claude-fable-5-1", "still routed after the reload");
+    assert.doesNotMatch(out, /✳️/, "the route line is not written a second time");
+    assert.match(out, /Model  answered by claude-fable-5-1 ✓/, "and the reply is summarised");
+  });
+
+  test("a reload mid-agent does not treat the agent's next request as its first", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-N" };
+    const before = await boot(shared);
+    before.setTier("fable", 0.9, 1);
+    await before.hooks.get("agent.spawn")!(
+      before.$,
+      { prompt: "plan it", description: "plan it", subagentType: "Plan", fork: false },
+      async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "agent-1" }),
+    );
+    const step = async (kit: typeof before, id: string) => {
+      let sent: { effort?: string } = {};
+      await collect(
+        kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, agentId: "agent-1" }, (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        }),
+      );
+      return sent.effort;
+    };
+    assert.equal(await step(before, "x1"), "high", "first request: medium runs as high");
+    const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    assert.equal(await step(after, "x2"), "medium", "after the reload, Jev's ask");
+  });
+
   test("only the last twenty sessions are kept", async () => {
     const store = new Map<string, unknown>();
     for (let i = 0; i < 25; i++) store.set(`session:old-${i}`, { v: 1 });
@@ -2215,6 +2265,28 @@ describe("register: audit regressions (2026-09-23)", () => {
     await turn(hooks, $, "k2", "something new");
     assert.equal(JSON.stringify(shared.store.get("session:sess-R")), before);
     assert.ok(shared.store.has("session:sess-R2"));
+  });
+
+  test("/clear works whenever the engine rotates the id: after the event too", async () => {
+    const { hooks, $, setTier, shared } = await boot();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "l1");
+    const before = JSON.stringify(shared.store.get("session:sess-R"));
+    await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
+    shared.id = "sess-R3";
+    setTier("opus", 0.9, 1);
+    await turn(hooks, $, "l2", "something new");
+    assert.equal(JSON.stringify(shared.store.get("session:sess-R")), before);
+    assert.ok(shared.store.has("session:sess-R3"));
+  });
+
+  test("a /clear whose id never rotates is not undone by restoring the old state", async () => {
+    const { hooks, $, setTier } = await boot();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "u1", "plan the old thing");
+    await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
+    const status = (await run(hooks, $, "")).text;
+    assert.match(status, /No turns yet/);
   });
 
   test("the model a resume restores is not a move", async () => {

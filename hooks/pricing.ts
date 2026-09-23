@@ -79,7 +79,7 @@ export function tierOfModel(model: string): Tier | null {
 }
 
 /** Token counts as the engine's `TurnUsage` carries them. */
-export type Tokens = {
+type Tokens = {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
@@ -124,7 +124,7 @@ export const WINDOW_TOKENS: Record<Tier, number> = {
 };
 
 /** Room left for the prompt and the reply when a turn is judged to fit. */
-export const WINDOW_HEADROOM_TOKENS = 16_000;
+const WINDOW_HEADROOM_TOKENS = 16_000;
 
 /** True when a turn carrying `contextTokens` can be sent to `tier` at all. */
 export function fitsWindow(tier: Tier, contextTokens: number): boolean {

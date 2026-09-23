@@ -87,8 +87,8 @@ const MID_TURN: ReadonlySet<string> = new Set([
 
 /**
  * Everything the router reads from the environment, read once. None of it
- * changes within a session, and reading eleven variables on every turn was
- * eleven awaits ahead of the Jev call. `sticky` and `ceiling` start here
+ * changes within a session, and reading fourteen variables on every turn was
+ * fourteen awaits ahead of the Jev call. `sticky` and `ceiling` start here
  * and are then owned by `/jev sticky` and `/jev ceiling`.
  */
 type Settings = {
@@ -424,12 +424,18 @@ export function register(on: On) {
    */
   let snapshotKey: string | null | undefined = undefined;
   let savedOnce = false;
+  /** False right after `/clear`: the next key lookup must not restore. */
+  let restoreOnKey = true;
 
   const stateNow = (): State => ({
     attempts,
     reply,
     replyAgents: [...replyAgents],
     spawned: [...spawned.entries()],
+    turns: [...byTurn.entries()],
+    decisions: [...decisions.entries()],
+    pending: [...pending],
+    stepped: [...stepped],
     running,
     continueFrom,
     latest,
@@ -450,6 +456,14 @@ export function register(on: On) {
     replyAgents = new Set(s.replyAgents);
     spawned.clear();
     for (const [id, a] of s.spawned) spawned.set(id, a);
+    byTurn.clear();
+    for (const [id, a] of s.turns) byTurn.set(id, a);
+    decisions.clear();
+    for (const [id, d] of s.decisions) decisions.set(id, d);
+    pending.clear();
+    for (const id of s.pending) pending.add(id);
+    stepped.clear();
+    for (const id of s.stepped) stepped.add(id);
     running = s.running;
     continueFrom = s.continueFrom;
     latest = s.latest;
@@ -486,7 +500,9 @@ export function register(on: On) {
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
-      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(await loadSnapshot($, snapshotKey));
+      restoreOnKey = true;
     }
     sessionModel = await sessionModelOf($);
     return next(e);
@@ -498,12 +514,18 @@ export function register(on: On) {
   // `/clear` starts a new conversation: nothing is running.
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear") {
-      // A new conversation, and a new transcript id: save under that, so a
-      // later resume of the old session restores the old session's state.
+      // A new conversation, and a new transcript id: its state is saved
+      // under that, so a later resume of the old session restores the old
+      // session's. The engine does not say when the id rotates, so the key
+      // is looked up again on the next hook, when it has — and that lookup
+      // must not restore, or it would undo the clear.
       clearRouting();
       reply = [];
       replyAgents = new Set();
-      snapshotKey = await snapshotKeyOf($);
+      snapshotKey = undefined;
+      restoreOnKey = false;
+      attempts.length = 0;
+      spent = 0;
       savedOnce = false;
     }
     if (
@@ -555,7 +577,9 @@ export function register(on: On) {
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
-      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(await loadSnapshot($, snapshotKey));
+      restoreOnKey = true;
     }
     const arg = e.args.trim().toLowerCase();
 
@@ -637,7 +661,9 @@ export function register(on: On) {
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
-      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(await loadSnapshot($, snapshotKey));
+      restoreOnKey = true;
     }
     if (surface === null) surface = await surfaceOf($);
     const { offered, ceiling } = settings;
@@ -786,7 +812,9 @@ export function register(on: On) {
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
-      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(await loadSnapshot($, snapshotKey));
+      restoreOnKey = true;
     }
 
     // Routing off is authoritative for every step, including subagents whose
@@ -878,6 +906,8 @@ export function register(on: On) {
             ...chunk,
             text: `${liveLine(attempt)}${REPLY_SEPARATOR}${chunk.text}`,
           };
+          // Saved now, so a reload later in the turn does not write it twice.
+          if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
           continue;
         }
       }
@@ -968,7 +998,9 @@ export function register(on: On) {
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
-      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(await loadSnapshot($, snapshotKey));
+      restoreOnKey = true;
     }
 
     const attempt = spawnAttemptOf(

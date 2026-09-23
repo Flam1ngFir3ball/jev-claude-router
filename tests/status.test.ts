@@ -460,6 +460,15 @@ describe("the reply summary", () => {
     assert.match(replySummary([held, second])!, /Note   turn 1: stayed on fable/);
   });
 
+  test("a go-ahead claims no confidence: Jev was not asked (seen live: 'Jev only 0% sure')", () => {
+    const afterForced = continuationOf("yes", { ...decision, confidence: 0, forced: true });
+    addUsage(afterForced, usageOf("claude-fable-5-1"));
+    const s = replySummary([afterForced])!;
+    assert.doesNotMatch(s, /sure/);
+    assert.match(s, /at xhigh effort · 0ms/);
+    assert.doesNotMatch(liveLine(afterForced), /sure/);
+  });
+
   test("a go-ahead and a capped turn are noted; a forced one is not, since you asked", () => {
     const go = continuationOf("yes", decision);
     addUsage(go, usageOf("claude-fable-5-1"));

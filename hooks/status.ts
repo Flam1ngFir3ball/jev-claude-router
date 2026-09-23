@@ -242,7 +242,7 @@ export type Status = {
  * it is likely to produce (the last turn's, or a typical one), and which
  * cache the session writes.
  */
-export type Economics = {
+type Economics = {
   contextTokens: number;
   outputTokens: number;
   ttl: Ttl;
@@ -256,7 +256,7 @@ export type Economics = {
  * most effort each tier may be asked for; `economics` what a downgrade is
  * priced against, absent when nothing is known about the context yet.
  */
-export type Hold = {
+type Hold = {
   sticky: number | null;
   running: Decision | null;
   forced?: Tier | null;
@@ -483,8 +483,12 @@ function shorten(text: string, width = 44): string {
   return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
 }
 
-/** `Jev 57% sure`, or `Jev only 24% sure` under the mark; empty when Jev was not asked. */
-function sureOf(d: Decision): string {
+/**
+ * `Jev 57% sure`, or `Jev only 24% sure` under the mark; empty when Jev was
+ * not asked this turn: a named tier, a go-ahead, or the engine's nudge.
+ */
+function sureOf(d: Decision, kind?: Attempt["kind"]): string {
+  if (kind === "continue" || kind === "nudge") return "";
   if (d.forced && d.confidence === 0) return "";
   return `Jev ${d.confidence < LOW_CONFIDENCE ? "only " : ""}${pct(d.confidence)} sure`;
 }
@@ -503,7 +507,7 @@ function attemptLine(attempt: Attempt): string {
   const d = attempt.decision;
   // A held turn's reason carries the confidence; saying it twice is noise.
   const notes = [
-    ...(d.held === undefined ? [sureOf(d)] : []),
+    ...(d.held === undefined ? [sureOf(d, attempt.kind)] : []),
     ...reasonsOf(attempt),
   ].filter((n) => n !== "");
   return `  ${when}  ${d.tier}·${d.effort}  ${notes.join("; ")}  ${what}`;
@@ -579,7 +583,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
       const d = only.decision;
       const who = only.usage ? answeredBy(only) : `${d.model}`;
       const how = [
-        d.forced ? "as you asked" : sureOf(d),
+        d.forced ? "as you asked" : sureOf(d, only.kind),
         `${only.ms}ms`,
       ]
         .filter((s) => s !== "")
@@ -807,7 +811,7 @@ export function liveLine(attempt: Attempt): string {
   const parts = [
     d.tier,
     `${d.effort} effort`,
-    ...(d.held === undefined ? [sureOf(d)] : []),
+    ...(d.held === undefined ? [sureOf(d, attempt.kind)] : []),
     ...reasonsOf(attempt),
     ...(originOf(attempt) ? [originOf(attempt)!] : []),
     `${attempt.ms}ms`,
