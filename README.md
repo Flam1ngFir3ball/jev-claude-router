@@ -33,10 +33,11 @@ reply        > ✳️ fable · medium · Jev 97% · capped from xhigh · 641ms
 | Price checks | A move to a cheaper tier only happens if it saves money, cache included. A move to a dearer tier is held when rewriting the cache would cost more than $1 over staying. |
 | Context-window guard | A turn never goes to a tier whose window it does not fit. |
 | Effort ceiling | Caps the effort each tier may be asked for. The default is `medium` on every tier. |
-| Go-aheads and named tiers | "yes" continues on the last turn's tier without asking Jev; "use opus" routes straight to opus. |
+| Go-aheads, wake-ups and named tiers | "yes" continues on the last turn's tier without asking Jev, and so does a turn the engine starts when a background task finishes; "use opus" routes straight to opus. |
 | Subagents | Each spawned agent is routed on its own task. |
 | Route line and summary | One line at the top of each reply, one cost summary under it. |
 | `/jev` | Status, settings and the recent turns, each with the reason for its route. |
+| First-request effort | Fable runs `medium` as `high` on a conversation's first request; the router sends `high` there and says so, and only there. |
 | Session state | Routing history, spend and settings survive a plugin reload. |
 | One copy acts | However many copies of the plugin are loaded, only one routes a turn and writes its line and summary. |
 | Fails open | Any failure leaves the turn exactly as it would run without the plugin, and the line says why. |
@@ -133,6 +134,8 @@ turn 2: kept fable: haiku costs $4.41 vs $0.13
 ```
 
 Lines after the first appear only when something did not run as Jev asked.
+A task that finishes after its reply's summary was written wakes the loop
+once more; that turn is listed in `/jev` and adds no second block.
 
 The model sees past lines and summaries in its own replies and can write
 look-alikes with invented figures. The plugin removes a route line at the
