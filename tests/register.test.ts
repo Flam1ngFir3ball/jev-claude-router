@@ -1708,14 +1708,39 @@ describe("register: a conversation's first request", () => {
     assert.match(t.text, /fable · medium/);
   });
 
-  test("a compaction makes the next request a first one again", async () => {
+  test("a compaction does not make the next request a first one (measured: medium runs as medium there)", async () => {
     const { hooks, $, setTier, setContext } = await started();
     setContext(50_000);
     setTier("fable", 0.9, 1);
     assert.equal((await turn(hooks, $, "f5")).sent.effort, "medium");
     await hooks.get("session.compact")!($, { trigger: "auto" }, async (e: unknown) => e);
     setContext(null);
-    assert.equal((await turn(hooks, $, "f6")).sent.effort, "high");
+    assert.equal((await turn(hooks, $, "f6")).sent.effort, "medium");
+  });
+
+  test("/clear starts a conversation whose first request is a first one again", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(50_000);
+    setTier("fable", 0.9, 1);
+    assert.equal((await turn(hooks, $, "f7")).sent.effort, "medium");
+    await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
+    setContext(null);
+    assert.equal((await turn(hooks, $, "f8")).sent.effort, "high");
+  });
+
+  test("the first-request fact survives a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-FIRST" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "0" };
+    const before = load(env, shared);
+    await before.hooks.get("session.start")!(before.$, {}, async (e: unknown) => e);
+    before.setContext(null);
+    before.setTier("fable", 0.9, 1);
+    assert.equal((await turn(before.hooks, before.$, "r1", "plan it")).sent.effort, "high");
+    const after = load(env, shared);
+    await after.hooks.get("session.start")!(after.$, {}, async (e: unknown) => e);
+    after.setContext(null);
+    after.setTier("fable", 0.9, 1);
+    assert.equal((await turn(after.hooks, after.$, "r2", "and more")).sent.effort, "medium");
   });
 
   test("a fable subagent's first step is sent as high, its later steps as asked", async () => {

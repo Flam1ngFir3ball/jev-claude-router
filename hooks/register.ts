@@ -507,6 +507,14 @@ export function register(on: On) {
   let inert = false;
   /** The engine said the resumed session's cache has expired, and no response has written it since. */
   let cacheExpired = false;
+  /**
+   * A response has been received in this conversation. The engine runs some
+   * efforts as others on a conversation's first request only
+   * (FIRST_TURN_EFFORT); measured 2026-09-23, the first request after a
+   * compaction runs the effort asked for, so a compaction does not reset
+   * this. A `/clear` does: it is a new conversation.
+   */
+  let answered = false;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
   /** Agents whose reply's summary has been written: their wake-up joins no other. */
@@ -653,6 +661,7 @@ export function register(on: On) {
     spent,
     enabled,
     announce,
+    answered,
     sticky: settings?.sticky ?? null,
     ceiling: settings?.ceiling ?? ceilingAt("medium"),
   });
@@ -681,6 +690,7 @@ export function register(on: On) {
     spent = s.spent;
     enabled = s.enabled;
     announce = s.announce;
+    answered = s.answered;
     if (settings !== null) {
       settings.sticky = s.sticky;
       settings.ceiling = s.ceiling;
@@ -747,6 +757,7 @@ export function register(on: On) {
       restoreOnKey = false;
       attempts.length = 0;
       spent = 0;
+      answered = false;
       savedOnce = false;
     }
     // The cache has expired: what is running is still known, and the next
@@ -1041,7 +1052,12 @@ export function register(on: On) {
       // honours the ask there. An engine without the count is read the
       // same way from our own record. The route line and the request say
       // what will run; `running`, below, keeps what Jev asked.
-      if (reported === null && lastUsage === null && "decision" in attempt) {
+      if (
+        !answered &&
+        reported === null &&
+        lastUsage === null &&
+        "decision" in attempt
+      ) {
         attempt.decision = firstTurnEffort(attempt.decision);
       }
     }
@@ -1144,9 +1160,10 @@ export function register(on: On) {
           // from the session model.
           if (e.agentId === undefined) {
             cacheExpired = false;
-            const answered = warmDecision(u.model, e.effort);
-            if (answered !== null) {
-              running = answered;
+            answered = true;
+            const warm = warmDecision(u.model, e.effort);
+            if (warm !== null) {
+              running = warm;
               lastUsage = { context: carriedOf(u), output: u.output_tokens };
             }
           }
@@ -1299,22 +1316,24 @@ export function register(on: On) {
             // timed out) runs on the session model and rewrites the cache
             // there; holding to the tier routed before it would send the
             // next turn to a cold cache while calling it a stay.
-            // Whatever the resume said had expired, this response wrote.
+            // Whatever the resume said had expired, this response wrote,
+            // and no later request is the conversation's first.
             cacheExpired = false;
-            const answered = warmDecision(usage.model, e.effort);
+            answered = true;
+            const warm = warmDecision(usage.model, e.effort);
             const unrouted = attempt === undefined || !("decision" in attempt);
             if (
-              answered !== null &&
+              warm !== null &&
               (running === null ||
-                baseModel(running.model) !== baseModel(answered.model))
+                baseModel(running.model) !== baseModel(warm.model))
             ) {
-              running = answered;
-            } else if (answered !== null && running !== null && unrouted) {
+              running = warm;
+            } else if (warm !== null && running !== null && unrouted) {
               // Same model, but the session's own effort ran and is what
               // the cache holds; Jev's earlier effort is no longer warm.
               const { effortConfidence: _, ...rest } = running;
               void _;
-              running = { ...rest, effort: answered.effort };
+              running = { ...rest, effort: warm.effort };
             }
           }
           // A step that ends the turn always saves; one that continues it

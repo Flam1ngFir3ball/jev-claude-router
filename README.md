@@ -249,8 +249,10 @@ with `/jev ceiling`.
 
 Fable 5.1 runs `medium` as `high` on the first request of a conversation, so
 the router sends `high` there and says so (`FIRST_TURN_EFFORT` in
-`policy.ts`). Claude Code sends no effort to Sonnet 5, so its effort setting
-has no effect.
+`policy.ts`). Only the first request counts: after a compaction the effort
+asked for is the effort that runs; `/clear` starts a new conversation.
+Claude Code sends no effort to Sonnet 5, so its effort setting has no
+effect.
 
 ### Go-aheads and wake-ups
 

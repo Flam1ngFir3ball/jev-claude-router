@@ -49,6 +49,8 @@ export type State = {
   spent: number;
   enabled: boolean;
   announce: boolean;
+  /** A response has been received in this conversation: no request is its first any more. */
+  answered: boolean;
   sticky: number | null;
   ceiling: Ceiling;
 };
@@ -94,6 +96,7 @@ export function pack(state: State): Packed {
     spent: state.spent,
     enabled: state.enabled,
     announce: state.announce,
+    answered: state.answered,
     sticky: state.sticky,
     ceiling: state.ceiling,
   };
@@ -178,6 +181,8 @@ export function unpack(raw: unknown): State | null {
     spent: typeof raw.spent === "number" ? raw.spent : 0,
     enabled: raw.enabled !== false,
     announce: raw.announce !== false,
+    // A snapshot from before this field exists has turns behind it.
+    answered: raw.answered !== false,
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
     ceiling: raw.ceiling as Ceiling,
   };
