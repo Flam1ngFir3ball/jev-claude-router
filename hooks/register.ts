@@ -237,7 +237,7 @@ export function register(on: On) {
   /** True once sticky has been seeded from env or set by `/jev sticky`. */
   let stickyReady = false;
   /**
-   * Tiers for which xhigh (and max) effort is blocked. Defaults to every
+   * Tiers for which xhigh+ effort is blocked. Defaults to every
    * tier (cap at high) until seeded; `JEV_ROUTER_XHIGH_OFF` and `/jev xhigh`
    * override from then on.
    */

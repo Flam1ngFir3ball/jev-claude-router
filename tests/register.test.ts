@@ -936,6 +936,100 @@ describe("register: the xhigh subcommand", () => {
   });
 });
 
+describe("register: the max and ultra subcommands", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "plan the architecture", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  const openHigh = {
+    AI_GATEWAY_API_KEY: "gw-key",
+    JEV_ROUTER_MEDIUM_OFF: "0",
+    JEV_ROUTER_XHIGH_OFF: "0",
+  };
+
+  test("default max+ultra off: Jev’s max caps at xhigh once ceilings are open", async () => {
+    const { hooks, $, setTier } = load({
+      ...openHigh,
+      JEV_ROUTER_MAX_OFF: "1",
+      JEV_ROUTER_ULTRA_OFF: "1",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 4);
+    const t = await turn(hooks, $, "mu0");
+    assert.equal(t.sent.effort, "xhigh");
+    assert.match(t.text, /capped:max/);
+  });
+
+  test("/jev max on allows max; ultra still capped", async () => {
+    const { hooks, $, setTier } = load({
+      ...openHigh,
+      JEV_ROUTER_MAX_OFF: "1",
+      JEV_ROUTER_ULTRA_OFF: "1",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    await run(hooks, $, "max on");
+    setTier("fable", 0.9, 4);
+    assert.equal((await turn(hooks, $, "mu1")).sent.effort, "max");
+    setTier("fable", 0.9, 5);
+    const ultra = await turn(hooks, $, "mu2");
+    assert.equal(ultra.sent.effort, "max");
+    assert.match(ultra.text, /capped:ultra/);
+  });
+
+  test("/jev ultra on is independent of max", async () => {
+    const { hooks, $, setTier } = load({
+      ...openHigh,
+      JEV_ROUTER_MAX_OFF: "0",
+      JEV_ROUTER_ULTRA_OFF: "1",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    await run(hooks, $, "ultra on");
+    setTier("fable", 0.9, 5);
+    assert.equal((await turn(hooks, $, "mu3")).sent.effort, "ultra");
+    assert.match((await run(hooks, $, "")).text, /ultra\s+on/);
+  });
+
+  test("JEV_ROUTER_MAX_OFF=0 and ULTRA_OFF=0 allow both", async () => {
+    const { hooks, $, setTier } = load({
+      ...openHigh,
+      JEV_ROUTER_MAX_OFF: "0",
+      JEV_ROUTER_ULTRA_OFF: "0",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 5);
+    assert.equal((await turn(hooks, $, "mu4")).sent.effort, "ultra");
+  });
+});
+
 describe("register: the medium subcommand", () => {
   const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
     hooks.get('command.run:{"command":"jev"}')!($, { args });

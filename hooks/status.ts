@@ -158,7 +158,7 @@ export type Status = {
   lowOff: readonly Tier[];
   /** Tiers for which high+ effort is blocked (cap at medium). */
   mediumOff: readonly Tier[];
-  /** Tiers for which xhigh (and max) effort is blocked. */
+  /** Tiers for which xhigh+ effort is blocked (cap at high). */
   xhighOff: readonly Tier[];
   /** Tiers for which max+ effort is blocked (cap at xhigh). */
   maxOff: readonly Tier[];
@@ -708,7 +708,7 @@ function effortBlockCommand(
 
 /**
  * Reads `/jev low`, `/jev low off`, `/jev low on`, `/jev low off opus`.
- * Turns off (or back on) effort above low — medium through max.
+ * Turns off (or back on) effort above low — medium through ultra.
  */
 export function lowCommand(
   rest: string,
@@ -721,7 +721,7 @@ export function lowCommand(
 function lowReply(off: ReadonlySet<Tier>): string {
   if (off.size === 0) {
     return (
-      "medium and above allowed (medium/xhigh still have their own switches). " +
+      "medium and above allowed (medium/xhigh/max/ultra still have their own switches). " +
       "/jev low off blocks medium and above everywhere; " +
       "/jev low off opus blocks one tier."
     );
@@ -740,8 +740,8 @@ function lowReply(off: ReadonlySet<Tier>): string {
 
 /**
  * Reads `/jev medium`, `/jev medium off`, `/jev medium on`, `/jev medium off opus`,
- * `/jev medium on fable`. Turns off (or back on) effort above medium — high,
- * xhigh, and max — for every tier or for named ones.
+ * `/jev medium on fable`. Turns off (or back on) effort above medium — high
+ * through ultra — for every tier or for named ones.
  */
 export function mediumCommand(
   rest: string,
@@ -759,7 +759,7 @@ export function mediumCommand(
 function mediumReply(off: ReadonlySet<Tier>): string {
   if (off.size === 0) {
     return (
-      "high allowed on every tier (xhigh still has its own switch). " +
+      "high allowed on every tier (xhigh/max/ultra still have their own switches). " +
       "/jev medium off blocks high and above everywhere; " +
       "/jev medium off opus blocks one tier."
     );
@@ -779,7 +779,7 @@ function mediumReply(off: ReadonlySet<Tier>): string {
 /**
  * Reads `/jev xhigh`, `/jev xhigh off`, `/jev xhigh on`, `/jev xhigh off opus`,
  * `/jev xhigh on fable`. Turns off (or back on) effort at or above xhigh —
- * both xhigh and max — for every tier or for named ones. `current` is the
+ * xhigh, max, and ultra — for every tier or for named ones. `current` is the
  * session's blocked set.
  */
 export function xhighCommand(
