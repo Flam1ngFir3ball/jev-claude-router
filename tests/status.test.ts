@@ -467,6 +467,7 @@ describe("the reply summary", () => {
     const forced: Attempt = { prompt: "use opus", ms: 0, decision: { ...decision, forced: true } };
     addUsage(forced, usageOf("claude-fable-5-1"));
     assert.doesNotMatch(replySummary([forced])!, /Note/);
+    assert.match(replySummary([forced])!, /at xhigh effort · as you asked, 0ms/);
     const capped: Attempt = { prompt: "x", ms: 1, decision: { ...decision, effort: "medium", cappedEffort: "max" } };
     addUsage(capped, usageOf("claude-fable-5-1"));
     assert.match(replySummary([capped])!, /Note   capped from max/);

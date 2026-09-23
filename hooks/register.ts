@@ -10,6 +10,7 @@ import { labelOf, withLabel } from "./label.ts";
 import {
   asAsked,
   ceilingOf,
+  effortNamed,
   excludedTiers,
   firstTurnEffort,
   isContinuation,
@@ -46,6 +47,7 @@ import {
   stickyCommand,
   toggleReply,
   TYPICAL_OUTPUT_TOKENS,
+  unknownCommandReply,
   type AgentTag,
   type Attempt,
 } from "./status.ts";
@@ -432,6 +434,20 @@ export function register(on: On) {
       );
       settings.ceiling = result.ceiling;
       return { text: result.text };
+    }
+
+    // `/jev medium`, `/jev xhigh fable`: an effort on its own is the ceiling
+    // command's shorthand. The removed toggles (`/jev xhigh on`) are named
+    // and pointed at their replacement rather than silently read as status.
+    const [head, ...rest] = sub.split(/\s+/);
+    if (head !== undefined && head !== "") {
+      const legacy = rest[0] === "on" || rest[0] === "off";
+      if ((effortNamed(head) !== null || head === "ultra") && !legacy) {
+        const result = ceilingCommand(sub, settings.ceiling);
+        settings.ceiling = result.ceiling;
+        return { text: result.text };
+      }
+      return { text: unknownCommandReply(sub, legacy) };
     }
 
     if (surface === null) surface = await $.session.surface();

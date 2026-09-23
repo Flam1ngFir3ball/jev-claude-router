@@ -551,7 +551,12 @@ export function replySummary(turns: readonly Attempt[]): string | null {
     if ("decision" in only) {
       const d = only.decision;
       const who = only.usage ? answeredBy(only) : `${d.model}`;
-      const how = [sureOf(d), `${only.ms}ms`].filter((s) => s !== "").join(", ");
+      const how = [
+        d.forced ? "as you asked" : sureOf(d),
+        `${only.ms}ms`,
+      ]
+        .filter((s) => s !== "")
+        .join(", ");
       rows.push(`Model  ${who} at ${d.effort} effort · ${how}`);
     } else {
       rows.push(
@@ -790,6 +795,20 @@ export const REPLY_SEPARATOR = "\n\n---\n\n";
  * the fence opens a block of its own instead of joining the last paragraph.
  */
 export const FOOTER_SEPARATOR = "\n\n";
+
+/**
+ * The reply to a `/jev` argument nothing reads. A removed toggle
+ * (`/jev xhigh on`) is pointed at the ceiling that replaced it.
+ */
+export function unknownCommandReply(arg: string, legacy: boolean): string {
+  const usage =
+    "/jev (status), on, off, quiet, loud, sticky [off|0.6], " +
+    "ceiling <effort> [tiers], or an effort on its own (/jev xhigh fable).";
+  return legacy
+    ? `"/jev ${arg}" was one of the old effort toggles; the ceiling replaced them. ` +
+        `Try /jev ceiling xhigh to allow up to xhigh, or /jev ceiling medium to cap there. ${usage}`
+    : `"/jev ${arg}" is not a command. ${usage}`;
+}
 
 /** The reply to `/jev quiet` and `/jev loud`. */
 export function announceReply(announce: boolean): string {

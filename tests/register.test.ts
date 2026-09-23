@@ -1589,6 +1589,29 @@ describe("register: the ceiling subcommand", () => {
     assert.equal((await turn(hooks, $, "c6")).sent.effort, "max");
   });
 
+  test("an effort on its own is the ceiling's shorthand", async () => {
+    const { hooks, $, setTier } = await started();
+    assert.match((await run(hooks, $, "xhigh fable")).text, /medium \(fable: xhigh\)/);
+    setTier("fable", 0.9, 3);
+    assert.equal((await turn(hooks, $, "sh1")).sent.effort, "xhigh");
+    assert.match((await run(hooks, $, "medium")).text, /medium for all/);
+  });
+
+  test("a removed toggle is named and pointed at the ceiling, and changes nothing", async () => {
+    const { hooks, $ } = await started();
+    const r = await run(hooks, $, "xhigh on");
+    assert.match(r.text, /old effort toggles/);
+    assert.match(r.text, /\/jev ceiling xhigh/);
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
+  });
+
+  test("an unknown argument says so instead of printing the status", async () => {
+    const { hooks, $ } = await started();
+    const r = await run(hooks, $, "frobnicate");
+    assert.match(r.text, /"\/jev frobnicate" is not a command/);
+    assert.doesNotMatch(r.text, /routing\s+on/);
+  });
+
   test("an unreadable effort changes nothing and says so", async () => {
     const { hooks, $ } = await started();
     const r = await run(hooks, $, "ceiling ultra");
