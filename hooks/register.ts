@@ -56,7 +56,7 @@ import {
   toggleReply,
   TYPICAL_OUTPUT_TOKENS,
   unknownCommandReply,
-  withoutImitations,
+  ImitationFilter,
   type AgentTag,
   type Attempt,
 } from "./status.ts";
@@ -1128,25 +1128,35 @@ export function register(on: On) {
     // writes nothing a second time, whatever put two copies in the chain.
     let summarised = false;
 
-    for await (let chunk of step) {
-      const at = (chunk as { index?: unknown }).index;
+    // What the model streams carries a ref; a route line or summary in it is
+    // one the model copied from its past replies, not one a copy wrote. The
+    // filter takes those out as the text streams. Only the copy holding the
+    // turn filters: an older copy chained around it would take the holder's
+    // real line for a copy. Decided at the first text piece.
+    type StepChunk = typeof step extends AsyncIterable<infer C> ? C : never;
+    type TextChunk = Extract<StepChunk, { kind: "text" }>;
+    let filter: ImitationFilter<TextChunk> | null | undefined;
+
+    for await (const raw of step) {
+      const at = (raw as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
-      if (chunk.kind === "text") {
-        if (chunk.ref === undefined && SUMMARY.test(chunk.text)) summarised = true;
-        // What the model streamed carries a ref; a line or summary in it is
-        // one the model copied from its past replies, not one a copy wrote.
-        // Only the copy holding the turn does this: an older copy chained
-        // around it would take the holder's real line for a copy.
-        if (attempt && !inert && chunk.ref !== undefined) {
-          const own = withoutImitations(chunk.text);
-          if (
-            own !== chunk.text &&
+      let pieces: StepChunk[] = [raw];
+      if (raw.kind === "text" && raw.ref !== undefined && attempt && !inert) {
+        if (filter === undefined)
+          filter =
             !superseded() &&
             (await holdsTurnOf(e.turnId)) &&
             !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
-          )
-            chunk = { ...chunk, text: own };
-        }
+              ? new ImitationFilter<TextChunk>()
+              : null;
+        if (filter) pieces = filter.push(raw);
+      } else if (filter) {
+        pieces = [...filter.end(), raw];
+      }
+
+      for (const chunk of pieces) {
+      if (chunk.kind === "text") {
+        if (chunk.ref === undefined && SUMMARY.test(chunk.text)) summarised = true;
         if (attempt && pending.has(e.turnId)) {
           // The line is this turn's either way; a copy that lost the session
           // since the turn began leaves it to the owner, once, and a line an
@@ -1237,7 +1247,10 @@ export function register(on: On) {
       }
 
       yield chunk;
+      }
     }
+    // A stream that ended without a stop chunk still gets what was held.
+    if (filter) for (const chunk of filter.end()) yield chunk;
   });
 
   // A subagent is routed at its spawn, the one moment its task is in hand as

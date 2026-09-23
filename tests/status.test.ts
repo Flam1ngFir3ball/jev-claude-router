@@ -24,6 +24,7 @@ import {
   type Attempt,
   type Usage,
   withoutImitations,
+  ImitationFilter,
 } from "../hooks/status.ts";
 import {
   ceilingAt,
@@ -988,5 +989,48 @@ describe("withoutImitations", () => {
   test("leaves ordinary text and code blocks alone", () => {
     const text = "Run this:\n\n```bash\nnpm test\n```";
     assert.equal(withoutImitations(text), text);
+  });
+});
+
+describe("ImitationFilter: the same result however the text is split", () => {
+  const footer = "\n\n```\nopus-5-5 ✓ medium · Jev 32% · $0.14 · 351k in (99% cached) · 2k out\nkept opus: Jev 32% on fable, needs 90%\n```";
+  const cases: [string, string][] = [
+    ["> ✳️ opus · medium · kept opus: Jev 32% on fable, needs 90% · 430ms\n\n---\n\nThe restart came back clean.", "The restart came back clean."],
+    [`Merged and pushed.${footer}`, "Merged and pushed."],
+    [`> ⚠️ not routed: timeout\n\n---\n\nDone.${footer}\n`, "Done."],
+    ["Run this:\n\n```bash\nnpm test\n```\n\nThen check.", "Run this:\n\n```bash\nnpm test\n```\n\nThen check."],
+    ["Plain text with `code` and > a quote.", "Plain text with `code` and > a quote."],
+    [`Quoted:${footer}\n\nstill talking`, `Quoted:${footer}\n\nstill talking`],
+    ["> a real quote\n\nmore", "> a real quote\n\nmore"],
+    ["```\nplain block\n```", "```\nplain block\n```"],
+  ];
+  const run = (text: string, cuts: number[]) => {
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    let out = "";
+    let from = 0;
+    for (const at of [...cuts, text.length]) {
+      for (const c of f.push({ kind: "text", index: 0, text: text.slice(from, at) })) out += c.text;
+      from = at;
+    }
+    for (const c of f.end()) out += c.text;
+    return out;
+  };
+  for (const [text, want] of cases) {
+    test(JSON.stringify(text.slice(0, 40)), () => {
+      assert.equal(run(text, []), want, "whole");
+      for (let i = 1; i < text.length; i++) assert.equal(run(text, [i]), want, `split at ${i}`);
+      for (let size = 1; size <= 5; size++) {
+        const cuts: number[] = [];
+        for (let i = size; i < text.length; i += size) cuts.push(i);
+        assert.equal(run(text, cuts), want, `pieces of ${size}`);
+      }
+    });
+  }
+  test("a new block releases what the last one held", () => {
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    const a = f.push({ kind: "text", index: 0, text: "> " });
+    assert.deepEqual(a, []);
+    const b = f.push({ kind: "text", index: 1, text: "next" });
+    assert.deepEqual(b.map((c) => [c.index, c.text]), [[0, "> "], [1, "next"]]);
   });
 });

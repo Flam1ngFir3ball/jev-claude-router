@@ -2423,6 +2423,30 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(out, /Merged\./);
   });
 
+  test("copied lines and summaries are removed when the text streams in small pieces", async () => {
+    // The engine hands text over a few tokens at a time, so no one piece
+    // holds a whole copied line.
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-PIECES" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.95, 1);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "audit it", turnId: "p1" }, async (e: unknown) => e);
+    const reply =
+      "> ✳️ opus · medium · kept opus: Jev 32% on fable, needs 90% · 430ms\n\n---\n\nThe restart came back clean." +
+      "\n\n```\nopus-5-5 ✓ medium · Jev 32% · $0.22 · 773k in (99% cached) · 2k out\n```";
+    async function* pieces(model: string) {
+      for (let i = 0; i < reply.length; i += 3) yield { kind: "text", index: 0, text: reply.slice(i, i + 3), ref: 1 + i };
+      yield { kind: "stop", stopReason: "end_turn", usage: usage(model, 1000), ref: 9999 };
+      return { stopReason: "end_turn" };
+    }
+    const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "p1", index: 0 }, (e: { model: string }) => pieces(e.model)));
+    const out = chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.equal(out.match(/✳️/g)?.length, 1, "one route line");
+    assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
+    assert.doesNotMatch(out, /430ms|\$0\.22/, "the copied figures are gone");
+    assert.match(out, /---\n\nThe restart came back clean\.\n\n```\n/, "the reply is whole, then the real summary");
+    assert.ok(chunks.filter((c) => c.kind === "text").every((c) => c.ref !== undefined || /% cached\)/.test(c.text)), "pieces keep the engine's refs");
+  });
+
   test("a prompt repeated by the same copy is routed each time", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);

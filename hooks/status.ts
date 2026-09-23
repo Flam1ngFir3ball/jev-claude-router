@@ -885,6 +885,117 @@ export function withoutImitations(text: string): string {
   return text.replace(IMITATED_LINE, "").replace(IMITATED_SUMMARY, "");
 }
 
+/** How a route line opens, for telling a partial one from ordinary text. */
+const LINE_OPENERS = ["> ✳️ ", "> ⚠️ "];
+
+/** The rule under a route line, after the line's own newline. */
+const LINE_RULE = "\n---\n\n";
+
+/** A summary's first line, once the fence has opened. */
+const SUMMARY_HEAD = /^[^\n`]* ✓ [^\n`]*\(\d+% cached\)/;
+
+/**
+ * `withoutImitations` for text that streams in pieces. The engine hands a
+ * block's text over a few tokens at a time, so a copied line or summary is
+ * spread across many chunks and no single one matches. This holds back only
+ * what could still turn out to be one: the start of a block until its first
+ * line is settled, and a fence until its first line shows whether it is a
+ * summary (a summary fence is held to the end of the block). Everything else
+ * passes straight through.
+ *
+ * Held text rides out on the latest held chunk, so the engine still gets a
+ * chunk it streamed (with its `ref`) and the block's text stays whole.
+ */
+export class ImitationFilter<C extends { kind: "text"; index: number; text: string }> {
+  private block = -1;
+  private settled = false;
+  private held = "";
+  private carrier: C | null = null;
+
+  /** A text piece in; the pieces to pass on now. */
+  push(chunk: C): C[] {
+    const out = chunk.index === this.block ? [] : this.end();
+    if (chunk.index !== this.block) {
+      this.block = chunk.index;
+      this.settled = false;
+    }
+    this.held += chunk.text;
+    this.carrier = chunk;
+    const now = this.release(false);
+    if (now !== "") out.push({ ...chunk, text: now });
+    if (this.held === "") this.carrier = null;
+    return out;
+  }
+
+  /** The block is over (another block, a non-text chunk, the end): what is still held. */
+  end(): C[] {
+    if (this.carrier === null) return [];
+    const text = this.release(true);
+    const carrier = this.carrier;
+    this.carrier = null;
+    return text === "" ? [] : [{ ...carrier, text }];
+  }
+
+  /** Takes what can go out now off `held`; with `final`, all of it. */
+  private release(final: boolean): string {
+    if (!this.settled) {
+      const h = this.held;
+      const opener = LINE_OPENERS.find((o) => h.startsWith(o));
+      if (opener === undefined) {
+        // Still possibly the start of a line: wait for more.
+        if (!final && LINE_OPENERS.some((o) => o.startsWith(h))) return "";
+      } else {
+        const eol = h.indexOf("\n");
+        if (eol === -1 && !final) return "";
+        if (eol !== -1) {
+          const rest = h.slice(eol + 1);
+          // The rule under it may still be arriving.
+          if (!final && LINE_RULE.startsWith(rest) && rest.length < LINE_RULE.length) return "";
+        }
+        this.held = h.replace(IMITATED_LINE, "");
+      }
+      this.settled = true;
+    }
+    if (final) {
+      const all = this.held.replace(IMITATED_SUMMARY, "");
+      this.held = "";
+      return all;
+    }
+    const from = this.holdFrom(this.held);
+    const now = this.held.slice(0, from);
+    this.held = this.held.slice(from);
+    return now;
+  }
+
+  /** Where text that could still be a summary starts; the length when none. */
+  private holdFrom(text: string): number {
+    for (let p = text.indexOf("```"); p !== -1; p = text.indexOf("```", p + 3)) {
+      if (p > 0 && text[p - 1] !== "\n") continue;
+      const after = text.slice(p + 3);
+      if (!"\n".startsWith(after.slice(0, 1))) continue; // ```bash and the like
+      if (after === "") return this.backToBlankLines(text, p);
+      const eol = after.indexOf("\n", 1);
+      const head = after.slice(1, eol === -1 ? undefined : eol);
+      if (eol === -1 || SUMMARY_HEAD.test(head)) {
+        if (eol === -1 && !/^[^\n`]*$/.test(head)) continue;
+        return this.backToBlankLines(text, p);
+      }
+    }
+    // A fence may be starting at the very end.
+    const tail = text.match(/(?:^|\n)`{1,2}$/);
+    if (tail) return this.backToBlankLines(text, tail.index! + (tail[0].startsWith("\n") ? 1 : 0));
+    // Trailing newlines wait for what follows: a fence after them would take
+    // them with it.
+    return this.backToBlankLines(text, text.length);
+  }
+
+  /** Holds the blank lines before a fence with it, so none dangle if it goes. */
+  private backToBlankLines(text: string, p: number): number {
+    while (p > 0 && text[p - 1] === "\n") p--;
+    return p;
+  }
+}
+
 /**
  * The reply to a `/jev` argument nothing reads. A removed toggle
  * (`/jev xhigh on`) is pointed at the ceiling that replaced it.
