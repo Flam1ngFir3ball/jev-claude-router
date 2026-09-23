@@ -317,6 +317,21 @@ describe("a tier named in the prompt", () => {
     );
     assert.equal(parseOverride("I don’t want to use haiku"), null); // U+2019
     assert.equal(isContinuation("let’s do it"), true); // U+2019
+    assert.equal(parseOverride("Stop what you are doing and use opus"), "opus");
+    assert.equal(parseOverride("Never mind. Use opus."), "opus");
+    assert.equal(
+      parseOverride("don't forget to write tests. Also use opus."),
+      "opus",
+    );
+    assert.equal(
+      parseOverride("I can't believe it works. Switch to haiku."),
+      "haiku",
+    );
+    assert.equal(
+      parseOverride("You may not want this, but use opus"),
+      "opus",
+    );
+    assert.equal(parseOverride("use haiku. Never mind, use opus"), "opus");
   });
 
   test("a tier the environment excluded cannot be named back in", () => {

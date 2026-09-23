@@ -259,11 +259,12 @@ const USING_SINK =
 
 /**
  * Negation starters. Bare `\bnot` is omitted: "why not use opus" is
- * affirmative. Spaced `do/can/must/may not` and common `*n't` forms
- * (curly apostrophes normalized first) are included.
+ * affirmative. `never mind` is omitted (`never(?!\s+mind)`). Spaced
+ * `do/can/must/may not` and common `*n't` forms (curly apostrophes
+ * normalized first) are included.
  */
 const OVERRIDE_NEGATION_AT =
-  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|couldn'?t|can(?:'?t|not|\s+not)|never|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
+  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|couldn'?t|can(?:'?t|not|\s+not)|never(?!\s+mind)|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
 
 /** Fold typographic apostrophes so iOS/macOS quotes match the ASCII forms. */
 function normalizeQuotes(text: string): string {
@@ -286,30 +287,41 @@ export function parseOverride(
   return named;
 }
 
+/** A few words, and no clause break, between a negation and its target. */
+function proximityOk(gap: string): boolean {
+  if (/[.!?,;:]/.test(gap)) return false;
+  const words = gap.trim().split(/\s+/).filter(Boolean);
+  return words.length <= 4;
+}
+
 /**
- * True when this match is the first run-on (or bare `using <tier>`) after a
- * negation. A later affirmative in the same sentence is not.
+ * True when this match is the first nearby run-on (or bare `using <tier>`)
+ * after a negation. Discourse uses ("Stop what you are doing and use opus",
+ * "Never mind. Use opus.") do not poison a later force.
  */
 function overrideNegated(
   text: string,
   matchAt: number,
   matches: RegExpMatchArray[],
 ): boolean {
-  const before = text.slice(0, matchAt);
-  let lastNeg = -1;
-  for (const neg of before.matchAll(OVERRIDE_NEGATION_AT)) {
-    lastNeg = neg.index ?? -1;
-  }
-  if (lastNeg < 0) return false;
-
   const sinks = [
     ...matches.map((m) => m.index ?? -1),
     ...[...text.matchAll(USING_SINK)].map((m) => m.index ?? -1),
   ]
-    .filter((i) => i >= lastNeg)
+    .filter((i) => i >= 0)
     .sort((a, b) => a - b);
 
-  return sinks[0] === matchAt;
+  for (const neg of text.matchAll(OVERRIDE_NEGATION_AT)) {
+    const negAt = neg.index ?? -1;
+    if (negAt < 0 || negAt > matchAt) continue;
+    const negEnd = negAt + neg[0].length;
+    for (const sink of sinks) {
+      if (sink < negEnd) continue;
+      if (!proximityOk(text.slice(negEnd, sink))) break;
+      return sink === matchAt;
+    }
+  }
+  return false;
 }
 
 /** A decision forced to a named tier; Jev's effort is kept, its tier is not. */

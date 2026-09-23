@@ -201,7 +201,8 @@ export function register(on: On) {
     decisions.clear();
     byTurn.clear();
     pending.clear();
-    spawned.clear();
+    // spawned is kept: turn.step already ignores it while off, and clearing
+    // it made /jev on mid-agent invent "not routed at spawn" and drop effort.
     latest = null;
     continueFrom = null;
     running = null;

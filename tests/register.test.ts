@@ -1268,4 +1268,42 @@ describe("register: a spawned subagent", () => {
     assert.equal(sent.model, "claude-fable-5-1", "cached spawn decision is not applied");
     assert.equal(sent.effort, "high");
   });
+
+  test("routing on again mid-agent keeps the spawn decision", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98, 1);
+    await kit.hooks.get("agent.spawn")!(
+      kit.$,
+      spawnOf(),
+      async (e: { model?: string }) => ({
+        model: e.model ?? "claude-fable-5-1",
+        agentId: "agent-1",
+      }),
+    );
+    const run = (args: string) =>
+      kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args });
+    await run("off");
+    await run("on");
+    let sent: { model?: string; effort?: string } = {};
+    await collect(
+      kit.hooks.get("turn.step")!(
+        kit.$,
+        {
+          turnId: "sub-after-on",
+          index: 0,
+          agentId: "agent-1",
+          model: "claude-fable-5-1",
+          effort: "high",
+        },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    assert.equal(sent.model, "claude-haiku-4-5");
+    assert.equal(sent.effort, "medium");
+    const status = await run("");
+    assert.doesNotMatch(status.text, /not routed at spawn/);
+  });
 });
