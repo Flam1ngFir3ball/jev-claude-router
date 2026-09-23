@@ -288,7 +288,8 @@ A tier named with a routing verb (`use opus`, `switch to fable`,
 medium effort, and shows `your pick`. Plain mentions are not routes:
 "search for opus docs" and "I'm using opus for comparison" are ordinary
 prompts. A negation cancels only the next route ("don't use haiku, use opus"
-routes to opus). Only the window guard overrides a named tier, and a tier
+routes to opus). Text you paste, code, and quoted lines are not read for
+this: a pasted document that says "use opus" as an example does not route. Only the window guard overrides a named tier, and a tier
 excluded by `JEV_ROUTER_EXCLUDE` cannot be named.
 `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off.
 

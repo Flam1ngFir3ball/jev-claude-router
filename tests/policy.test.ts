@@ -776,3 +776,15 @@ describe("upgradeMaxOf", () => {
     assert.equal(upgradeMaxOf("-1"), UPGRADE_MAX_USD);
   });
 });
+
+describe("a tier named in pasted or quoted text is not an instruction", () => {
+  test("only the person's own words route", () => {
+    const pasted = '\n\n<pasted_content id="1">\n# Handoff\n4. Forced override `use opus for this: …` → your pick\n</pasted_content id="1">\n';
+    assert.equal(parseOverride(pasted), null, "inside pasted content");
+    assert.equal(parseOverride(`${pasted}\nuse fable to plan the fixes`), "fable", "own words after a paste");
+    assert.equal(parseOverride("the handoff says `use opus for this`"), null, "inline code");
+    assert.equal(parseOverride("see:\n```\nuse opus for this\n```"), null, "code block");
+    assert.equal(parseOverride("> use opus for this\nwhat does that mean?"), null, "quoted line");
+    assert.equal(parseOverride("use opus for this"), "opus", "plain, still works");
+  });
+});

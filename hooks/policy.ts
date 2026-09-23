@@ -524,11 +524,25 @@ function normalizeQuotes(text: string): string {
   return text.replace(/[‘’ʼ]/g, "'");
 }
 
+/**
+ * The words of a prompt that are the person's own: without pasted content
+ * (the engine wraps it in `<pasted_content>` tags), code blocks and spans,
+ * and quoted lines. A handoff or log pasted in can say "use opus" as an
+ * example; that is not an instruction to route there.
+ */
+export function ownWords(text: string): string {
+  return text
+    .replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/g, " ")
+    .replace(/```[\s\S]*?(?:```|$)/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/^[ \t]*>.*$/gm, " ");
+}
+
 export function parseOverride(
   text: string,
   offered: readonly Tier[] = TIERS,
 ): Tier | null {
-  const normalized = normalizeQuotes(text);
+  const normalized = normalizeQuotes(ownWords(text));
   const matches = [...normalized.matchAll(OVERRIDE)];
   let named: Tier | null = null;
   for (const match of matches) {
