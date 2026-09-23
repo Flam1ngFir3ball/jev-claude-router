@@ -2460,8 +2460,8 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(kit.fetches(), asked, "Jev was not asked about the XML");
     assert.equal(t.sent.model, "claude-fable-5-1", "the reply's own route continues");
     assert.doesNotMatch(t.text, /✳️/, "no second line under the open reply");
-    // The reply it woke was summarised already: no second block.
-    assert.doesNotMatch(t.text, /% cached\)/, "no second summary under a closed reply");
+    // A task no summarised reply spawned: its wake-up is a reply of its own.
+    assert.match(t.text, /fable-5-1 ✓ medium/, "summarised on what answered");
     assert.match((await run(kit.hooks, kit.$, "")).text, /\[task finished\] Agent "reviewer" completed/);
   });
 
@@ -2658,6 +2658,68 @@ describe("register: audit regressions (2026-09-23)", () => {
     const second = await turn(hooks, $, "q2", xml);
     const both = first + second.text;
     assert.equal(both.match(/% cached\)/g)?.length, 1, "one summary across the reply and its wake-up");
+  });
+
+  test("an unrouted turn on the same Sonnet model runs at its own effort, which the next turn does not hold to", async () => {
+    const { hooks, $, setTier, setContext, fail, setSessionModel } = await boot({ JEV_ROUTER_CEILING: "xhigh" });
+    setSessionModel("claude-sonnet-5");
+    setContext(20_000);
+    setTier("sonnet", 0.95, 3, 0.9);
+    assert.equal((await turn(hooks, $, "ss1", "add a flag")).sent.effort, "xhigh");
+    fail();
+    await hooks.get("turn.start")!($, { text: "and another", turnId: "ss2" }, async (e: unknown) => e);
+    await collect(
+      hooks.get("turn.step")!($, { turnId: "ss2", index: 0, effort: "medium" }, (e: { model?: string }) =>
+        answeredBy(e.model ?? "claude-sonnet-5"),
+      ),
+    );
+    setTier("sonnet", 0.95, 1, 0.5);
+    const t = await turn(hooks, $, "ss3", "and the tests");
+    assert.equal(t.sent.effort, "medium", "medium is what the cache holds now");
+    assert.doesNotMatch(t.text, /kept xhigh/);
+  });
+
+  test("a wake-up for a task whose reply was given up gets a block of its own", async () => {
+    const { hooks, $, setTier, setAgentStatus } = await boot();
+    setTier("fable", 0.95, 3);
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "g1" }, async (e: unknown) => e);
+    setAgentStatus("running");
+    await hooks.get("agent.spawn")!($, { prompt: "review the cluster", description: "Review", agentId: "agent-1" }, async (e: { agentId?: string }) => ({ ...e, agentId: "agent-1" }));
+    await collect(hooks.get("turn.step")!($, { turnId: "g1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    // The person moves on while the agent runs; that reply is summarised.
+    const typed = await turn(hooks, $, "g2", "unrelated quick question");
+    assert.match(typed.text, /% cached\)/);
+    setAgentStatus("completed");
+    const xml = '<task-notification><task-id>agent-1</task-id><summary>Agent "Review" completed</summary></task-notification>';
+    const woke = await turn(hooks, $, "g3", xml);
+    assert.match(woke.text, /% cached\)/, "the agent's cost lands somewhere in the transcript");
+  });
+
+  test("routing off still sees responses rewrite an expired cache", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(20_000);
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "eo1", "plan it");
+    await hooks.get("classic.SessionStart")!($, { source: "resume", model: "claude-fable-5-1", context_tokens: 20_000, prompt_cache_likely_expired: true }, async (e: unknown) => e);
+    await run(hooks, $, "off");
+    await hooks.get("turn.start")!($, { text: "carry on", turnId: "eo2" }, async (e: unknown) => e);
+    await collect(hooks.get("turn.step")!($, { turnId: "eo2", index: 0 }, () => answeredBy("claude-fable-5-1")));
+    await run(hooks, $, "on");
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "eo3", "2+2");
+    assert.match(t.text, /kept fable: haiku costs/, "priced against the cache the off-turn wrote");
+  });
+
+  test("Jev is asked before the engine's context is read", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-ORDER" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const order: string[] = [];
+    const usage = kit.$.session.usage;
+    kit.$.session.usage = async () => (order.push("usage"), usage());
+    const fetch = kit.$.http.fetch;
+    kit.$.http.fetch = async (u: string, i?: { body?: string }) => (order.push("jev"), fetch(u, i));
+    await turn(kit.hooks, kit.$, "o1", "implement it");
+    assert.deepEqual(order.slice(0, 2), ["jev", "usage"]);
   });
 
   test("a prompt repeated by the same copy is routed each time", async () => {

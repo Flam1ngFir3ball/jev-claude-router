@@ -176,6 +176,12 @@ export function notificationOf(text: string): string | null {
   return tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`;
 }
 
+/** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
+export function notificationTaskOf(text: string): string | null {
+  if (!NOTIFICATION.test(text)) return null;
+  return tagOf(text, "task-id") ?? null;
+}
+
 /**
  * Folds one step's usage into its turn: counts sum, the model is the last
  * step's, as the engine defines a turn's usage, and the dollars are re-priced
@@ -250,7 +256,7 @@ export function normalUsage(usage: {
  * nothing saved.
  */
 export const PROMPT_KEPT = 400;
-const kept = (text: string) => (text.length > PROMPT_KEPT ? text.slice(0, PROMPT_KEPT) : text);
+export const kept = (text: string) => (text.length > PROMPT_KEPT ? text.slice(0, PROMPT_KEPT) : text);
 
 export type Status = {
   enabled: boolean;
@@ -1042,6 +1048,9 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
       const head = after.slice(1, eol === -1 ? undefined : eol);
       if (eol === -1 || SUMMARY_HEAD.test(head)) {
         if (eol === -1 && !/^[^\n`]*$/.test(head)) continue;
+        // Closed, with text after it: quoted mid-reply, and it streams.
+        const close = after.indexOf("\n```", eol);
+        if (close !== -1 && /\S/.test(after.slice(close + 4))) continue;
         return this.backToBlankLines(text, p);
       }
     }

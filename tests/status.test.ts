@@ -1055,3 +1055,15 @@ describe("ImitationFilter: every summary shape the plugin writes", () => {
     }
   });
 });
+
+describe("ImitationFilter: a summary quoted early in a block still streams", () => {
+  test("a closed summary-shaped fence followed by text is released as it arrives", () => {
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    const text = "Here is what /jev showed:\n\n```\nopus-5-5 ✓ medium · Jev 90% · $0.10 · 10k in (90% cached) · 1k out\n```\n\nSo the cache is warm. More follows here.";
+    let out = "";
+    for (let i = 0; i < text.length; i += 6) for (const c of f.push({ kind: "text", index: 0, text: text.slice(i, i + 6) })) out += c.text;
+    assert.ok(out.includes("So the cache is warm."), `streamed before the block ended: ${JSON.stringify(out.slice(-60))}`);
+    for (const c of f.end()) out += c.text;
+    assert.equal(out, text);
+  });
+});

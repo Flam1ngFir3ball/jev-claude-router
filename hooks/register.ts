@@ -49,10 +49,12 @@ import {
   continuationOf,
   continuationSkipped,
   HISTORY_LIMIT,
+  kept,
   liveLine,
   FOOTER_SEPARATOR,
   REPLY_SEPARATOR,
   notificationOf,
+  notificationTaskOf,
   replySummary,
   spawnAttemptOf,
   statusReport,
@@ -507,6 +509,8 @@ export function register(on: On) {
   let cacheExpired = false;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
+  /** Agents whose reply's summary has been written: their wake-up joins no other. */
+  const summarisedAgents = new Set<string>();
   /** Each claimed turn's text, to check the claim again before writing. */
   const claimed = new Map<string, string>();
   let settings: Settings | null = null;
@@ -912,6 +916,22 @@ export function register(on: On) {
     if (superseded()) inert = true;
     else if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
     if (inert) return next(e);
+    const { offered, ceiling } = settings;
+    // Jev is the long pole of the turn, so it is asked before anything
+    // else is read. A copy that then cedes the turn drops the answer: one
+    // wasted call, only when a stale copy is loaded, is cheaper than a
+    // round trip ahead of Jev on every turn.
+    const notification = notificationOf(e.text) !== null;
+    const nudge = isEngineNudge(e.text) || e.text.trim() === "";
+    const forced = settings.allowOverride
+      ? parseOverride(e.text, offered)
+      : null;
+    const softNotify =
+      settings.notifyContinue && notification && continueFrom !== null;
+    const asking =
+      isContinuation(e.text) || nudge || softNotify || forced !== null
+        ? null
+        : classify($, e.text, offered, settings);
     const reported = await contextTokensOf($);
     if (!(await claimTurn($, e.text, reported, birth))) {
       ceded.add(e.turnId);
@@ -920,15 +940,11 @@ export function register(on: On) {
     }
     claimed.set(e.turnId, turnKey(e.text, reported));
     if (claimed.size > 200) claimed.delete(claimed.keys().next().value as string);
-    const { offered, ceiling } = settings;
 
     // A turn the person typed starts a reply; one the engine started — a
-    // finished task's notification, its own nudge — continues the last one,
-    // and its summary folds into that reply's.
-    const notification = notificationOf(e.text) !== null;
-    // An engine-started continuation carries no text at all (the d.ts says
-    // so); it is the nudge's kind of turn, not a prompt to grade.
-    const nudge = isEngineNudge(e.text) || e.text.trim() === "";
+    // finished task's notification, its own nudge (which carries no text
+    // at all) — continues the last one, and its summary folds into that
+    // reply's.
     // A prompt typed while the last reply's agents still run starts a new
     // reply anyway: the old one's summary is given up (its turns stay in
     // /jev), rather than an agent that never finishes holding every later
@@ -946,23 +962,14 @@ export function register(on: On) {
     // under it. When there is nothing to continue (first turn, or the
     // previous turn left the session model), still do not ask Jev — that
     // would clear sticky with a ~1.00 haiku pick.
-    const forced = settings.allowOverride
-      ? parseOverride(e.text, offered)
-      : null;
-    const softNotify =
-      settings.notifyContinue && notification && continueFrom !== null;
     // A task that finished before its reply's last response was summarised
     // (its agent read as completed at that stop) wakes the loop after the
     // summary. That turn is the tail of a reply already closed: it is
     // counted and listed, and writes no second block.
-    const afterSummary = softNotify && reply.length === 0;
+    const task = notificationTaskOf(e.text);
+    const afterSummary =
+      softNotify && task !== null && summarisedAgents.has(task);
 
-    // Jev is the long pole of the turn, so it is asked first and the
-    // engine's own answers (context, surface) are read while it thinks.
-    const asking =
-      isContinuation(e.text) || nudge || softNotify || forced !== null
-        ? null
-        : classify($, e.text, offered, settings);
     if (surface === null) surface = await surfaceOf($);
     let attempt: Attempt;
     if (isContinuation(e.text) || nudge || softNotify) {
@@ -981,7 +988,7 @@ export function register(on: On) {
       // place of the XML.
       if (softNotify) {
         attempt.kind = "notify";
-        attempt.prompt = notificationOf(e.text) ?? attempt.prompt;
+        attempt.prompt = kept(notificationOf(e.text) ?? attempt.prompt);
       }
     } else {
       // What a downgrade is priced against: the engine's count of what the
@@ -1132,6 +1139,17 @@ export function register(on: On) {
         if (chunk.kind === "stop" && chunk.usage) {
           const u = normalUsage(chunk.usage);
           spent += usageCost(u.model, u, settings.ttl) ?? 0;
+          // What answers while routing is off is what is warm when it
+          // comes back on: /jev on then prices against that, not a guess
+          // from the session model.
+          if (e.agentId === undefined) {
+            cacheExpired = false;
+            const answered = warmDecision(u.model, e.effort);
+            if (answered !== null) {
+              running = answered;
+              lastUsage = { context: carriedOf(u), output: u.output_tokens };
+            }
+          }
         }
         yield chunk;
       }
@@ -1284,12 +1302,19 @@ export function register(on: On) {
             // Whatever the resume said had expired, this response wrote.
             cacheExpired = false;
             const answered = warmDecision(usage.model, e.effort);
+            const unrouted = attempt === undefined || !("decision" in attempt);
             if (
               answered !== null &&
               (running === null ||
                 baseModel(running.model) !== baseModel(answered.model))
             ) {
               running = answered;
+            } else if (answered !== null && running !== null && unrouted) {
+              // Same model, but the session's own effort ran and is what
+              // the cache holds; Jev's earlier effort is no longer warm.
+              const { effortConfidence: _, ...rest } = running;
+              void _;
+              running = { ...rest, effort: answered.effort };
             }
           }
           // A step that ends the turn always saves; one that continues it
@@ -1342,7 +1367,11 @@ export function register(on: On) {
               index: lastIndex + 1,
               text: `${FOOTER_SEPARATOR}${summary}`,
             };
-            // Written once; what comes after is a new reply's worth.
+            // Written once; what comes after is a new reply's worth. The
+            // reply's agents are noted, so a wake-up that arrives after
+            // this joins no other reply's block.
+            for (const id of replyAgents) summarisedAgents.add(id);
+            trimSet(summarisedAgents);
             reply = [];
             replyAgents = new Set();
             if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
