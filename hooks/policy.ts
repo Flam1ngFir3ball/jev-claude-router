@@ -406,6 +406,8 @@ export function withinWindow(
     held: decision.tier,
     heldModel: decision.model,
     heldWindow: contextTokens,
+    // A named tier that does not fit is still the person's pick.
+    ...(decision.forced ? { forced: true as const } : {}),
   };
 }
 

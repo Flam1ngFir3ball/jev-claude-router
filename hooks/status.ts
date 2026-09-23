@@ -440,17 +440,30 @@ export function attemptOf(
               ? { probabilities: decision.probabilities }
               : {}),
             outgrew: hold.running?.tier ?? decision.tier,
-            wanted: decision.tier,
+            ...(decision.tier !== (hold.running?.tier ?? decision.tier)
+              ? { wanted: decision.tier }
+              : {}),
+            ...(decision.forced ? { forced: true as const } : {}),
           },
           hold.ceiling ?? ceilingAt("max"),
         ),
       };
     }
     if (fits.heldWindow !== undefined) {
+      // Held on the running tier: on Sonnet an effort change still rewrites
+      // much of the cache, so the effort gate applies here as well.
+      const held =
+        !fits.forced &&
+        hold.sticky !== null &&
+        hold.running !== null &&
+        hold.running.effortConfidence !== undefined &&
+        holdsSonnetEffort(fits, hold.running, hold.sticky)
+          ? { ...fits, effort: hold.running.effort, heldEffort: fits.effort }
+          : fits;
       return {
         ...head,
         ms: result.ms,
-        decision: capTo(fits, hold.ceiling ?? ceilingAt("max")),
+        decision: capTo(held, hold.ceiling ?? ceilingAt("max")),
       };
     }
   }
@@ -566,10 +579,11 @@ export function continuationOf(
   running: Decision,
   ceiling: Ceiling = ceilingAt("max"),
   contextTokens: number | null = null,
+  offered: readonly Tier[] = TIERS,
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
   if (contextTokens !== null && !fitsWindow(tier, contextTokens)) {
-    const step = stepUp(tier, TIERS.at(-1)!, TIERS, contextTokens);
+    const step = stepUp(tier, TIERS.at(-1)!, offered, contextTokens);
     if (step === null)
       return {
         prompt: kept(text),

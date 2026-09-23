@@ -88,7 +88,8 @@ when the switch is worth it, and says so when it is not.
    does nothing.
 3. **Install it.** Place the folder at `~/.claude/skills/jev-claude-router/` to load
    it in every session, or run `claude --plugin-dir /path/to/jev-claude-router` for
-   one session.
+   one session. If an older `jev-router` folder is installed, remove it: both
+   copies would load.
 4. **Check it.** `npm run check-jev` reports the provider and whether it
    answers. In a session, `/jev` shows the router's state.
 
@@ -226,9 +227,11 @@ This applies whatever Jev said, and even to a tier you named: the turn stays
 on the tier already running.
 
 When the running tier is the one that no longer fits (haiku past 184k), the
-turn moves up only as far as it must, to the cheapest tier that fits. That
-holds whether Jev picked haiku again, picked a higher tier the checks below
-held back, or the turn was a go-ahead. With nothing known to be running, the
+turn moves up only as far as it must, to the cheapest offered tier that
+fits. That holds whether Jev picked haiku again, picked a higher tier the
+checks below held back, or the turn was a go-ahead. Because the running
+tier cannot take the turn at all, the step itself is not held back by the
+confidence bar or the price checks. With nothing known to be running, the
 session model keeps the turn, since its cache is the warm one.
 
 ### 3. The confidence bar

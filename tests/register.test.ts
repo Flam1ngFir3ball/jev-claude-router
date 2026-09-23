@@ -2278,6 +2278,60 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(t.text, /haiku too long, moved up only to sonnet/);
   });
 
+  test("a go-ahead that outgrows haiku never steps into an excluded tier", async () => {
+    const { hooks, $, setTier, setContext } = await boot({ JEV_ROUTER_EXCLUDE: "sonnet" });
+    setContext(1_000);
+    setTier("haiku", 0.99, 0);
+    await turn(hooks, $, "ex1", "2+2");
+    setContext(190_000);
+    const t = await turn(hooks, $, "ex2", "yes");
+    assert.equal(t.sent.model, "claude-opus-5-5", "sonnet is excluded, so the next offered tier");
+  });
+
+  test("the step-up line names Jev's pick only when it differs, and keeps a named tier as your pick", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(1_000);
+    setTier("haiku", 0.99, 0);
+    await turn(hooks, $, "lb1", "2+2");
+    setContext(190_000);
+    setTier("haiku", 0.99, 0);
+    const same = await turn(hooks, $, "lb2", "3+3");
+    assert.match(same.text, /haiku too long, moved up only to sonnet/);
+    assert.doesNotMatch(same.text, /Jev wanted haiku/);
+    const named = await turn(hooks, $, "lb3", "use haiku for this");
+    assert.match(named.text, /your pick/);
+  });
+
+  test("a resume into another session starts from that session's own state", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-FIRST-CONV" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setContext(1_000);
+    kit.setTier("haiku", 0.99, 0);
+    await turn(kit.hooks, kit.$, "rs1", "2+2");
+    // /resume another conversation: opus, 300k, cache warm.
+    shared.id = "sess-OTHER-CONV";
+    kit.setSessionModel("claude-opus-5-5");
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-opus-5-5", context_tokens: 300_000 }, async (e: unknown) => e);
+    kit.setContext(300_000);
+    kit.setTier("haiku", 0.99, 0);
+    const t = await turn(kit.hooks, kit.$, "rs2", "3+3");
+    assert.equal(t.sent.model, "claude-opus-5-5", "the resumed conversation's warm opus, not a stale haiku step-up");
+    assert.doesNotMatch((await run(kit.hooks, kit.$, "")).text, /2\+2/, "the other session's history did not carry over");
+  });
+
+  test("a turn held on Sonnet by the window guard still goes through the Sonnet effort hold", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(1_000);
+    setTier("sonnet", 0.95, 1, 0.9);
+    assert.equal((await turn(hooks, $, "sw1", "a small edit")).sent.model, "claude-sonnet-5");
+    setContext(190_000);
+    setTier("haiku", 0.99, 0, 0.1);
+    const t = await turn(hooks, $, "sw2", "2+2");
+    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.equal(t.sent.effort, "medium", "effort held on Sonnet");
+  });
+
   test("a task notification's text cannot name a tier", async () => {
     const { hooks, $, setTier } = await boot({ JEV_ROUTER_NOTIFY_CONTINUE: "0" });
     setTier("haiku", 0.99, 0);
@@ -3020,6 +3074,23 @@ describe("register: audit regressions (2026-09-23)", () => {
       let reachedNext = false;
       await old.hooks.get("session.compact")!(old.$, { trigger: "auto", messages }, async () => (reachedNext = true, { messages: [] }));
       assert.equal(reachedNext, true, "the stale copy passes the event on");
+    });
+
+    test("a copy that no longer owns the session leaves its state alone at a compaction", async () => {
+      const shared = { store: new Map<string, unknown>(), id: "sess-NOTMINE" };
+      const old = await withJev({ JEV_ROUTER_COMPACT: "0" }, shared);
+      old.setTier("fable", 0.95, 3);
+      old.setContext(20_000);
+      await turn(old.hooks, old.$, "nm1", "plan it");
+      const before = JSON.stringify(shared.store.get("session:sess-NOTMINE"));
+      await new Promise((r) => setTimeout(r, 3));
+      (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+      const fresh = await withJev({ JEV_ROUTER_COMPACT: "0" }, shared);
+      await fresh.hooks.get("turn.start")!(fresh.$, { text: "claim it", turnId: "nm2" }, async (e: unknown) => e);
+      const saved = JSON.stringify(shared.store.get("session:sess-NOTMINE"));
+      await old.hooks.get("session.compact")!(old.$, compactEvent(), async () => ({ messages: [] }));
+      assert.equal(JSON.stringify(shared.store.get("session:sess-NOTMINE")), saved, "the stale copy wrote nothing");
+      void before;
     });
 
     test("a subagent's compaction does not become /jev's last", async () => {

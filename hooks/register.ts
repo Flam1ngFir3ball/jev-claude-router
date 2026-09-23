@@ -781,7 +781,7 @@ export function register(on: On) {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "jev",
-      description: "Jev routing: status, on/off, sticky, ceiling, quiet/loud.",
+      description: "Jev routing: status, on/off, sticky, price, ceiling, compact, quiet/loud.",
     });
     surface = await surfaceOf($);
     settings = await seedSettings($, settings);
@@ -827,6 +827,23 @@ export function register(on: On) {
       spent = 0;
       answered = false;
       savedOnce = false;
+    }
+    // A resume or fork into a different session, in a process already
+    // running one: the old session's routing must not carry over. Its state
+    // is dropped, and the next hook restores the resumed session's own.
+    if ((e.source === "resume" || e.source === "fork") && snapshotKey !== undefined) {
+      const key = await snapshotKeyOf($);
+      if (key !== snapshotKey) {
+        clearRouting();
+        reply = [];
+        replyAgents = new Set();
+        attempts.length = 0;
+        spent = 0;
+        answered = typeof e.context_tokens === "number" && e.context_tokens > 0;
+        snapshotKey = undefined;
+        restoreOnKey = true;
+        savedOnce = false;
+      }
     }
     // The cache has expired: what is running is still known, and the next
     // switch is priced with staying as a write too, snapshot or not.
@@ -924,6 +941,11 @@ export function register(on: On) {
         prunedCache = { handles, messages: result.messages, reduction: result.compaction.reduction };
         reduction = result.compaction.reduction;
       }
+    }
+    // A copy that does not own the session leaves its state alone.
+    if (!mine) {
+      inert = true;
+      return next(e);
     }
     if (e.trigger !== "precompute" && e.agentId === undefined) {
       if (pruned === null) {
@@ -1178,6 +1200,7 @@ export function register(on: On) {
               continueFrom,
               ceiling,
               reported ?? lastUsage?.context ?? null,
+              offered,
             )
           : continuationSkipped(e.text);
       if (nudge) attempt.kind = "nudge";

@@ -1,8 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- A go-ahead that outgrows haiku steps up only into offered tiers, never an
+  excluded one.
+- `/resume` or a fork into another session in a running process starts from
+  that session's own saved state instead of carrying the previous one's.
+- A turn held on Sonnet by the window guard still goes through the Sonnet
+  effort hold.
+- The step-up line names Jev's pick only when it differs, and a named tier
+  that has to step up, or is held by the window guard, still says
+  `your pick` and skips the Sonnet effort hold.
+- A copy that does not own the session leaves its state alone at a
+  compaction.
+- The `/jev` command description lists `price` and `compact`.
+
 ## 1.0.0 — 2026-09-23
 
-Released as **jev-claude-router**.
+Released as **jev-claude-router**. The plugin store is per plugin name, so
+settings and history saved under the earlier `jev-router` name are not
+carried over automatically.
 
 The first release of this fork of
 [satviksinha/jev-model-router](https://github.com/satviksinha/jev-model-router).
