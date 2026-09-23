@@ -9,6 +9,7 @@ import {
 import { labelOf, withLabel } from "./label.ts";
 import {
   asAsked,
+  ceilingAt,
   ceilingOf,
   effortNamed,
   excludedTiers,
@@ -232,6 +233,17 @@ async function saveSnapshot(
   }
 }
 
+/** Where the session draws first (`terminal`, `desktop`, ...), or null in a plain -p run. */
+async function surfaceOf($: {
+  session: { surfaces: () => Promise<readonly string[]> };
+}): Promise<string | null> {
+  try {
+    return (await $.session.surfaces())[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The main loop's model as `/model` shows it, or null when the engine has none. */
 async function sessionModelOf($: {
   session: { model: () => Promise<string> };
@@ -427,7 +439,7 @@ export function register(on: On) {
     enabled,
     announce,
     sticky: settings?.sticky ?? null,
-    ceiling: settings!.ceiling,
+    ceiling: settings?.ceiling ?? ceilingAt("medium"),
   });
 
   /** Puts a restored snapshot back, over what the environment seeded. */
@@ -470,7 +482,7 @@ export function register(on: On) {
       name: "jev",
       description: "Jev routing: status, on/off, sticky, ceiling, quiet/loud.",
     });
-    surface = await $.session.surface();
+    surface = await surfaceOf($);
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
@@ -485,7 +497,15 @@ export function register(on: On) {
   // says that cache has expired, in which case there is nothing to protect.
   // `/clear` starts a new conversation: nothing is running.
   on("classic.SessionStart", async ($, e, next) => {
-    if (e.source === "clear") clearRouting();
+    if (e.source === "clear") {
+      // A new conversation, and a new transcript id: save under that, so a
+      // later resume of the old session restores the old session's state.
+      clearRouting();
+      reply = [];
+      replyAgents = new Set();
+      snapshotKey = await snapshotKeyOf($);
+      savedOnce = false;
+    }
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&
@@ -503,11 +523,16 @@ export function register(on: On) {
   });
 
   // The cache the hold was protecting does not survive a compaction, and the
-  // context is small again, so switches are cheap: start over from Jev.
+  // context is small again, so switches are cheap: start over from Jev. Only
+  // what the next turn is priced against is dropped: the engine compacts
+  // mid-turn too, and the turn in flight keeps its route, its line and its
+  // usage. A subagent compacting its own transcript is not the main loop's.
   on("session.compact", async ($, e, next) => {
-    if (e.trigger !== "precompute") {
-      clearRouting();
-      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (e.trigger !== "precompute" && e.agentId === undefined) {
+      running = null;
+      continueFrom = null;
+      lastUsage = null;
+      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     }
     return next(e);
   });
@@ -516,10 +541,13 @@ export function register(on: On) {
   // next routed turn is priced against the new model, which the turn seeds
   // from the session when the engine reports context.
   on("classic.PostModelSwitch", async ($, e, next) => {
+    // A resume restores the model it left on; that is not a move, and the
+    // resume hook has just seeded what is running on it.
+    if (e.source === "resume") return next(e);
     if (typeof e.to_model === "string") sessionModel = e.to_model;
     running = null;
     continueFrom = null;
-    if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return next(e);
   });
 
@@ -534,13 +562,13 @@ export function register(on: On) {
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
       if (!enabled) clearRouting();
-      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: toggleReply(enabled) };
     }
 
     if (arg === "quiet" || arg === "loud") {
       announce = arg === "loud";
-      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: announceReply(announce) };
     }
 
@@ -550,7 +578,7 @@ export function register(on: On) {
     if (sub === "sticky" || sub.startsWith("sticky ")) {
       const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
       settings.sticky = result.sticky;
-      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
 
@@ -560,7 +588,7 @@ export function register(on: On) {
         settings.ceiling,
       );
       settings.ceiling = result.ceiling;
-      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
 
@@ -573,13 +601,13 @@ export function register(on: On) {
       if ((effortNamed(head) !== null || head === "ultra") && !legacy) {
         const result = ceilingCommand(sub, settings.ceiling);
         settings.ceiling = result.ceiling;
-        if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+        if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         return { text: result.text };
       }
       return { text: unknownCommandReply(sub, legacy) };
     }
 
-    if (surface === null) surface = await $.session.surface();
+    if (surface === null) surface = await surfaceOf($);
     if (sessionModel === null) sessionModel = await sessionModelOf($);
     const contextTokens =
       (await contextTokensOf($)) ?? lastUsage?.context ?? null;
@@ -611,14 +639,16 @@ export function register(on: On) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
     }
-    if (surface === null) surface = await $.session.surface();
+    if (surface === null) surface = await surfaceOf($);
     const { offered, ceiling } = settings;
 
     // A turn the person typed starts a reply; one the engine started — a
     // finished task's notification, its own nudge — continues the last one,
     // and its summary folds into that reply's.
     const notification = notificationOf(e.text) !== null;
-    const nudge = isEngineNudge(e.text);
+    // An engine-started continuation carries no text at all (the d.ts says
+    // so); it is the nudge's kind of turn, not a prompt to grade.
+    const nudge = isEngineNudge(e.text) || e.text.trim() === "";
     if (!notification && !nudge) {
       reply = [];
       replyAgents = new Set();
@@ -638,11 +668,17 @@ export function register(on: On) {
     const softNotify =
       settings.notifyContinue && notification && continueFrom !== null;
 
+    const reported = await contextTokensOf($);
     let attempt: Attempt;
     if (isContinuation(e.text) || nudge || softNotify) {
       attempt =
         continueFrom !== null
-          ? continuationOf(e.text, continueFrom, ceiling)
+          ? continuationOf(
+              e.text,
+              continueFrom,
+              ceiling,
+              reported ?? lastUsage?.context ?? null,
+            )
           : continuationSkipped(e.text);
       if (nudge) attempt.kind = "nudge";
     } else {
@@ -653,7 +689,6 @@ export function register(on: On) {
       // overstate it, and overstating output is the side that pays for a
       // switch it should not have made. Nothing known means nothing to
       // protect, so no hold.
-      const reported = await contextTokensOf($);
       const context = reported ?? lastUsage?.context ?? 0;
       // A session already running on something the router did not route —
       // resumed without the resume event, `/jev on` after a stretch off, a
@@ -732,7 +767,7 @@ export function register(on: On) {
       continueFrom = null;
     }
 
-    if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
 
     return next(e);
   });
@@ -819,6 +854,9 @@ export function register(on: On) {
         ? asAsked(decision)
         : firstTurnEffort(decision);
       stepped.add(e.agentId);
+      if (stepped.size > CACHE_LIMIT * 4) {
+        for (const id of stepped) if (!spawned.has(id)) stepped.delete(id);
+      }
     }
     const step = decision
       ? next({ ...e, model: decision.model, effort: decision.effort })
@@ -826,11 +864,14 @@ export function register(on: On) {
 
     // The block the summary joins, so it lands at the end of the reply's
     // text rather than opening a block of its own.
-    let lastTextIndex = 0;
+    // The highest block index streamed so far, any kind: the summary must
+    // open a block past it, or the engine drops it silently.
+    let lastIndex = 0;
 
     for await (const chunk of step) {
+      const at = (chunk as { index?: unknown }).index;
+      if (typeof at === "number" && at > lastIndex) lastIndex = at;
       if (chunk.kind === "text") {
-        lastTextIndex = chunk.index;
         if (attempt && pending.has(e.turnId)) {
           pending.delete(e.turnId);
           yield {
@@ -854,7 +895,7 @@ export function register(on: On) {
               output: chunk.usage.output_tokens,
             };
           }
-          if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+          if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         }
 
         // The summary goes under the reply once it is over: this step ends
@@ -862,8 +903,8 @@ export function register(on: On) {
         // the loop and add to it. The index must be one past the last text
         // block, and this is load-bearing. A chunk yielded at an index the
         // engine already streamed is dropped on the floor, silently: probed
-        // live, a chunk at `lastTextIndex` never reached the transcript,
-        // one at `lastTextIndex + 1` did. It opens a block of its own,
+        // live, a chunk at the last block's index never reached the transcript,
+        // one at one past it did. It opens a block of its own,
         // which is what a summary wants anyway — the reply above it stays
         // untouched.
         //
@@ -877,21 +918,26 @@ export function register(on: On) {
           announce &&
           e.agentId === undefined &&
           attempt.kind !== "agent" &&
-          attempt.kind !== "nudge" &&
-          !MID_TURN.has(chunk.stopReason ?? "") &&
+          // A nudge alone is not a reply to the person; one that finishes a
+          // reply the person started still closes it.
+          (attempt.kind !== "nudge" ||
+            reply.some((a) => a.kind !== "nudge" && a.kind !== "agent")) &&
+          // null: the request failed, and there is no response to sum up.
+          chunk.stopReason != null &&
+          !MID_TURN.has(chunk.stopReason) &&
           !(await agentsRunning($, replyAgents))
         ) {
           const summary = replySummary(reply);
           if (summary !== null) {
             yield {
               kind: "text" as const,
-              index: lastTextIndex + 1,
+              index: lastIndex + 1,
               text: `${FOOTER_SEPARATOR}${summary}`,
             };
             // Written once; what comes after is a new reply's worth.
             reply = [];
             replyAgents = new Set();
-            if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+            if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
           }
         }
       }
@@ -955,7 +1001,7 @@ export function register(on: On) {
         }
       }
     }
-    if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return started;
   });
 

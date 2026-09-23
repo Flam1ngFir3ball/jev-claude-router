@@ -56,6 +56,8 @@ export type Decision = {
    * named cannot take a prompt this long at all. Absent otherwise.
    */
   heldWindow?: number;
+  /** The confidence the switch needed, when Jev's doubt is what held it. */
+  heldBar?: number;
   /**
    * The effort Jev named, when a turn staying on Sonnet kept the previous
    * turn's effort instead (see `holdsSonnetEffort`). Absent otherwise.
@@ -358,6 +360,7 @@ export function stickyDecision(
       : {}),
     held: fresh.tier,
     heldModel: fresh.model,
+    ...(shaky && !unprofitable ? { heldBar: threshold } : {}),
     ...(unprofitable
       ? { heldCost: { stay: verdict.stay, go: verdict.go } }
       : {}),
@@ -414,7 +417,7 @@ export function sessionDecision(model: string): Decision | null {
 const NUDGE = /^\s*The user hasn't heard from you in a while/i;
 
 export function isEngineNudge(text: string): boolean {
-  return NUDGE.test(text);
+  return NUDGE.test(normalizeQuotes(text));
 }
 
 /**
@@ -499,7 +502,7 @@ const OVERRIDE_NEGATION_AT =
  * doing, and, …) means the negation is discourse/rhetorical, not "don't use".
  */
 const NEGATION_BRIDGE =
-  /^(?:\s+(?:want|to|try|ever|really|please|just|even|still|actually|also))*\s*$/i;
+  /^(?:\s+(?:want|to|try|ever|really|please|just|even|still|actually|also|need|have|you\s+to))*\s*$/i;
 
 /** Fold typographic apostrophes so iOS/macOS quotes match the ASCII forms. */
 function normalizeQuotes(text: string): string {

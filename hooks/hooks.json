@@ -1,4 +1,6 @@
 {
-  "description": "Per-turn model routing: turn.start asks Jev which tier and how much effort, turn.step rewrites the request's model and effort, SessionMode shows the pick in the footer",
-  "modules": ["./register.ts"]
+  "description": "Per-turn model routing: turn.start asks Jev which tier and effort, turn.step rewrites the request and writes a route line and one plain-language summary per reply, agent.spawn routes subagents, /jev reports and configures",
+  "modules": [
+    "./register.ts"
+  ]
 }

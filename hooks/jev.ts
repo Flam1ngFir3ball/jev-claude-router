@@ -48,8 +48,16 @@ export function stateOf(text: string): string {
 export function timeoutOf(raw: string | undefined): number {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TIMEOUT_MS;
-  return parsed;
+  return Math.min(parsed, MAX_TIMEOUT_MS);
 }
+
+/**
+ * The longest a turn may wait for Jev. The wait runs on `$.clock`, which
+ * counts against the hook's 10-second budget; a hook over it is skipped as
+ * absent and its turn goes unrecorded. So the budget from the environment is
+ * held under it, with room for the hook's own work.
+ */
+export const MAX_TIMEOUT_MS = 8000;
 
 export type HttpResponseLike = {
   ok: boolean;
@@ -119,8 +127,10 @@ export function requestBodyOf(state: string, offered: readonly Tier[]) {
  * caller reports the reason rather than leaving the person guessing whether
  * the router ran at all.
  *
- * On timeout the in-flight fetch is aborted so the provider is not billed
- * for work we already gave up on.
+ * On timeout the turn moves on without the answer. The engine's
+ * `$.http.fetch` takes no abort signal, so the request itself runs to
+ * completion and is billed (about $0.00003); the signal is passed for a
+ * plain `fetch`, as the scripts use, which does honour it.
  */
 export async function askJev(args: AskArgs): Promise<JevResult> {
   const {

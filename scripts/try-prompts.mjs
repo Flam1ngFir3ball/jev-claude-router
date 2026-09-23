@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 
 import { askJev } from '../hooks/jev.ts'
-import { decisionOf, TIERS } from '../hooks/policy.ts'
+import { decisionOf, excludedTiers, offeredTiers } from '../hooks/policy.ts'
 import { providerOf } from '../hooks/provider.ts'
 
 const settings = JSON.parse(
@@ -25,7 +25,10 @@ const provider = providerOf({
   JEV_ROUTER_PROVIDER: env.JEV_ROUTER_PROVIDER,
   TYPESAFE_BASE_URL: env.TYPESAFE_BASE_URL,
   JEV_ROUTER_ALLOW_CUSTOM_BASE: env.JEV_ROUTER_ALLOW_CUSTOM_BASE,
+  JEV_ROUTER_JEV_MODEL: env.JEV_ROUTER_JEV_MODEL,
 })
+// The tiers a session is actually offered, so the picks match what it sees.
+const OFFERED = offeredTiers(excludedTiers(env.JEV_ROUTER_EXCLUDE))
 
 if (!provider.ok) {
   console.error(`Provider error: ${provider.reason}`)
@@ -61,12 +64,12 @@ for (const prompt of prompts) {
     sleep,
     provider,
     state: prompt,
-    offered: TIERS,
+    offered: OFFERED,
     timeoutMs: 10_000,
   })
   const ms = Date.now() - started
   const answers = result.ok ? result.answers : null
-  const d = decisionOf(answers, TIERS)
+  const d = decisionOf(answers, OFFERED)
 
   const short = prompt.length > 62 ? `${prompt.slice(0, 59)}...` : prompt
   if (!d) {

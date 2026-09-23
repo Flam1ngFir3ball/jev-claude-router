@@ -200,13 +200,14 @@ export function breakEvenTokens(
   to: Tier,
   outputTokens: number,
   ttl: Ttl = "1h",
+  /** The running model's own price, as in `switchVerdict`. */
+  fromPrice: Price = PRICE[from],
 ): number {
-  const write = (t: Tier) =>
-    ttl === "1h" ? PRICE[t].write1h : PRICE[t].write5m;
+  const write = (p: Price) => (ttl === "1h" ? p.write1h : p.write5m);
   // stay = ctx·read(from) + out·output(from); go = ctx·(write(to)+write(from)) + out·output(to)
   // go < stay  ⇔  ctx·(write(to)+write(from)−read(from)) < out·(output(from)−output(to))
-  const perCtx = write(to) + write(from) - PRICE[from].read;
-  const perOut = PRICE[from].output - PRICE[to].output;
+  const perCtx = write(PRICE[to]) + write(fromPrice) - fromPrice.read;
+  const perOut = fromPrice.output - PRICE[to].output;
   if (perOut <= 0 || perCtx <= 0) return 0;
   return Math.floor((outputTokens * perOut) / perCtx);
 }

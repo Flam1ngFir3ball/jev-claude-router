@@ -265,6 +265,12 @@ describe("a bare go-ahead", () => {
 describe("a tier named in the prompt", () => {
   test("is read from the verbs that mean 'run on'", () => {
     assert.equal(parseOverride("use opus for this"), "opus");
+    // Negations the audit found forcing the tier they refused (2026-09-23).
+    assert.equal(parseOverride("I don't want you to use haiku"), null);
+    assert.equal(parseOverride("we don't need to use opus here"), null);
+    assert.equal(parseOverride("you shouldn't have to use fable"), null);
+    // …while a tag question is still an ask.
+    assert.equal(parseOverride("why don't you use opus"), "opus");
     assert.equal(parseOverride("go with fable, do more research"), "fable");
     assert.equal(parseOverride("switch to haiku"), "haiku");
     assert.equal(parseOverride("run this on sonnet"), "sonnet");

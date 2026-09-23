@@ -40,6 +40,7 @@ import {
   switchVerdict,
   usageCost,
   usd,
+  fitsWindow,
   WINDOW_TOKENS,
   type Ttl,
 } from "./pricing.ts";
@@ -121,7 +122,8 @@ export function reasonsOf(attempt: Attempt): string[] {
         ? `stayed on ${kept}: ${wanted} takes ${kOf(WINDOW_TOKENS[d.held])} and this turn carries ${kOf(d.heldWindow)}`
         : d.heldCost !== undefined
           ? `stayed on ${kept}: ${wanted} would cost ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
-          : `stayed on ${kept}: Jev wanted ${wanted}, only ${pct(d.confidence)} sure`,
+          : `stayed on ${kept}: Jev wanted ${wanted}, ${pct(d.confidence)} sure` +
+            (d.heldBar !== undefined ? `, needs ${pct(d.heldBar)}` : ""),
     );
   }
   if (d.heldEffort !== undefined) {
@@ -326,6 +328,9 @@ export function attemptOf(
       };
     }
   }
+  // What Jev (or the prompt) picked, before any hold: what a hold that does
+  // not fit gives way to.
+  const picked: Decision | null = decision;
   if (hold.sticky !== null && !decision.forced) {
     const running = hold.running;
     const downgrade =
@@ -371,6 +376,17 @@ export function attemptOf(
       heldEffort: decision.effort,
     };
   }
+  // A hold must fit too: holding to haiku at 190k would send the turn where
+  // the API refuses it. Jev's pick passed the check above, so the hold gives
+  // way to it.
+  if (
+    hold.economics !== undefined &&
+    decision.held !== undefined &&
+    !fitsWindow(decision.tier, hold.economics.contextTokens) &&
+    picked !== null
+  ) {
+    decision = picked;
+  }
   decision = capTo(decision, hold.ceiling ?? ceilingAt("max"));
   return { ...head, ms: result.ms, decision };
 }
@@ -385,8 +401,19 @@ export function continuationOf(
   text: string,
   running: Decision,
   ceiling: Ceiling = ceilingAt("max"),
+  contextTokens: number | null = null,
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
+  if (contextTokens !== null && !fitsWindow(tier, contextTokens)) {
+    return {
+      prompt: text,
+      ms: 0,
+      kind: "continue",
+      skipped:
+        `${tier} takes ${kOf(WINDOW_TOKENS[tier])} and this turn carries ` +
+        `${kOf(contextTokens)}, so the session model answers`,
+    };
+  }
   return {
     prompt: text,
     ms: 0,
@@ -718,7 +745,7 @@ function sessionLine(status: Status): string {
 }
 
 /**
- * `1h writes · 201k context · fable→haiku pays below 6k`: which cache the
+ * `1h writes · 201k context · fable→haiku pays below 3k`: which cache the
  * session writes, what the next turn carries, and where the cheapest
  * downgrade from the running tier stops paying, so a hold is predictable.
  */
@@ -736,7 +763,13 @@ function cacheLine(status: Status): string {
         last?.usage?.output_tokens ?? TYPICAL_OUTPUT_TOKENS,
         TYPICAL_OUTPUT_TOKENS,
       );
-      const be = breakEvenTokens(from, to, out, status.ttl);
+      const be = breakEvenTokens(
+        from,
+        to,
+        out,
+        status.ttl,
+        priceOfModel(running.model) ?? PRICE[from],
+      );
       parts.push(
         be === 0
           ? `${from}→${to} never pays`

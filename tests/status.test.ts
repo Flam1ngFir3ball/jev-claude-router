@@ -276,7 +276,7 @@ describe("attemptOf", () => {
       },
     };
     assert.deepEqual(reasonsOf(a), [
-      "stayed on sonnet: Jev wanted haiku, only 61% sure",
+      "stayed on sonnet: Jev wanted haiku, 61% sure",
       "kept low effort: Jev wanted xhigh, only 20% sure, and a change re-caches on Sonnet",
       "capped from max",
     ]);
@@ -560,14 +560,14 @@ describe("a held turn", () => {
   test("the line says what Jev wanted and did not get, in words", () => {
     assert.equal(
       liveLine(held),
-      "> ✳️ fable · low effort · stayed on fable: Jev wanted haiku, only 61% sure · 512ms",
+      "> ✳️ fable · low effort · stayed on fable: Jev wanted haiku, 61% sure · 512ms",
     );
   });
 
   test("the history says so too, so a run of holds is visible", () => {
     assert.match(
       statusReport({ ...base, attempts: [held] }),
-      /fable·low  stayed on fable: Jev wanted haiku, only 61% sure  rename/,
+      /fable·low  stayed on fable: Jev wanted haiku, 61% sure  rename/,
     );
   });
 
@@ -818,7 +818,7 @@ describe("a downgrade held on its price", () => {
     assert.equal(big.decision.tier, "opus");
     assert.equal(big.decision.held, "fable");
     assert.equal(big.decision.heldCost, undefined, "held on doubt, not price");
-    assert.match(liveLine(big), /stayed on opus: Jev wanted fable, only 82% sure/);
+    assert.match(liveLine(big), /stayed on opus: Jev wanted fable, 82% sure, needs 90%/);
     const small = attemptOf("plan it", shaky, TIERS, {
       sticky: 0.75,
       running: onOpus,

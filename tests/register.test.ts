@@ -78,6 +78,7 @@ function load(
     session: {
       id: async () => shared.id,
       surface: async () => "test",
+      surfaces: async () => ["test"],
       model: async () => sessionModel,
       /** The engine's count of what the last response carried; settable per test. */
       usage: async () =>
@@ -2124,5 +2125,166 @@ describe("register: a reload of the module", () => {
     assert.ok(store.has("session:old-24"), "the newest old ones stay");
     assert.ok(!store.has("session:old-0"), "the oldest go");
     assert.ok(store.has("unrelated"), "keys that are not snapshots are left alone");
+  });
+});
+
+describe("register: audit regressions (2026-09-23)", () => {
+  const boot = async (
+    env: Record<string, string | undefined> = {},
+    shared = { store: new Map<string, unknown>(), id: "sess-R" },
+  ) => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1", ...env }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return { ...kit, shared };
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const text = (chunks: { kind: string; text?: string }[]) =>
+    chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string, prompt = "plan it") {
+    await hooks.get("turn.start")!($, { text: prompt, turnId: id }, async (e: unknown) => e);
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!($, { turnId: id, index: 0 }, (e: { model: string; effort: string }) => {
+        sent = e;
+        return answeredBy(e.model);
+      }),
+    );
+    return { sent, text: text(chunks) };
+  }
+
+  test("a hold never keeps a turn on a tier it no longer fits", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(1_000);
+    setTier("haiku", 0.99, 0);
+    assert.equal((await turn(hooks, $, "w1", "2+2")).sent.model, "claude-haiku-4-5");
+    setContext(190_000);
+    setTier("opus", 0.6, 2);
+    const t = await turn(hooks, $, "w2", "now implement it");
+    assert.equal(t.sent.model, "claude-opus-5-5", "the hold gives way; haiku takes 200k");
+  });
+
+  test("a go-ahead does not continue onto a tier the turn no longer fits", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(1_000);
+    setTier("haiku", 0.99, 0);
+    assert.equal((await turn(hooks, $, "g1", "2+2")).sent.model, "claude-haiku-4-5");
+    setContext(190_000);
+    const t = await turn(hooks, $, "g2", "yes");
+    assert.equal(t.sent.model, undefined, "left on the session model");
+    assert.match(t.text, /haiku takes 200k and this turn carries 190k/);
+  });
+
+  test("a compaction in the middle of a turn keeps that turn routed and summarised", async () => {
+    const { hooks, $, setTier } = await boot();
+    setTier("fable", 0.95, 3);
+    await hooks.get("turn.start")!($, { text: "plan it", turnId: "c1" }, async (e: unknown) => e);
+    await collect(hooks.get("turn.step")!($, { turnId: "c1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    await hooks.get("session.compact")!($, { trigger: "auto" }, async (e: unknown) => e);
+    let sent: { model?: string } = {};
+    const last = await collect(
+      hooks.get("turn.step")!($, { turnId: "c1", index: 1 }, (e: { model: string }) => {
+        sent = e;
+        return answeredBy(e.model);
+      }),
+    );
+    assert.equal(sent.model, "claude-fable-5-1");
+    assert.match(text(last), /Model  answered by claude-fable-5-1 ✓/);
+  });
+
+  test("a subagent's compaction leaves the main loop alone", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "s1");
+    await hooks.get("session.compact")!($, { trigger: "auto", agentId: "agent-1" }, async (e: unknown) => e);
+    setContext(150_000);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "s2", "2+2");
+    assert.equal(t.sent.model, "claude-fable-5-1", "still held to what is warm");
+  });
+
+  test("/clear saves under the new session's id, leaving the old one's intact", async () => {
+    const { hooks, $, setTier, shared } = await boot();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "k1");
+    const before = JSON.stringify(shared.store.get("session:sess-R"));
+    shared.id = "sess-R2";
+    await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
+    setTier("opus", 0.9, 1);
+    await turn(hooks, $, "k2", "something new");
+    assert.equal(JSON.stringify(shared.store.get("session:sess-R")), before);
+    assert.ok(shared.store.has("session:sess-R2"));
+  });
+
+  test("the model a resume restores is not a move", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(150_000);
+    await hooks.get("classic.SessionStart")!(
+      $,
+      { source: "resume", model: "claude-fable-5-1", context_tokens: 150_000, prompt_cache_likely_expired: false },
+      async (e: unknown) => e,
+    );
+    await hooks.get("classic.PostModelSwitch")!(
+      $,
+      { from_model: "claude-opus-5-5", to_model: "claude-fable-5-1", source: "resume" },
+      async (e: unknown) => e,
+    );
+    setTier("haiku", 0.99, 0);
+    assert.equal((await turn(hooks, $, "r1", "2+2")).sent.model, "claude-fable-5-1");
+  });
+
+  test("a nudge that finishes a reply the person started closes it with the summary", async () => {
+    const { hooks, $, setTier } = await boot();
+    setTier("fable", 0.9, 3);
+    await hooks.get("turn.start")!($, { text: "plan it", turnId: "n1" }, async (e: unknown) => e);
+    await collect(hooks.get("turn.step")!($, { turnId: "n1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    const nudged = await turn(hooks, $, "n2", "The user hasn’t heard from you in a while — say what you’re doing, then continue.");
+    assert.match(nudged.text, /Model  2 turns: fable·medium ✓, fable·medium ✓ \(1 nudged by the engine\)/);
+    assert.doesNotMatch(nudged.text, /✳️/, "still no route line for the nudge");
+  });
+
+  test("a turn with no text is the engine continuing, not a prompt to grade", async () => {
+    const { hooks, $, setTier, fetches } = await boot();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "e1");
+    const asked = fetches();
+    const t = await turn(hooks, $, "e2", "");
+    assert.equal(fetches(), asked);
+    assert.equal(t.sent.model, "claude-fable-5-1");
+    assert.doesNotMatch(t.text, /empty prompt/);
+  });
+
+  test("the summary opens a block past a tool block, and a failed request gets none", async () => {
+    const { hooks, $ } = await boot();
+    await hooks.get("turn.start")!($, { text: "x", turnId: "i1" }, async (e: unknown) => e);
+    async function* textThenTool() {
+      yield { kind: "text", index: 0, text: "reply", ref: 1 };
+      yield { kind: "tool", index: 1, ref: 2 };
+      yield { kind: "stop", stopReason: "max_tokens", usage: usage("claude-opus-5-5"), ref: 3 };
+      return { stopReason: "max_tokens" };
+    }
+    const chunks = await collect(hooks.get("turn.step")!($, { turnId: "i1", index: 0 }, () => textThenTool()));
+    const summary = chunks.find((c) => c.kind === "text" && /Model  /.test(c.text ?? ""));
+    assert.equal((summary as { index: number }).index, 2);
+
+    await hooks.get("turn.start")!($, { text: "y", turnId: "i2" }, async (e: unknown) => e);
+    async function* failed() {
+      yield { kind: "stop", stopReason: null, usage: null, ref: 1 };
+      return { stopReason: null };
+    }
+    const none = await collect(hooks.get("turn.step")!($, { turnId: "i2", index: 0 }, () => failed()));
+    assert.doesNotMatch(text(none), /Model  /);
+  });
+
+  test("a held turn names the bar it did not clear", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setTier("opus", 0.95, 2);
+    await turn(hooks, $, "b1", "implement it");
+    setContext(150_000);
+    setTier("fable", 0.76, 3);
+    const t = await turn(hooks, $, "b2", "plan the rest");
+    assert.match(t.text, /stayed on opus: Jev wanted fable, 76% sure, needs 90%/);
+    await run(hooks, $, "");
   });
 });

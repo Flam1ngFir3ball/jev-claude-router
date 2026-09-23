@@ -8,8 +8,8 @@ import type { Decision } from "./policy.ts";
 /** Below this, the pick is marked so a bad route is visible rather than silent. */
 export const LOW_CONFIDENCE = 0.5;
 
-/** A previous router label left in SessionMode's modes list. */
-const JEV_MODE = /^jev( →| off)/;
+/** A previous router label left in SessionMode's modes list, old style or new. */
+const JEV_MODE = /^jev( →|:| off)/;
 
 /**
  * The label for the footer, or null to add nothing.
@@ -24,8 +24,11 @@ export function labelOf(
   if (!enabled) return "jev off";
   if (!decision) return null;
 
-  const doubt = decision.confidence < LOW_CONFIDENCE ? "?" : "";
-  return `jev → ${decision.tier}·${decision.effort}${doubt}`;
+  const doubt =
+    decision.confidence < LOW_CONFIDENCE
+      ? `, only ${Math.round(decision.confidence * 100)}% sure`
+      : "";
+  return `jev: ${decision.tier}, ${decision.effort} effort${doubt}`;
 }
 
 /**

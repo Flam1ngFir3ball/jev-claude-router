@@ -4,6 +4,7 @@ import { describe, test } from "node:test";
 import {
   askJev,
   DEFAULT_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
   requestBodyOf,
   timeoutOf,
   type HttpInitLike,
@@ -233,13 +234,13 @@ describe("label", () => {
   };
 
   test("a confident pick reads as tier and effort", () => {
-    assert.equal(labelOf(decision, true), "jev → opus·high");
+    assert.equal(labelOf(decision, true), "jev: opus, high effort");
   });
 
   test("an unconfident pick is marked", () => {
     assert.equal(
       labelOf({ ...decision, confidence: 0.2 }, true),
-      "jev → opus·high?",
+      "jev: opus, high effort, only 20% sure",
     );
   });
 
@@ -255,8 +256,9 @@ describe("label", () => {
     ]);
     assert.deepEqual(withLabel(["jev off"], "jev off"), ["jev off"]);
     assert.deepEqual(
-      withLabel(["plan mode", "jev → opus·high"], "jev → haiku·low"),
-      ["plan mode", "jev → haiku·low"],
+      withLabel(["plan mode", "jev → opus·high"], "jev: haiku, low effort"),
+      ["plan mode", "jev: haiku, low effort"],
+      "an old-style label is cleared too",
     );
     assert.deepEqual(withLabel(["plan mode", "jev → opus·high"], null), [
       "plan mode",
@@ -279,5 +281,11 @@ describe("timeout", () => {
 
   test("the default clears the slowest live call measured (839ms)", () => {
     assert.ok(DEFAULT_TIMEOUT_MS > 839);
+  });
+
+  test("a budget near the hook's 10s limit is held under it", () => {
+    assert.equal(timeoutOf("9500"), MAX_TIMEOUT_MS);
+    assert.equal(timeoutOf("60000"), MAX_TIMEOUT_MS);
+    assert.ok(MAX_TIMEOUT_MS < 10_000);
   });
 });
