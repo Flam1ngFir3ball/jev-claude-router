@@ -21,6 +21,29 @@ turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
 /jev          the last five turns, with reasons for anything unrouted
 ```
 
+## What it does
+
+Each feature in one line, with the section that explains how it works.
+
+| Feature | What it does | Details |
+| --- | --- | --- |
+| Per-turn routing | Jev picks a tier and an effort for every prompt; each model request in that turn is rewritten to match. | *The ladder* |
+| The route line | Each reply opens with one line saying what ran and why: `> ✳️ opus · medium · Jev 94% · 353ms`. | *Knowing whether it is working* |
+| One summary per reply | Under each finished reply, one fenced block: the model that actually answered, its cost at list price, tokens in (and how much came from the cache), tokens out, and anything that did not run as Jev asked. A reply that woke up for background tasks gets one block for all of its turns, not one per turn. | *Knowing whether it is working* |
+| `/jev` status | Routing state, provider, bars, ceiling, the session's model and cache, what the session has spent, and the last five turns with reasons. | *Knowing whether it is working* |
+| Confidence bar | A tier switch needs 75% from Jev. An upgrade past 100k context needs 90%, because it rewrites the whole context to a pricier cache. | *Holding a shaky switch* |
+| Cost check on downgrades | A move to a cheaper tier is priced twice: staying warm, and going cold plus the write to come back. It only moves if going is cheaper. | *Holding a shaky switch* |
+| Context-window guard | A turn is never sent to a tier whose window it does not fit (haiku: 200k, less 16k headroom), even if you named that tier. | *Holding a shaky switch* |
+| Effort ceiling | The most effort each tier may be asked for. The default is `medium` everywhere; `/jev ceiling xhigh fable` raises one tier. A capped turn says `capped from xhigh`. | *Commands and switches* |
+| First-request effort | Fable 5.1 runs `medium` as `high` on a conversation's first request. The router sends `high` there and says so, rather than reporting an effort that did not run. | *Commands and switches* |
+| Go-aheads and named tiers | "yes" or "go ahead" carries on the last turn's tier without asking Jev. "use opus" skips Jev and uses opus. | *Two things stickiness cannot catch* |
+| Subagents | Each spawned agent is routed on its own task, with a 50% confidence floor, and appears in `/jev` and the summary. | *Subagents* |
+| Resume and model switches | On resume or `/model`, the next switch is priced against the model that is actually warm. After a compaction or `/clear`, the next turn starts fresh. | *Holding a shaky switch* |
+| Survives reloads | History, spend, the tier being held, the open reply and `/jev` settings are saved in the plugin store and restored after an update or reload. | *State, copies and what the model copies* |
+| One copy acts | However many copies of the module are loaded, only the newest routes a turn and writes its line and summary. | *State, copies and what the model copies* |
+| Copied markers removed | The model sees past lines and summaries in its own replies and sometimes writes its own, with made-up figures. Those are removed before the real ones go in. | *State, copies and what the model copies* |
+| Fails open | No key, a timeout, an error or an odd answer leaves the turn exactly as it would run without the plugin, and the line says why. | *When it does nothing* |
+
 ## The ladder
 
 | Tier | For | Model |
@@ -224,22 +247,8 @@ Note that `claude -p` shows only the *last* text block in its `result`, so the
 reply looks like it vanished when the summary lands. It has not:
 `--output-format stream-json --verbose` shows both blocks whole.
 
-A session's routing survives a reload of the plugin (an update, a `git pull`):
-the history, `spent`, the tier being held, the open reply and the `/jev`
-settings are kept in the engine's per-plugin store
-(`~/.claude/plugins/store/jev-router_*.json`, the twenty newest sessions)
-and restored by the first hook after the reload. Before, a reload reset
-all of it, and the first switch after one was priced against the wrong
-model.
-
-More than one loaded copy can see the same turn: a reload leaves the old
-module in place, and the desktop app has resumed a conversation under a new
-session id while a copy kept reading the old one. Each copy used to call
-Jev and write its own line, giving two or three lines per reply. Now the
-newest copy claims each turn in the store, keyed by the turn's text for
-60 seconds, and the others pass that turn through untouched. The cost:
-two separate sessions that get the exact same prompt within that minute
-route only one of them.
+How the line and summary stay single, and how state survives a reload, is
+in *State, copies and what the model copies* below.
 
 `/jev quiet` drops both the line and the summary without turning routing
 off; `/jev loud` brings them back. Both ride in the reply's recorded text, so
@@ -459,6 +468,51 @@ policy.ts (0.5, calibrated on subagent-style prompts: the specified ones
 scored 0.72 to 0.98, a vague audit 0.22). Under it the spawn is left alone
 and `/jev` says so.
 
+## State, copies and what the model copies
+
+**State survives a reload.** An update or `git pull` reloads the module
+mid-session. The history, `spent`, the tier being held, the open reply and
+the `/jev` settings (sticky bar, ceiling, quiet/loud, on/off) are saved in
+the engine's per-plugin store (`~/.claude/plugins/store/jev-router_*.json`)
+under `session:<id>`, and the first hook after the reload restores them.
+The twenty newest sessions are kept. Before this, a reload reset all of it,
+and the first switch afterwards was priced against the wrong model.
+`hooks/persist.ts` turns the state into plain JSON and back.
+
+**Only one copy acts.** More than one copy of the module can see the same
+turn:
+
+- A reload leaves the old module loaded next to the new one.
+- The desktop app has continued a conversation under a new session id
+  while a copy kept reading the old one.
+
+Each copy used to call Jev and write its own line, giving two or three
+lines under one prompt. Four checks now make sure one copy acts:
+
+| Check | How | What it covers |
+| --- | --- | --- |
+| Newest in the process | Each copy stamps a load time on `globalThis`; an older copy sees a newer stamp and stands aside. | Reloads in one process, even with no session id |
+| Owner of the session | The newest copy writes `owner:session:<id>` to the store; others with the same id stand aside. | Copies in different processes on the same session |
+| Claim on the turn | The newest copy writes `turn:<hash of the prompt>` to the store for 60 seconds. An older copy that claimed first is overridden and checks again before it writes. A copy that loses passes the turn through: no Jev call, no model change, no line, no summary. | Copies that read different session ids |
+| Output check | A copy that sees a real line or summary already in the stream does not add another. | Anything the other three miss |
+
+The cost of the turn claim: two genuinely separate sessions that get the
+exact same prompt within the same minute route only one of them. A store
+that cannot be read lets every copy through, as before.
+
+**Lines and summaries the model copies are removed.** The line and summary
+are part of the reply's recorded text, so the model sees them in its own
+past replies and sometimes writes one itself, with made-up figures. Seen
+2026-09-23: a reply ended with a footer claiming $0.21 and 450k in, above the
+real one, and it looked like a second copy of the plugin. The copy that holds the
+turn removes a route line at the very start of the model's text and a
+summary fence at its very end before adding its own. A line or summary
+quoted in the middle of a reply is left alone.
+
+To check which copies acted on a prompt, read the store. Each
+`session:<id>` records its prompts, so the same prompt under two ids means
+two copies. The `turn:` key shows which copy (`birth`) claimed the prompt.
+
 ## Checking and tuning
 
 ```
@@ -521,7 +575,11 @@ An unrouted turn announces itself too, with the reason:
 ## Layout
 
 ```
-hooks/register.ts   the nine hooks, the settings read once, the turn history
+hooks/register.ts   the ten hooks (session.start/end, classic.SessionStart,
+                    session.compact, classic.PostModelSwitch, command.run,
+                    turn.start, turn.step, agent.spawn, ui.render), the
+                    settings read once, the turn history, saving state and
+                    deciding which copy acts
 hooks/jev.ts        the request shape, timeout, named failures
 hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
 hooks/policy.ts     the tiers, the criteria, answers → model and effort,
@@ -530,7 +588,8 @@ hooks/pricing.ts    Anthropic's list prices; what a turn cost, what a switch
                     would cost
 hooks/persist.ts    the session's state as data for $.store, and back
 hooks/label.ts      decision → SessionMode label
-hooks/status.ts     the per-turn line, what /jev prints, usage per turn
+hooks/status.ts     the per-turn line, the summary, what /jev prints, usage
+                    per turn, removing lines the model copies
 tests/              node:test suites; register.test.ts drives the real hooks
                     with a fake engine and asserts the stream transform
 scripts/            check-jev, try-prompts and measure-switch-cost, for
