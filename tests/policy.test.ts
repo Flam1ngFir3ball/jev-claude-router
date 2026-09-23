@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  asAsked,
   capTo,
   ceilingAt,
   ceilingOf,
@@ -14,6 +15,8 @@ import {
   effortNamed,
   effortOf,
   excludedTiers,
+  FIRST_TURN_EFFORT,
+  firstTurnEffort,
   forcedDecision,
   holdsSonnetEffort,
   isContinuation,
@@ -26,6 +29,9 @@ import {
   subagentDecision,
   thresholdOf,
   TIERS,
+  UPGRADE_CONFIDENCE,
+  UPGRADE_CONTEXT_TOKENS,
+  upgradeBar,
   withCeiling,
   type Decision,
   type Effort,
@@ -703,5 +709,50 @@ describe("stickiness on the price of a downgrade", () => {
     };
     const d = stickyDecision(fresh, at("fable", 0.9), 0.75, null);
     assert.deepEqual(d.probabilities, { haiku: 0.55, fable: 0.45 });
+  });
+});
+
+describe("what the engine runs on a first turn", () => {
+  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+    tier,
+    model: MODEL_OF[tier],
+    effort,
+    confidence: 0.9,
+  });
+
+  test("fable's medium is sent as high, since that is what runs, and Jev's ask is kept", () => {
+    const sent = firstTurnEffort(at("fable", "medium"));
+    assert.equal(sent.effort, "high");
+    assert.equal(sent.askedEffort, "medium");
+    assert.deepEqual(asAsked(sent), at("fable", "medium"));
+  });
+
+  test("every other effort on fable, and every effort elsewhere, is sent as is", () => {
+    for (const e of ["low", "high", "xhigh", "max"] as const) {
+      const d = at("fable", e);
+      assert.equal(firstTurnEffort(d), d);
+    }
+    for (const t of ["haiku", "sonnet", "opus"] as const) {
+      const d = at(t, "medium");
+      assert.equal(firstTurnEffort(d), d);
+      assert.equal(asAsked(d), d);
+    }
+  });
+
+  test("the table is the whole quirk, so removing a row restores Jev's ask", () => {
+    assert.deepEqual(FIRST_TURN_EFFORT, { fable: { medium: "high" } });
+  });
+});
+
+describe("the bar an upgrade must clear", () => {
+  test("below 100k it is the session's bar", () => {
+    assert.equal(upgradeBar(0.75, 0), 0.75);
+    assert.equal(upgradeBar(0.75, UPGRADE_CONTEXT_TOKENS - 1), 0.75);
+  });
+
+  test("from 100k it is 90%, or the bar when that is higher", () => {
+    assert.equal(upgradeBar(0.75, UPGRADE_CONTEXT_TOKENS), UPGRADE_CONFIDENCE);
+    assert.equal(upgradeBar(0.6, 250_000), 0.9);
+    assert.equal(upgradeBar(0.95, 250_000), 0.95);
   });
 });

@@ -62,6 +62,12 @@ export type Decision = {
    * sends none (the Vercel gateway does not).
    */
   probabilities?: Partial<Record<Tier, number>>;
+  /**
+   * The effort Jev asked for, when `effort` is instead what the engine runs
+   * on a conversation's first turn (see `FIRST_TURN_EFFORT`). Absent when
+   * the two agree.
+   */
+  askedEffort?: Effort;
 };
 
 export const TIERS: readonly Tier[] = ["haiku", "sonnet", "opus", "fable"];
@@ -608,4 +614,60 @@ export function capTo(decision: Decision, ceiling: Ceiling): Decision {
   const cap = ceiling[decision.tier];
   if (effortRank(decision.effort) <= effortRank(cap)) return decision;
   return { ...decision, effort: cap, cappedEffort: decision.effort };
+}
+
+/**
+ * What the engine runs on the first request of a conversation when asked
+ * for an effort it does not honour there. Measured 2026-09-23 on Claude
+ * Code 2.1.280, by the transcript's `perTurnEffort`: Fable 5.1 runs
+ * `medium` as `high` on the first turn of a session (five of five), and
+ * honours it from the second turn on (three of three); `low` and `high` go
+ * through on every turn, and Opus 5.5 honours all five. The router sends
+ * what will run, so the route line does not claim an effort the engine did
+ * not use. The cost is the same either way. Remove an entry once the engine
+ * honours it, and the request goes back to what Jev asked for.
+ */
+export const FIRST_TURN_EFFORT: Partial<
+  Record<Tier, Partial<Record<Effort, Effort>>>
+> = {
+  fable: { medium: "high" },
+};
+
+/**
+ * The decision as the engine will run it on a conversation's first turn,
+ * with what Jev asked kept in `askedEffort` so the next turn, where the
+ * engine honours it, starts from Jev's word and not the quirk.
+ */
+export function firstTurnEffort(decision: Decision): Decision {
+  const ran = FIRST_TURN_EFFORT[decision.tier]?.[decision.effort];
+  if (ran === undefined) return decision;
+  return { ...decision, effort: ran, askedEffort: decision.effort };
+}
+
+/** The decision as Jev asked for it, for the turns that hold to or continue it. */
+export function asAsked(decision: Decision): Decision {
+  if (decision.askedEffort === undefined) return decision;
+  const { askedEffort, ...rest } = decision;
+  return { ...rest, effort: askedEffort };
+}
+
+/**
+ * The context size from which an upgrade has to be surer than the bar.
+ *
+ * An upgrade writes the whole context to the dearer tier's cache: at 250k,
+ * five dollars for fable. Over a week of transcripts (2026-09-23), 54 of 72
+ * routed upgrades ran under 75% confidence and 7 more under 90%, every one
+ * of those past 100k context, while the prompts that are plainly planning
+ * work measure 0.97 to 1.00. So past this size an upgrade needs
+ * `UPGRADE_CONFIDENCE`, or the bar if that is higher. A tier the prompt
+ * names is not an upgrade in this sense and is never held.
+ */
+export const UPGRADE_CONTEXT_TOKENS = 100_000;
+export const UPGRADE_CONFIDENCE = 0.9;
+
+/** The bar an upgrade must clear, given the context it would write. */
+export function upgradeBar(bar: number, contextTokens: number): number {
+  return contextTokens >= UPGRADE_CONTEXT_TOKENS
+    ? Math.max(bar, UPGRADE_CONFIDENCE)
+    : bar;
 }

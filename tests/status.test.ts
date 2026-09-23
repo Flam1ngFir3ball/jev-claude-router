@@ -723,7 +723,7 @@ describe("the ceiling on a turn", () => {
   });
 
   test("a routed turn is capped at its tier's ceiling and tagged", () => {
-    const a = attemptOf("plan it", jev("fable", 4), TIERS, {
+    const a = attemptOf("plan it", jev("opus", 4), TIERS, {
       sticky: null,
       running: null,
       ceiling: ceilingAt("medium"),
@@ -764,6 +764,7 @@ describe("the ceiling on a turn", () => {
     assert.ok("decision" in a);
     assert.equal(a.decision.effort, "max");
   });
+
 });
 
 describe("a downgrade held on its price", () => {
@@ -816,7 +817,7 @@ describe("a downgrade held on its price", () => {
     assert.equal(a.decision.tier, "haiku");
   });
 
-  test("an upgrade is never priced: capability is Jev's call", () => {
+  test("an upgrade is never priced: a sure one goes through at any context", () => {
     const onHaiku = { ...onFable, tier: "haiku" as const, model: "claude-haiku-4-5" };
     const a = attemptOf("plan the architecture", jev("fable"), TIERS, {
       sticky: 0.75,
@@ -825,6 +826,42 @@ describe("a downgrade held on its price", () => {
     });
     assert.ok("decision" in a);
     assert.equal(a.decision.tier, "fable");
+    assert.equal(a.decision.held, undefined);
+  });
+
+  test("past 100k an upgrade under 90% is held; below 100k the bar is the bar", () => {
+    const onOpus = { ...onFable, tier: "opus" as const, model: "claude-opus-5-5" };
+    const shaky = {
+      ok: true as const,
+      ms: 300,
+      answers: {
+        tier: { type: "choice", choice: "fable", confidence: 0.82 },
+        effort: { type: "score", score: 3 },
+      },
+    };
+    const big = attemptOf("plan it", shaky, TIERS, {
+      sticky: 0.75,
+      running: onOpus,
+      economics: { contextTokens: 250_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in big);
+    assert.equal(big.decision.tier, "opus");
+    assert.equal(big.decision.held, "fable");
+    assert.equal(big.decision.heldCost, undefined, "held on doubt, not price");
+    const small = attemptOf("plan it", shaky, TIERS, {
+      sticky: 0.75,
+      running: onOpus,
+      economics: { contextTokens: 50_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in small);
+    assert.equal(small.decision.tier, "fable");
+  });
+
+  test("the status line says what an upgrade needs past 100k", () => {
+    assert.match(
+      statusReport({ ...base, sticky: 0.75 }),
+      /sticky\s+on, switch needs 75% \(90% up past 100k\)/,
+    );
   });
 
   test("with stickiness off the price is not consulted", () => {

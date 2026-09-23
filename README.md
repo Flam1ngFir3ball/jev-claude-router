@@ -283,11 +283,17 @@ model, which this mod does not touch — the rewrite happens per request, in
   wanted higher is cut to the ceiling and the route line says
   `capped:xhigh` for what it wanted.
 - `JEV_ROUTER_CEILING=xhigh`, or `fable:xhigh,opus:high` for some tiers,
-  seeds the ceiling; the command overrides it from then on. One engine quirk,
-  measured 2026-09-23: on Fable 5.1 the engine runs `medium` as `high` (the
-  transcript's `perTurnEffort` says so; `low` and `high` go through as sent),
-  so on that tier the default ceiling is `high` in effect and `low` is the
-  only cheaper rung.
+  seeds the ceiling; the command overrides it from then on. Two engine facts,
+  measured 2026-09-23 on Claude Code 2.1.280 by the transcript's
+  `perTurnEffort`: on Fable 5.1 the **first turn** of a conversation runs
+  `medium` as `high` (five of five; honoured from the second turn on, three
+  of three), so the router sends `high` there and the route line says so,
+  while the turn after starts from the `medium` Jev asked for
+  (`FIRST_TURN_EFFORT` in policy.ts is the whole table); and the engine
+  sends **no effort at all to Sonnet 5** (`perTurnEffort` absent), so the
+  Sonnet effort hold below is a no-op on that build. Opus 5.5 honours all
+  five. Fable effort changes between turns are free: medium→low→medium wrote
+  638 and 286 tokens, not the messages block.
 - `JEV_ROUTER_JEV_MODEL=jev-1.13.0` pins the Jev version on the direct API.
   The default `jev-latest` is an alias that moves when TypeSafe ships, and
   the confidences the bar is tuned against can move with it. A passthrough
@@ -309,7 +315,14 @@ routed turns the shipped policy came to $92 where staying put came to $8.
 So a switch has to clear two bars, and `/jev sticky off` lifts both:
 
 - **Jev's doubt.** A turn that names a different tier than the last one has
-  to clear the confidence bar (0.75) to move.
+  to clear the confidence bar (0.75) to move. An **upgrade past 100k
+  context** has to clear 90% (or the bar, if higher): it writes the whole
+  context to the dearer tier, five dollars for fable at 250k, and over a
+  week of transcripts 54 of 72 routed upgrades ran under 75% confidence and
+  7 more under 90%, every one past 100k, while prompts that are plainly
+  planning work measure 0.97 to 1.00 (`UPGRADE_CONTEXT_TOKENS`,
+  `UPGRADE_CONFIDENCE` in policy.ts). `use fable` is not an upgrade in this
+  sense and is never held.
 - **The price, for a downgrade.** The turn is priced twice, from the context
   the engine reports it will carry and the last turn's output: on the running
   tier with its cache warm, and on the cheaper tier cold with the return

@@ -8,8 +8,10 @@ import {
 } from "./jev.ts";
 import { labelOf, withLabel } from "./label.ts";
 import {
+  asAsked,
   ceilingOf,
   excludedTiers,
+  firstTurnEffort,
   isContinuation,
   notifyContinueOf,
   offeredTiers,
@@ -232,6 +234,8 @@ export function register(on: On) {
    * `agent.spawn`, which is the same id the loop's `turn.step` carries.
    */
   const spawned = new Map<string, Attempt>();
+  /** Agents whose first step has run, so later steps get Jev's effort. */
+  const stepped = new Set<string>();
 
   const trim = (map: Map<string, unknown>) => {
     while (map.size > CACHE_LIMIT) {
@@ -399,7 +403,8 @@ export function register(on: On) {
       // What a downgrade is priced against: the engine's count of what the
       // last response carried, or ours from its usage; the last output, or a
       // typical one. Nothing known means nothing to protect, so no hold.
-      const context = (await contextTokensOf($)) ?? lastUsage?.context ?? 0;
+      const reported = await contextTokensOf($);
+      const context = reported ?? lastUsage?.context ?? 0;
       const economics =
         context > 0
           ? {
@@ -422,6 +427,15 @@ export function register(on: On) {
           ...(economics !== undefined ? { economics } : {}),
         },
       );
+      // The conversation's first request runs some efforts as others
+      // (FIRST_TURN_EFFORT). The engine has no count of a response yet
+      // exactly when there has been none: a fresh session, or one just
+      // compacted. A resumed session reports its context, and the engine
+      // honours the ask there. The route line and the request say what will
+      // run; `running`, below, keeps what Jev asked.
+      if (reported === null && "decision" in attempt) {
+        attempt.decision = firstTurnEffort(attempt.decision);
+      }
     }
 
     // One place where the turn's outcome is settled, so the report and the
@@ -443,9 +457,10 @@ export function register(on: On) {
       trim(decisions);
       latest = attempt.decision;
       // What the next turn holds to is the tier actually running, which on a
-      // held turn is the previous one, not the one Jev named.
-      running = attempt.decision;
-      continueFrom = attempt.decision;
+      // held turn is the previous one, not the one Jev named — at the effort
+      // Jev asked for, not the one a first turn ran instead.
+      running = asAsked(attempt.decision);
+      continueFrom = running;
     } else {
       // Unrouted: the session model answered. A following go-ahead must not
       // re-apply the last routed tier as if that were the previous turn.
@@ -517,6 +532,15 @@ export function register(on: On) {
       touch(decisions, e.turnId, decision);
     } else if (attempt && "decision" in attempt) {
       decision = attempt.decision;
+    }
+    // A subagent's conversation starts at its first step, which runs some
+    // efforts as others (FIRST_TURN_EFFORT); every step after is deep in
+    // that conversation and gets what Jev asked.
+    if (decision !== undefined && e.agentId !== undefined) {
+      decision = stepped.has(e.agentId)
+        ? asAsked(decision)
+        : firstTurnEffort(decision);
+      stepped.add(e.agentId);
     }
     const step = decision
       ? next({ ...e, model: decision.model, effort: decision.effort })

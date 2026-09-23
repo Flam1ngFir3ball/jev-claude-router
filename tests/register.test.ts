@@ -980,7 +980,8 @@ describe("register: a bare go-ahead", () => {
     setTier("haiku", 1, 0);
     const second = await turn(hooks, $, "g2", "yes");
     assert.equal(second.sent.model, "claude-fable-5-1");
-    // Default xhigh-off caps the first turn at high; the go-ahead carries that.
+    // The default ceiling capped the first turn at medium, which its first
+    // request ran as high; the go-ahead carries what Jev asked, medium.
     assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "no round trip for a go-ahead");
     assert.match(second.text, /`fable` · medium · 90% · continue · 0ms/);
@@ -1581,5 +1582,112 @@ describe("register: the ceiling subcommand", () => {
     const r = await run(hooks, $, "ceiling ultra");
     assert.match(r.text, /not an effort/);
     assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
+  });
+});
+
+describe("register: a conversation's first request", () => {
+  const started = async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+    text = "plan the architecture",
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text, turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""),
+    };
+  }
+
+  test("fable at medium is sent as high before the engine has a response, and the line says so", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(null);
+    setTier("fable", 0.9, 1);
+    const first = await turn(hooks, $, "f1");
+    assert.equal(first.sent.effort, "high");
+    assert.match(first.text, /`fable` · high · 90% · \d+ms/);
+    const status = await hooks.get('command.run:{"command":"jev"}')!($, { args: "" });
+    assert.match(status.text, /fable·high 0\.90/);
+  });
+
+  test("the turn after starts from the medium Jev asked for", async () => {
+    const { hooks, $, setTier, setContext, fetches } = await started();
+    setContext(null);
+    setTier("fable", 0.9, 1);
+    await turn(hooks, $, "f2");
+    setContext(50_000);
+    const asked = fetches();
+    const second = await turn(hooks, $, "f3", "go ahead");
+    assert.equal(second.sent.effort, "medium", "the continuation carries Jev's ask");
+    assert.equal(fetches(), asked);
+    setTier("fable", 0.9, 1);
+    assert.equal((await turn(hooks, $, "f3b")).sent.effort, "medium");
+  });
+
+  test("a resumed session reports its context, so its first routed turn is not a first request", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(50_000);
+    setTier("fable", 0.9, 1);
+    const t = await turn(hooks, $, "f4");
+    assert.equal(t.sent.effort, "medium");
+    assert.match(t.text, /`fable` · medium/);
+  });
+
+  test("a compaction makes the next request a first one again", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(50_000);
+    setTier("fable", 0.9, 1);
+    assert.equal((await turn(hooks, $, "f5")).sent.effort, "medium");
+    await hooks.get("session.compact")!($, { trigger: "auto" }, async (e: unknown) => e);
+    setContext(null);
+    assert.equal((await turn(hooks, $, "f6")).sent.effort, "high");
+  });
+
+  test("a fable subagent's first step is sent as high, its later steps as asked", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("fable", 0.9, 1);
+    const spawn = await hooks.get("agent.spawn")!(
+      $,
+      { prompt: "plan it", description: "plan it", subagentType: "Plan", fork: false },
+      async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "agent-1" }),
+    );
+    assert.equal(spawn.model, "claude-fable-5-1");
+    const step = async (id: string) => {
+      let sent: { effort?: string } = {};
+      await collect(
+        hooks.get("turn.step")!(
+          $,
+          { turnId: id, index: 0, agentId: "agent-1" },
+          (e: { model: string; effort: string }) => {
+            sent = e;
+            return answeredBy(e.model);
+          },
+        ),
+      );
+      return sent.effort;
+    };
+    assert.equal(await step("a1"), "high");
+    assert.equal(await step("a2"), "medium");
   });
 });

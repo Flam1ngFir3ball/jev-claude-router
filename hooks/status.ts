@@ -19,6 +19,8 @@ import {
   SUBAGENT_CONFIDENCE,
   subagentDecision,
   TIERS,
+  UPGRADE_CONTEXT_TOKENS,
+  upgradeBar,
   withCeiling,
   type Ceiling,
   type Decision,
@@ -273,10 +275,10 @@ export function attemptOf(
   }
   if (hold.sticky !== null && !decision.forced) {
     const running = hold.running;
+    const downgrade =
+      running !== null && isDowngrade(running.tier, decision.tier);
     const verdict =
-      running !== null &&
-      hold.economics !== undefined &&
-      isDowngrade(running.tier, decision.tier)
+      downgrade && hold.economics !== undefined
         ? switchVerdict(
             running.tier,
             decision.tier,
@@ -285,7 +287,13 @@ export function attemptOf(
             hold.economics.ttl,
           )
         : null;
-    decision = stickyDecision(decision, running, hold.sticky, verdict);
+    // An upgrade writes the whole context to the dearer tier; past 100k it
+    // has to be surer than the bar. A downgrade is priced instead.
+    const bar =
+      !downgrade && hold.economics !== undefined
+        ? upgradeBar(hold.sticky, hold.economics.contextTokens)
+        : hold.sticky;
+    decision = stickyDecision(decision, running, bar, verdict);
   }
   // A forced turn named its tier; effort comes from Jev when it was asked,
   // otherwise medium. The Sonnet effort gate does not get a vote here.
@@ -538,7 +546,9 @@ export function statusReport(status: Status): string {
     `  sticky    ${
       status.sticky === null
         ? "off (JEV_ROUTER_STICKY=0)"
-        : `on, switch needs ${Math.round(status.sticky * 100)}%, and a downgrade has to pay`
+        : `on, switch needs ${Math.round(status.sticky * 100)}% ` +
+          `(${Math.round(upgradeBar(status.sticky, UPGRADE_CONTEXT_TOKENS) * 100)}% up past ` +
+          `${kOf(UPGRADE_CONTEXT_TOKENS)}), and a downgrade has to pay`
     }`,
   );
   lines.push(`  ceiling   ${ceilingLine(status.ceiling)}`);
