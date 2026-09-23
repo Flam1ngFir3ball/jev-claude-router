@@ -8,28 +8,27 @@ import {
 } from "./jev.ts";
 import { labelOf, withLabel } from "./label.ts";
 import {
+  ceilingOf,
   excludedTiers,
   isContinuation,
-  lowOffOf,
-  mediumOffOf,
   notifyContinueOf,
   offeredTiers,
   overrideAllowedOf,
   parseOverride,
   stickyOf,
   thresholdOf,
-  TIERS,
-  maxOffOf,
-  ultraOffOf,
-  xhighOffOf,
+  type Ceiling,
   type Decision,
   type Tier,
 } from "./policy.ts";
-import { providerOf } from "./provider.ts";
+import { ttlOf, type Ttl } from "./pricing.ts";
+import { providerOf, type ProviderResult } from "./provider.ts";
 import {
   addUsage,
   announceReply,
   attemptOf,
+  carriedOf,
+  ceilingCommand,
   continuationOf,
   continuationSkipped,
   HISTORY_LIMIT,
@@ -39,13 +38,9 @@ import {
   notificationOf,
   spawnAttemptOf,
   statusReport,
-  toggleReply,
   stickyCommand,
-  lowCommand,
-  mediumCommand,
-  maxCommand,
-  ultraCommand,
-  xhighCommand,
+  toggleReply,
+  TYPICAL_OUTPUT_TOKENS,
   usageFooter,
   type AgentTag,
   type Attempt,
@@ -70,16 +65,37 @@ const CACHE_LIMIT = 32;
 const MID_TURN: ReadonlySet<string> = new Set(["tool_use", "pause_turn"]);
 
 /**
- * Asks Jev about one piece of text; the provider and budget come from the
- * env. A top-level function on purpose: the engine follows where `$` goes
- * when it loads a module, and only lets it into a function declared here at
- * the top, so a closure taking `$` inside `register` fails the whole module
- * (measured 2026-09-23: it loaded nothing and every turn went unrouted).
+ * Everything the router reads from the environment, read once. None of it
+ * changes within a session, and reading eleven variables on every turn was
+ * eleven awaits ahead of the Jev call. `sticky` and `ceiling` start here
+ * and are then owned by `/jev sticky` and `/jev ceiling`.
  */
-async function classify($: Engine, text: string, offered: readonly Tier[]) {
-  return askJev({
-    fetch: (url, init) => $.http.fetch(url, init),
-    sleep: (ms) => $.clock.sleep(ms),
+type Settings = {
+  provider: ProviderResult;
+  timeoutMs: number;
+  offered: readonly Tier[];
+  excluded: readonly Tier[];
+  sticky: number | null;
+  ceiling: Ceiling;
+  ttl: Ttl;
+  allowOverride: boolean;
+  notifyContinue: boolean;
+};
+
+/**
+ * Reads the settings from the environment on first use. A top-level
+ * function on purpose: the engine follows where `$` goes when it loads a
+ * module, and only lets it into a function declared here at the top, so a
+ * closure taking `$` inside `register` fails the whole module (measured
+ * 2026-09-23: it loaded nothing and every turn went unrouted).
+ */
+async function seedSettings(
+  $: Engine,
+  current: Settings | null,
+): Promise<Settings> {
+  if (current !== null) return current;
+  const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
+  return {
     provider: providerOf({
       TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
       AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
@@ -88,100 +104,60 @@ async function classify($: Engine, text: string, offered: readonly Tier[]) {
       JEV_ROUTER_ALLOW_CUSTOM_BASE: await $.env.get(
         "JEV_ROUTER_ALLOW_CUSTOM_BASE",
       ),
+      JEV_ROUTER_JEV_MODEL: await $.env.get("JEV_ROUTER_JEV_MODEL"),
     }),
+    timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
+    offered: offeredTiers(excluded),
+    excluded: [...excluded],
+    sticky: stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
+      ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
+      : null,
+    ceiling: ceilingOf(await $.env.get("JEV_ROUTER_CEILING")),
+    ttl: ttlOf(await $.env.get("JEV_ROUTER_CACHE_TTL")),
+    allowOverride: overrideAllowedOf(
+      await $.env.get("JEV_ROUTER_ALLOW_OVERRIDE"),
+    ),
+    notifyContinue: notifyContinueOf(
+      await $.env.get("JEV_ROUTER_NOTIFY_CONTINUE"),
+    ),
+  };
+}
+
+/** Asks Jev about one piece of text. Top-level, for the same reason as above. */
+async function classify(
+  $: Engine,
+  text: string,
+  offered: readonly Tier[],
+  settings: Settings,
+) {
+  return askJev({
+    fetch: (url, init) => $.http.fetch(url, init),
+    sleep: (ms) => $.clock.sleep(ms),
+    provider: settings.provider,
     state: text,
     offered,
-    timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
+    timeoutMs: settings.timeoutMs,
   });
 }
 
 /**
- * Seeds sticky from env once per session, and only once: `/jev sticky` may
- * have already set it, and re-reading env after that would undo the override.
- * A top-level function for the same reason as `classify` above — `$` may only
- * reach a function declared here, never a closure inside `register`.
+ * The context the next turn will carry, in tokens, from the engine's own
+ * count of the last response, or null when it has none yet (a fresh
+ * session, or one just compacted, which is also when there is no cache to
+ * protect). Older engines have no `usage()`; that reads as null too.
  */
-async function seedSticky(
-  $: Engine,
-  state: { sticky: number | null; stickyReady: boolean },
-): Promise<{ sticky: number | null; stickyReady: boolean }> {
-  if (state.stickyReady) return state;
-  const sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
-    ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
-    : null;
-  return { sticky, stickyReady: true };
-}
-
-/**
- * Seeds the xhigh block list from env once per session. Same `$`-flow rule
- * as `seedSticky`: must be top-level, with state passed in and out.
- */
-async function seedXhigh(
-  $: Engine,
-  state: { xhighOff: Set<Tier>; xhighReady: boolean },
-): Promise<{ xhighOff: Set<Tier>; xhighReady: boolean }> {
-  if (state.xhighReady) return state;
-  return {
-    xhighOff: xhighOffOf(await $.env.get("JEV_ROUTER_XHIGH_OFF")),
-    xhighReady: true,
+async function contextTokensOf($: {
+  session: {
+    usage: () => Promise<{ context?: { tokens?: number } } | undefined>;
   };
-}
-
-/**
- * Seeds the medium ceiling block list from env once per session. Same
- * `$`-flow rule as `seedSticky` / `seedXhigh`.
- */
-async function seedMedium(
-  $: Engine,
-  state: { mediumOff: Set<Tier>; mediumReady: boolean },
-): Promise<{ mediumOff: Set<Tier>; mediumReady: boolean }> {
-  if (state.mediumReady) return state;
-  return {
-    mediumOff: mediumOffOf(await $.env.get("JEV_ROUTER_MEDIUM_OFF")),
-    mediumReady: true,
-  };
-}
-
-/**
- * Seeds the low ceiling block list from env once per session.
- */
-async function seedLow(
-  $: Engine,
-  state: { lowOff: Set<Tier>; lowReady: boolean },
-): Promise<{ lowOff: Set<Tier>; lowReady: boolean }> {
-  if (state.lowReady) return state;
-  return {
-    lowOff: lowOffOf(await $.env.get("JEV_ROUTER_LOW_OFF")),
-    lowReady: true,
-  };
-}
-
-/**
- * Seeds the max block list from `JEV_ROUTER_MAX_OFF` once per session.
- */
-async function seedMax(
-  $: Engine,
-  state: { maxOff: Set<Tier>; maxReady: boolean },
-): Promise<{ maxOff: Set<Tier>; maxReady: boolean }> {
-  if (state.maxReady) return state;
-  return {
-    maxOff: maxOffOf(await $.env.get("JEV_ROUTER_MAX_OFF")),
-    maxReady: true,
-  };
-}
-
-/**
- * Seeds the ultra block list from `JEV_ROUTER_ULTRA_OFF` once per session.
- */
-async function seedUltra(
-  $: Engine,
-  state: { ultraOff: Set<Tier>; ultraReady: boolean },
-): Promise<{ ultraOff: Set<Tier>; ultraReady: boolean }> {
-  if (state.ultraReady) return state;
-  return {
-    ultraOff: ultraOffOf(await $.env.get("JEV_ROUTER_ULTRA_OFF")),
-    ultraReady: true,
-  };
+}): Promise<number | null> {
+  try {
+    const usage = await $.session.usage();
+    const tokens = usage?.context?.tokens;
+    return typeof tokens === "number" && tokens > 0 ? tokens : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -219,37 +195,8 @@ async function agentTagOf(
  *
  * @param on the engine's registrar
  */
-
-/** Appended when a higher rung is opened while a tighter ceiling still binds. */
-function ceilingNote(
-  opened: "medium" | "xhigh" | "max" | "ultra",
-  lowOff: ReadonlySet<Tier>,
-  mediumOff: ReadonlySet<Tier>,
-  xhighOff: ReadonlySet<Tier>,
-  maxOff: ReadonlySet<Tier>,
-): string {
-  if (lowOff.size === TIERS.length) {
-    return " Note: low ceiling is still on — effort caps at low until /jev low on.";
-  }
-  if (opened !== "medium" && mediumOff.size === TIERS.length) {
-    return " Note: medium ceiling is still on — effort caps at medium until /jev medium on.";
-  }
-  if (
-    (opened === "max" || opened === "ultra") &&
-    xhighOff.size === TIERS.length
-  ) {
-    return " Note: xhigh is still off — effort caps at high until /jev xhigh on.";
-  }
-  if (opened === "ultra" && maxOff.size === TIERS.length) {
-    return " Note: max is still off — ultra caps at xhigh until /jev max on.";
-  }
-  if (opened === "xhigh" && mediumOff.size === TIERS.length) {
-    return " Note: medium ceiling is still on — effort caps at medium until /jev medium on.";
-  }
-  return "";
-}
-
 export function register(on: On) {
+  let settings: Settings | null = null;
   const decisions = new Map<string, Decision>();
   /**
    * Turns whose reply has yet to open with its route line. The line itself is
@@ -264,48 +211,10 @@ export function register(on: On) {
    */
   const byTurn = new Map<string, Attempt>();
   let latest: Decision | null = null;
-  /**
-   * The confidence a switch must clear, or null when switches are free. The
-   * env vars are the session's starting value; `/jev sticky` overrides them
-   * from then on, so retuning does not mean restarting the session.
-   */
-  let sticky: number | null = null;
-  /** True once sticky has been seeded from env or set by `/jev sticky`. */
-  let stickyReady = false;
-  /**
-   * Tiers for which xhigh+ effort is blocked. Defaults to every
-   * tier (cap at high) until seeded; `JEV_ROUTER_XHIGH_OFF` and `/jev xhigh`
-   * override from then on.
-   */
-  let xhighOff = new Set<Tier>(TIERS);
-  let xhighReady = false;
-  /**
-   * Tiers for which max+ is blocked (cap at xhigh). Defaults to every
-   * tier; only matters once xhigh is allowed.
-   */
-  let maxOff = new Set<Tier>(TIERS);
-  let maxReady = false;
-  /**
-   * Tiers for which ultra is blocked (cap at max). Defaults to every
-   * tier; only matters once max is allowed.
-   */
-  let ultraOff = new Set<Tier>(TIERS);
-  let ultraReady = false;
-  /**
-   * Tiers for which high+ effort is blocked (cap at medium). Defaults to
-   * every tier (session default ceiling is medium); `JEV_ROUTER_MEDIUM_OFF`
-   * and `/jev medium` override from then on.
-   */
-  let mediumOff = new Set<Tier>(TIERS);
-  let mediumReady = false;
-  /**
-   * Tiers for which medium+ effort is blocked (cap at low). Empty by
-   * default — tighten with `JEV_ROUTER_LOW_OFF` or `/jev low off`.
-   */
-  let lowOff = new Set<Tier>();
-  let lowReady = false;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
+  /** What that turn carried and produced, for pricing the next switch. */
+  let lastUsage: { context: number; output: number } | null = null;
   /**
    * What a bare go-ahead continues. Cleared on an unrouted turn: that turn
    * ran on the session model, so re-applying the older routed decision would
@@ -315,6 +224,8 @@ export function register(on: On) {
   let enabled = true;
   let announce = true;
   let surface: string | null = null;
+  /** Dollars across every turn seen this session, at list price. */
+  let spent = 0;
   /**
    * agentId → what its spawn settled on, for the subagent's own steps to
    * apply and for /jev to show. Keyed by the id `next(e)` hands back from
@@ -365,6 +276,11 @@ export function register(on: On) {
     }
   };
 
+  /**
+   * Forget what the main loop was running on. After `/jev off` the session
+   * model answers, and after a compaction the cache the hold was protecting
+   * is gone either way, so the next routed turn starts from Jev's word.
+   */
   const clearRouting = () => {
     decisions.clear();
     byTurn.clear();
@@ -374,6 +290,7 @@ export function register(on: On) {
     latest = null;
     continueFrom = null;
     running = null;
+    lastUsage = null;
   };
 
   const record = (attempt: Attempt) => {
@@ -384,23 +301,22 @@ export function register(on: On) {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "jev",
-      description:
-        "Jev routing: status, on/off, sticky, low, medium, xhigh, max, ultra.",
+      description: "Jev routing: status, on/off, sticky, ceiling, quiet/loud.",
     });
     surface = await $.session.surface();
-    ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
-    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-    ({ mediumOff, mediumReady } = await seedMedium($, {
-      mediumOff,
-      mediumReady,
-    }));
-    ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
-    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
+    settings = await seedSettings($, settings);
+    return next(e);
+  });
+
+  // The cache the hold was protecting does not survive a compaction, and the
+  // context is small again, so switches are cheap: start over from Jev.
+  on("session.compact", async ($, e, next) => {
+    if (e.trigger !== "precompute") clearRouting();
     return next(e);
   });
 
   on("command.run", { command: "jev" }, async ($, e) => {
+    settings = await seedSettings($, settings);
     const arg = e.args.trim().toLowerCase();
 
     if (arg === "on" || arg === "off") {
@@ -418,148 +334,46 @@ export function register(on: On) {
     // for, and refusing it would teach nothing.
     const sub = arg.replace(/^-+/, "");
     if (sub === "sticky" || sub.startsWith("sticky ")) {
-      ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
-      const result = stickyCommand(sub.slice("sticky".length), sticky);
-      sticky = result.sticky;
-      stickyReady = true;
+      const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
+      settings.sticky = result.sticky;
       return { text: result.text };
     }
 
-    if (sub === "low" || sub.startsWith("low ")) {
-      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-      const result = lowCommand(sub.slice("low".length), lowOff);
-      lowOff = result.lowOff;
-      lowReady = true;
+    if (sub === "ceiling" || sub.startsWith("ceiling ")) {
+      const result = ceilingCommand(
+        sub.slice("ceiling".length),
+        settings.ceiling,
+      );
+      settings.ceiling = result.ceiling;
       return { text: result.text };
     }
 
-    if (sub === "medium" || sub.startsWith("medium ")) {
-      ({ mediumOff, mediumReady } = await seedMedium($, {
-        mediumOff,
-        mediumReady,
-      }));
-      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-      const result = mediumCommand(sub.slice("medium".length), mediumOff);
-      mediumOff = result.mediumOff;
-      mediumReady = true;
-      const note =
-        result.mediumOff.size === 0
-          ? ceilingNote("medium", lowOff, mediumOff, xhighOff, maxOff)
-          : "";
-      return { text: result.text + note };
-    }
-
-    if (sub === "xhigh" || sub.startsWith("xhigh ")) {
-      ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-      ({ mediumOff, mediumReady } = await seedMedium($, {
-        mediumOff,
-        mediumReady,
-      }));
-      const result = xhighCommand(sub.slice("xhigh".length), xhighOff);
-      xhighOff = result.xhighOff;
-      xhighReady = true;
-      const note =
-        result.xhighOff.size === 0
-          ? ceilingNote("xhigh", lowOff, mediumOff, xhighOff, maxOff)
-          : "";
-      return { text: result.text + note };
-    }
-
-    if (sub === "max" || sub.startsWith("max ")) {
-      ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
-      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-      ({ mediumOff, mediumReady } = await seedMedium($, {
-        mediumOff,
-        mediumReady,
-      }));
-      ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-      const result = maxCommand(sub.slice("max".length), maxOff);
-      maxOff = result.maxOff;
-      maxReady = true;
-      const note =
-        result.maxOff.size === 0
-          ? ceilingNote("max", lowOff, mediumOff, xhighOff, maxOff)
-          : "";
-      return { text: result.text + note };
-    }
-
-    if (sub === "ultra" || sub.startsWith("ultra ")) {
-      ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
-      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-      ({ mediumOff, mediumReady } = await seedMedium($, {
-        mediumOff,
-        mediumReady,
-      }));
-      ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-      ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
-      const result = ultraCommand(sub.slice("ultra".length), ultraOff);
-      ultraOff = result.ultraOff;
-      ultraReady = true;
-      const note =
-        result.ultraOff.size === 0
-          ? ceilingNote("ultra", lowOff, mediumOff, xhighOff, maxOff)
-          : "";
-      return { text: result.text + note };
-    }
-
-    ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
-    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-    ({ mediumOff, mediumReady } = await seedMedium($, {
-      mediumOff,
-      mediumReady,
-    }));
-    ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
-    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
     if (surface === null) surface = await $.session.surface();
-    const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
-    const provider = providerOf({
-      TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
-      AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
-      JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
-      TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
-      JEV_ROUTER_ALLOW_CUSTOM_BASE: await $.env.get(
-        "JEV_ROUTER_ALLOW_CUSTOM_BASE",
-      ),
-    });
+    const contextTokens = (await contextTokensOf($)) ?? lastUsage?.context ?? null;
     return {
       text: statusReport({
         enabled,
         surface,
-        provider,
-        timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
-        sticky,
-        lowOff: [...lowOff],
-        mediumOff: [...mediumOff],
-        xhighOff: [...xhighOff],
-        maxOff: [...maxOff],
-        ultraOff: [...ultraOff],
-        offered: offeredTiers(excluded),
-        excluded: [...excluded],
+        provider: settings.provider,
+        timeoutMs: settings.timeoutMs,
+        sticky: settings.sticky,
+        ceiling: settings.ceiling,
+        ttl: settings.ttl,
+        contextTokens,
+        offered: settings.offered,
+        excluded: settings.excluded,
         announce,
         attempts,
+        spent,
       }),
     };
   });
 
   on("turn.start", async ($, e, next) => {
     if (!enabled) return next(e);
-
-    ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
-    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-    ({ mediumOff, mediumReady } = await seedMedium($, {
-      mediumOff,
-      mediumReady,
-    }));
-    ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
-    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
+    settings = await seedSettings($, settings);
     if (surface === null) surface = await $.session.surface();
-
-    const offered = offeredTiers(
-      excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
-    );
+    const { offered, ceiling } = settings;
 
     // A bare go-ahead continues the previous turn's work on the previous
     // turn's decision, without a round trip: Jev is confidently wrong about
@@ -567,48 +381,48 @@ export function register(on: On) {
     // whatever was just proposed). When there is nothing to continue (first
     // turn, or the previous turn left the session model), still do not ask
     // Jev — that would clear sticky with a ~1.00 haiku pick.
-    const allowOverride = overrideAllowedOf(
-      await $.env.get("JEV_ROUTER_ALLOW_OVERRIDE"),
-    );
-    const forced = allowOverride ? parseOverride(e.text, offered) : null;
+    const forced = settings.allowOverride
+      ? parseOverride(e.text, offered)
+      : null;
     const softNotify =
-      notifyContinueOf(await $.env.get("JEV_ROUTER_NOTIFY_CONTINUE")) &&
+      settings.notifyContinue &&
       notificationOf(e.text) !== null &&
       continueFrom !== null;
-    const attempt =
-      isContinuation(e.text) || softNotify
-        ? continueFrom !== null
-          ? continuationOf(
-              e.text,
-              continueFrom,
-              xhighOff,
-              mediumOff,
-              lowOff,
-              maxOff,
-              ultraOff,
-            )
-          : continuationSkipped(e.text)
-        : attemptOf(
-            e.text,
-            forced !== null
-              ? {
-                  ok: false,
-                  reason: "forced override; Jev not asked",
-                  ms: 0,
-                }
-              : await classify($, e.text, offered),
-            offered,
-            {
-              sticky,
-              running,
-              forced,
-              lowOff,
-              mediumOff,
-              xhighOff,
-              maxOff,
-              ultraOff,
-            },
-          );
+
+    let attempt: Attempt;
+    if (isContinuation(e.text) || softNotify) {
+      attempt =
+        continueFrom !== null
+          ? continuationOf(e.text, continueFrom, ceiling)
+          : continuationSkipped(e.text);
+    } else {
+      // What a downgrade is priced against: the engine's count of what the
+      // last response carried, or ours from its usage; the last output, or a
+      // typical one. Nothing known means nothing to protect, so no hold.
+      const context = (await contextTokensOf($)) ?? lastUsage?.context ?? 0;
+      const economics =
+        context > 0
+          ? {
+              contextTokens: context,
+              outputTokens: lastUsage?.output ?? TYPICAL_OUTPUT_TOKENS,
+              ttl: settings.ttl,
+            }
+          : undefined;
+      attempt = attemptOf(
+        e.text,
+        forced !== null
+          ? { ok: false, reason: "forced override; Jev not asked", ms: 0 }
+          : await classify($, e.text, offered, settings),
+        offered,
+        {
+          sticky: settings.sticky,
+          running,
+          forced,
+          ceiling,
+          ...(economics !== undefined ? { economics } : {}),
+        },
+      );
+    }
 
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
@@ -658,6 +472,7 @@ export function register(on: On) {
       for await (const chunk of next(e)) yield chunk;
       return;
     }
+    settings = await seedSettings($, settings);
 
     // A subagent's loop gets no turn.start (probed live: its steps arrive
     // with agentId set and nothing in byTurn), so its turn is first seen
@@ -725,7 +540,19 @@ export function register(on: On) {
       }
 
       if (chunk.kind === "stop") {
-        if (attempt && chunk.usage) addUsage(attempt, chunk.usage);
+        if (attempt && chunk.usage) {
+          const before = attempt.cost ?? 0;
+          addUsage(attempt, chunk.usage, settings.ttl);
+          spent += (attempt.cost ?? 0) - before;
+          // The main loop's last carried size and output price its next
+          // switch; a subagent's are its own conversation.
+          if (e.agentId === undefined) {
+            lastUsage = {
+              context: carriedOf(chunk.usage),
+              output: chunk.usage.output_tokens,
+            };
+          }
+        }
 
         // The index must be one past the last text block, and this is
         // load-bearing. A chunk yielded at an index the engine already
@@ -773,28 +600,14 @@ export function register(on: On) {
   // haiku loop pays back in its first tool call.
   on("agent.spawn", async ($, e, next) => {
     if (!enabled || e.fork || e.model !== undefined) return next(e);
+    settings = await seedSettings($, settings);
 
-    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
-    ({ mediumOff, mediumReady } = await seedMedium($, {
-      mediumOff,
-      mediumReady,
-    }));
-    ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
-    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
-    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
-    const offered = offeredTiers(
-      excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
-    );
     const attempt = spawnAttemptOf(
       e.description,
-      await classify($, e.prompt, offered),
-      offered,
+      await classify($, e.prompt, settings.offered, settings),
+      settings.offered,
       { type: e.subagentType, label: e.description },
-      xhighOff,
-      mediumOff,
-      lowOff,
-      maxOff,
-      ultraOff,
+      settings.ceiling,
     );
     record(attempt);
 

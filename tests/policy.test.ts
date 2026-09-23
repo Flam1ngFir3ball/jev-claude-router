@@ -2,18 +2,21 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  capTo,
+  ceilingAt,
+  ceilingOf,
+  confidenceFrom,
+  DEFAULT_CEILING,
   DEFAULT_STICKY_CONFIDENCE,
   decisionOf,
+  EFFORT_CRITERIA,
+  EFFORTS,
+  effortNamed,
   effortOf,
   excludedTiers,
   forcedDecision,
   holdsSonnetEffort,
-  isAboveLow,
-  isAboveMedium,
   isContinuation,
-  isMaxOrAbove,
-  isUltra,
-  isXhighOrAbove,
   MODEL_OF,
   offeredTiers,
   parseOverride,
@@ -23,24 +26,11 @@ import {
   subagentDecision,
   thresholdOf,
   TIERS,
-  capLow,
-  capMax,
-  capMedium,
-  capUltra,
-  capXhigh,
-  lowOffOf,
-  maxOffOf,
-  mediumOffOf,
-  ultraOffOf,
-  xhighOffOf,
-  LOW_CAP,
-  MAX_CAP,
-  MEDIUM_CAP,
-  ULTRA_CAP,
-  XHIGH_CAP,
+  withCeiling,
   type Decision,
   type Effort,
 } from "../hooks/policy.ts";
+import { switchVerdict } from "../hooks/pricing.ts";
 
 const choice = (name: string, confidence = 0.9) => ({
   tier: { type: "choice", choice: name, confidence },
@@ -65,12 +55,11 @@ describe("policy", () => {
     assert.equal(effortOf(2.4), "high");
     assert.equal(effortOf(2.6), "xhigh");
     assert.equal(effortOf(4), "max");
-    assert.equal(effortOf(5), "ultra");
   });
 
   test("a score outside the ladder clamps instead of throwing", () => {
     assert.equal(effortOf(-3), "low");
-    assert.equal(effortOf(99), "ultra");
+    assert.equal(effortOf(99), "max");
   });
 
   test("a missing or unusable score falls back to medium", () => {
@@ -515,7 +504,7 @@ describe("a subagent’s decision", () => {
   });
 });
 
-describe("xhigh cap", () => {
+describe("the effort ceiling", () => {
   const at = (tier: Decision["tier"], effort: Effort): Decision => ({
     tier,
     model: MODEL_OF[tier],
@@ -523,213 +512,196 @@ describe("xhigh cap", () => {
     confidence: 0.9,
   });
 
-  test("xhigh and max are the rungs that cost the most", () => {
-    assert.equal(isXhighOrAbove("xhigh"), true);
-    assert.equal(isXhighOrAbove("max"), true);
-    assert.equal(isXhighOrAbove("high"), false);
+  test("the engine has five efforts and so does the ladder", () => {
+    assert.deepEqual(EFFORTS, ["low", "medium", "high", "xhigh", "max"]);
+    assert.equal(EFFORT_CRITERIA.length, EFFORTS.length);
   });
 
-  test("a blocked tier is capped to high, and what Jev wanted is kept", () => {
-    const d = capXhigh(at("fable", "xhigh"), new Set(["fable"]));
-    assert.equal(d.effort, XHIGH_CAP);
-    assert.equal(d.cappedEffort, "xhigh");
-    assert.equal(capXhigh(at("fable", "max"), new Set(["fable"])).cappedEffort, "max");
+  test("a score past the top level is the top level, not a rung the API lacks", () => {
+    assert.equal(effortOf(4.4), "max");
+    assert.equal(effortOf(5), "max");
+    assert.equal(effortOf(9), "max");
   });
 
-  test("an unblocked tier is left alone", () => {
-    const d = capXhigh(at("fable", "xhigh"), new Set(["opus"]));
-    assert.equal(d.effort, "xhigh");
-    assert.equal(d.cappedEffort, undefined);
+  test("the default ceiling is medium on every tier", () => {
+    assert.deepEqual(ceilingOf(undefined), ceilingAt(DEFAULT_CEILING));
+    assert.deepEqual(ceilingOf(""), ceilingAt("medium"));
   });
 
-  test("high and below are never capped", () => {
-    assert.equal(capXhigh(at("opus", "high"), new Set(TIERS)).effort, "high");
-    assert.equal(capXhigh(at("opus", "low"), new Set(TIERS)).cappedEffort, undefined);
+  test("one word raises every tier; tier:effort pairs raise some", () => {
+    assert.deepEqual(ceilingOf("xhigh"), ceilingAt("xhigh"));
+    assert.deepEqual(ceilingOf("fable:xhigh, opus:high"), {
+      ...ceilingAt("medium"),
+      fable: "xhigh",
+      opus: "high",
+    });
   });
 
-  test("the env defaults to all-off; 0 turns it back on", () => {
-    assert.deepEqual([...xhighOffOf(undefined)].sort(), [...TIERS].sort());
-    assert.deepEqual([...xhighOffOf("")].sort(), [...TIERS].sort());
-    assert.deepEqual([...xhighOffOf("0")], []);
-    assert.deepEqual([...xhighOffOf("false")], []);
-    assert.deepEqual([...xhighOffOf("off")], []);
-    assert.deepEqual([...xhighOffOf("none")], []);
-    assert.deepEqual([...xhighOffOf("1")].sort(), [...TIERS].sort());
-    assert.deepEqual([...xhighOffOf("all")].sort(), [...TIERS].sort());
-    assert.deepEqual([...xhighOffOf("opus,fable")].sort(), ["fable", "opus"]);
-    assert.deepEqual([...xhighOffOf("nope,opus")], ["opus"]);
+  test("off and none lift the ceiling, which is max", () => {
+    assert.deepEqual(ceilingOf("off"), ceilingAt("max"));
+    assert.equal(effortNamed("none"), "max");
+    assert.equal(effortNamed("ultra"), null);
+  });
+
+  test("a typo leaves the default rather than opening the ceiling", () => {
+    assert.deepEqual(ceilingOf("xhgih"), ceilingAt("medium"));
+    assert.deepEqual(ceilingOf("fable:ultra,sonnet:high"), {
+      ...ceilingAt("medium"),
+      sonnet: "high",
+    });
+  });
+
+  test("what Jev asks for above the ceiling is capped, and kept", () => {
+    const capped = capTo(at("fable", "max"), ceilingAt("medium"));
+    assert.equal(capped.effort, "medium");
+    assert.equal(capped.cappedEffort, "max");
+  });
+
+  test("at or under the ceiling nothing changes", () => {
+    const low = at("haiku", "low");
+    assert.equal(capTo(low, ceilingAt("medium")), low);
+    const exact = at("opus", "xhigh");
+    assert.equal(capTo(exact, ceilingAt("xhigh")), exact);
+    assert.equal(capTo(exact, ceilingAt("xhigh")).cappedEffort, undefined);
+  });
+
+  test("the ceiling is per tier", () => {
+    const ceiling = withCeiling(ceilingAt("medium"), "xhigh", ["fable"]);
+    assert.equal(capTo(at("fable", "xhigh"), ceiling).effort, "xhigh");
+    assert.equal(capTo(at("opus", "xhigh"), ceiling).effort, "medium");
+  });
+
+  test("withCeiling copies rather than mutating", () => {
+    const base = ceilingAt("medium");
+    withCeiling(base, "max");
+    assert.deepEqual(base, ceilingAt("medium"));
   });
 });
 
-describe("medium cap", () => {
-  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
-    tier,
-    model: MODEL_OF[tier],
-    effort,
-    confidence: 0.9,
+describe("confidence from probabilities", () => {
+  test("TypeSafe’s worked example: 0.85 / 0.15 / 0 reads 0.78", () => {
+    const c = confidenceFrom({ haiku: 0.85, sonnet: 0.15, opus: 0 }, 3);
+    // Their page prints 0.78; the value is exactly 0.775.
+    assert.ok(Math.abs(c - 0.775) < 1e-9, `got ${c}`);
   });
 
-  test("high and above are blocked when medium is off", () => {
-    assert.equal(isAboveMedium("high"), true);
-    assert.equal(isAboveMedium("xhigh"), true);
-    assert.equal(isAboveMedium("max"), true);
-    assert.equal(isAboveMedium("medium"), false);
-    assert.equal(isAboveMedium("low"), false);
-  });
-
-  test("a blocked tier is capped to medium, and what Jev wanted is kept", () => {
-    const d = capMedium(at("fable", "high"), new Set(["fable"]));
-    assert.equal(d.effort, MEDIUM_CAP);
-    assert.equal(d.cappedEffort, "high");
+  test("all the mass on one tier is 1; an even spread is 0", () => {
     assert.equal(
-      capMedium(at("fable", "xhigh"), new Set(["fable"])).cappedEffort,
-      "xhigh",
+      confidenceFrom({ haiku: 1, sonnet: 0, opus: 0, fable: 0 }, 4),
+      1,
+    );
+    assert.equal(
+      confidenceFrom({ haiku: 0.25, sonnet: 0.25, opus: 0.25, fable: 0.25 }, 4),
+      0,
     );
   });
 
-  test("an unblocked tier is left alone", () => {
-    const d = capMedium(at("fable", "high"), new Set(["opus"]));
-    assert.equal(d.effort, "high");
-    assert.equal(d.cappedEffort, undefined);
+  test("nothing to read from is 0, never NaN", () => {
+    assert.equal(confidenceFrom(undefined, 4), 0);
+    assert.equal(confidenceFrom({}, 4), 0);
   });
 
-  test("medium and below are never capped", () => {
-    assert.equal(capMedium(at("opus", "medium"), new Set(TIERS)).effort, "medium");
-    assert.equal(capMedium(at("opus", "low"), new Set(TIERS)).cappedEffort, undefined);
+  test("a provider that sends probabilities but no confidence still gets one", () => {
+    const d = decisionOf({
+      tier: {
+        type: "choice",
+        choice: "opus",
+        probabilities: { haiku: 0.02, sonnet: 0.08, opus: 0.9, fable: 0 },
+      },
+      effort: { type: "score", score: 2 },
+    });
+    assert.equal(d?.tier, "opus");
+    assert.equal(Math.round((d?.confidence ?? 0) * 100), 87);
+    assert.deepEqual(d?.probabilities, {
+      haiku: 0.02,
+      sonnet: 0.08,
+      opus: 0.9,
+      fable: 0,
+    });
   });
 
-  test("the env defaults to all-off; 0 turns it back on", () => {
-    assert.deepEqual([...mediumOffOf(undefined)].sort(), [...TIERS].sort());
-    assert.deepEqual([...mediumOffOf("")].sort(), [...TIERS].sort());
-    assert.deepEqual([...mediumOffOf("0")], []);
-    assert.deepEqual([...mediumOffOf("false")], []);
-    assert.deepEqual([...mediumOffOf("1")].sort(), [...TIERS].sort());
-    assert.deepEqual([...mediumOffOf("all")].sort(), [...TIERS].sort());
-    assert.deepEqual([...mediumOffOf("opus,fable")].sort(), ["fable", "opus"]);
+  test("the provider’s own confidence wins when it sends one", () => {
+    const d = decisionOf({
+      tier: {
+        type: "choice",
+        choice: "opus",
+        confidence: 0.5,
+        probabilities: { opus: 0.99, haiku: 0.01 },
+      },
+      effort: { type: "score", score: 2 },
+    });
+    assert.equal(d?.confidence, 0.5);
   });
 
-  test("medium cap wins over xhigh cap when both apply", () => {
-    let d = capMedium(at("fable", "xhigh"), new Set(TIERS));
-    d = capXhigh(d, new Set(TIERS));
-    assert.equal(d.effort, "medium");
-    assert.equal(d.cappedEffort, "xhigh");
-  });
-});
-
-describe("low cap", () => {
-  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
-    tier,
-    model: MODEL_OF[tier],
-    effort,
-    confidence: 0.9,
-  });
-
-  test("medium and above are blocked when low is off", () => {
-    assert.equal(isAboveLow("medium"), true);
-    assert.equal(isAboveLow("high"), true);
-    assert.equal(isAboveLow("xhigh"), true);
-    assert.equal(isAboveLow("max"), true);
-    assert.equal(isAboveLow("low"), false);
-  });
-
-  test("a blocked tier is capped to low", () => {
-    const d = capLow(at("fable", "medium"), new Set(["fable"]));
-    assert.equal(d.effort, LOW_CAP);
-    assert.equal(d.cappedEffort, "medium");
-  });
-
-  test("the env is off until set; 1 blocks all", () => {
-    assert.deepEqual([...lowOffOf(undefined)], []);
-    assert.deepEqual([...lowOffOf("")], []);
-    assert.deepEqual([...lowOffOf("0")], []);
-    assert.deepEqual([...lowOffOf("1")].sort(), [...TIERS].sort());
-    assert.deepEqual([...lowOffOf("opus")],[ "opus" ]);
-  });
-
-  test("low cap wins when stacked with medium and xhigh", () => {
-    let d = capLow(at("fable", "xhigh"), new Set(TIERS));
-    d = capMedium(d, new Set(TIERS));
-    d = capXhigh(d, new Set(TIERS));
-    assert.equal(d.effort, "low");
-    assert.equal(d.cappedEffort, "xhigh");
+  test("probabilities for tiers not offered are dropped", () => {
+    const d = decisionOf(
+      {
+        tier: {
+          type: "choice",
+          choice: "opus",
+          confidence: 0.9,
+          probabilities: { opus: 0.9, fable: 0.1 },
+        },
+      },
+      ["haiku", "opus"],
+    );
+    assert.deepEqual(d?.probabilities, { opus: 0.9 });
   });
 });
 
-describe("max cap", () => {
-  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+describe("stickiness on the price of a downgrade", () => {
+  const at = (tier: Decision["tier"], confidence: number): Decision => ({
     tier,
     model: MODEL_OF[tier],
-    effort,
-    confidence: 0.9,
+    effort: "low",
+    confidence,
   });
 
-  test("max and ultra are both above xhigh", () => {
-    assert.equal(isMaxOrAbove("max"), true);
-    assert.equal(isMaxOrAbove("ultra"), true);
-    assert.equal(isMaxOrAbove("xhigh"), false);
+  test("a confident downgrade that does not pay is held, and says why", () => {
+    // 200k of context: haiku's cold write plus the return to fable dwarf the output saved.
+    const verdict = switchVerdict("fable", "haiku", 200_000, 1500);
+    assert.equal(verdict.hold, true);
+    const held = stickyDecision(
+      at("haiku", 0.99),
+      at("fable", 0.9),
+      0.75,
+      verdict,
+    );
+    assert.equal(held.tier, "fable");
+    assert.equal(held.held, "haiku");
+    assert.deepEqual(held.heldCost, { stay: verdict.stay, go: verdict.go });
+    assert.equal(held.effort, "low");
   });
 
-  test("a blocked tier caps max to xhigh", () => {
-    const d = capMax(at("fable", "max"), new Set(["fable"]));
-    assert.equal(d.effort, MAX_CAP);
-    assert.equal(d.cappedEffort, "max");
+  test("a confident downgrade that pays goes through", () => {
+    // 2k of context: the cheaper output carries it.
+    const verdict = switchVerdict("fable", "haiku", 2_000, 1500);
+    assert.equal(verdict.hold, false);
+    const d = stickyDecision(at("haiku", 0.99), at("fable", 0.9), 0.75, verdict);
+    assert.equal(d.tier, "haiku");
+    assert.equal(d.held, undefined);
   });
 
-  test("a blocked tier also caps ultra to xhigh", () => {
-    const d = capMax(at("fable", "ultra"), new Set(["fable"]));
-    assert.equal(d.effort, MAX_CAP);
-    assert.equal(d.cappedEffort, "ultra");
+  test("a shaky switch is held with no price attached", () => {
+    const d = stickyDecision(at("haiku", 0.4), at("fable", 0.9), 0.75, null);
+    assert.equal(d.tier, "fable");
+    assert.equal(d.held, "haiku");
+    assert.equal(d.heldCost, undefined);
   });
 
-  test("the env defaults to all-off; 0 turns it back on", () => {
-    assert.deepEqual([...maxOffOf(undefined)].sort(), [...TIERS].sort());
-    assert.deepEqual([...maxOffOf("0")], []);
-    assert.deepEqual([...maxOffOf("1")].sort(), [...TIERS].sort());
+  test("shaky and unprofitable together is one hold, priced", () => {
+    const verdict = switchVerdict("fable", "haiku", 200_000, 1500);
+    const d = stickyDecision(at("haiku", 0.4), at("fable", 0.9), 0.75, verdict);
+    assert.equal(d.held, "haiku");
+    assert.notEqual(d.heldCost, undefined);
   });
 
-  test("max cap only applies when xhigh is still allowed", () => {
-    let d = capXhigh(at("fable", "max"), new Set());
-    d = capMax(d, new Set(TIERS));
-    assert.equal(d.effort, "xhigh");
-    assert.equal(d.cappedEffort, "max");
-  });
-});
-
-describe("ultra cap", () => {
-  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
-    tier,
-    model: MODEL_OF[tier],
-    effort,
-    confidence: 0.9,
-  });
-
-  test("only ultra is the ultra rung", () => {
-    assert.equal(isUltra("ultra"), true);
-    assert.equal(isUltra("max"), false);
-  });
-
-  test("a blocked tier caps ultra to max", () => {
-    const d = capUltra(at("fable", "ultra"), new Set(["fable"]));
-    assert.equal(d.effort, ULTRA_CAP);
-    assert.equal(d.cappedEffort, "ultra");
-  });
-
-  test("the env defaults to all-off; 0 turns it back on", () => {
-    assert.deepEqual([...ultraOffOf(undefined)].sort(), [...TIERS].sort());
-    assert.deepEqual([...ultraOffOf("0")], []);
-    assert.deepEqual([...ultraOffOf("1")].sort(), [...TIERS].sort());
-  });
-
-  test("ultra cap only applies when max is still allowed", () => {
-    let d = capMax(at("fable", "ultra"), new Set());
-    d = capUltra(d, new Set(TIERS));
-    assert.equal(d.effort, "max");
-    assert.equal(d.cappedEffort, "ultra");
-  });
-
-  test("xhigh still covers ultra", () => {
-    assert.equal(isXhighOrAbove("ultra"), true);
-    assert.equal(isAboveMedium("ultra"), true);
-    assert.equal(isAboveLow("ultra"), true);
+  test("a hold carries the probabilities through", () => {
+    const fresh = {
+      ...at("haiku", 0.4),
+      probabilities: { haiku: 0.55, fable: 0.45 },
+    };
+    const d = stickyDecision(fresh, at("fable", 0.9), 0.75, null);
+    assert.deepEqual(d.probabilities, { haiku: 0.55, fable: 0.45 });
   });
 });

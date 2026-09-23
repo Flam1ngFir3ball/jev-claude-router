@@ -24,6 +24,7 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
   let ok = true;
   let fetches = 0;
   let lastState: string | undefined;
+  let contextTokens: number | null = 1_000;
 
   // Most register tests assume sticky off; production defaults sticky on.
   // Pass `JEV_ROUTER_STICKY: undefined` to exercise the real default.
@@ -55,7 +56,12 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
       },
     },
     command: { register: async () => {} },
-    session: { surface: async () => "test" },
+    session: {
+      surface: async () => "test",
+      /** The engine's count of what the last response carried; settable per test. */
+      usage: async () =>
+        contextTokens === null ? undefined : { context: { tokens: contextTokens } },
+    },
     agent: {
       list: async () => {
         listCalls++;
@@ -88,6 +94,10 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
     fail: () => {
       ok = false;
     },
+    /** What `$.session.usage()` reports the context to be, or null for nothing yet. */
+    setContext: (tokens: number | null) => {
+      contextTokens = tokens;
+    },
   };
 }
 
@@ -99,10 +109,13 @@ async function* modelSays(...texts: string[]) {
   return { stopReason: "end_turn" };
 }
 
+// A working turn's shape: 10k carried, 3k produced. With the harness's 1k
+// context (below) a downgrade pays, so the confidence bar is what the
+// sticky tests exercise; the cost-hold tests raise the context themselves.
 const usage = (model: string, input_tokens = 1000) => ({
   model,
   input_tokens,
-  output_tokens: 50,
+  output_tokens: 3000,
   cache_read_input_tokens: 9000,
   cache_creation_input_tokens: 0,
 });
@@ -830,356 +843,6 @@ describe("register: the sticky subcommand", () => {
   });
 });
 
-describe("register: the xhigh subcommand", () => {
-  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
-    hooks.get('command.run:{"command":"jev"}')!($, { args });
-
-  async function turn(
-    hooks: Map<string, Function>,
-    $: unknown,
-    id: string,
-  ) {
-    await hooks.get("turn.start")!(
-      $,
-      { text: "plan the architecture", turnId: id },
-      async (e: unknown) => e,
-    );
-    let sent: { model?: string; effort?: string } = {};
-    const chunks = await collect(
-      hooks.get("turn.step")!(
-        $,
-        { turnId: id, index: 0 },
-        (e: { model: string; effort: string }) => {
-          sent = e;
-          return answeredBy(e.model);
-        },
-      ),
-    );
-    return {
-      sent,
-      text: chunks
-        .filter((c) => c.kind === "text")
-        .map((c) => c.text)
-        .join(""),
-    };
-  }
-
-  test("default seeds medium+xhigh off, so Jev’s xhigh is capped at medium", async () => {
-    const { hooks, $, setTier } = load();
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 3);
-    const t = await turn(hooks, $, "xh0");
-    assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /capped:xhigh/);
-    assert.match((await run(hooks, $, "")).text, /medium\s+off for all/);
-    assert.match((await run(hooks, $, "")).text, /xhigh\s+off for all/);
-  });
-
-  test("/jev xhigh off caps every tier at high", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "0",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 3);
-    await run(hooks, $, "xhigh off");
-    const t = await turn(hooks, $, "xh1");
-    assert.equal(t.sent.effort, "high");
-    assert.match(t.text, /capped:xhigh/);
-    assert.match((await run(hooks, $, "")).text, /xhigh\s+off for all/);
-  });
-
-  test("/jev xhigh off opus leaves fable alone", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "0",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    await run(hooks, $, "xhigh off opus");
-    setTier("fable", 0.9, 3);
-    assert.equal((await turn(hooks, $, "xh2")).sent.effort, "xhigh");
-    setTier("opus", 0.9, 3);
-    const opus = await turn(hooks, $, "xh3");
-    assert.equal(opus.sent.effort, "high");
-    assert.match(opus.text, /capped:xhigh/);
-  });
-
-  test("JEV_ROUTER_XHIGH_OFF=1 seeds the session", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "1",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 4);
-    const t = await turn(hooks, $, "xh4");
-    assert.equal(t.sent.effort, "high", "max is capped too");
-    assert.match(t.text, /capped:max/);
-  });
-
-  test("JEV_ROUTER_XHIGH_OFF=0 allows xhigh", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "0",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 3);
-    assert.equal((await turn(hooks, $, "xh4b")).sent.effort, "xhigh");
-  });
-
-  test("/jev xhigh on clears the env seed", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "all",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    await run(hooks, $, "xhigh on");
-    setTier("fable", 0.9, 3);
-    assert.equal((await turn(hooks, $, "xh5")).sent.effort, "xhigh");
-  });
-});
-
-describe("register: the max and ultra subcommands", () => {
-  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
-    hooks.get('command.run:{"command":"jev"}')!($, { args });
-
-  async function turn(
-    hooks: Map<string, Function>,
-    $: unknown,
-    id: string,
-  ) {
-    await hooks.get("turn.start")!(
-      $,
-      { text: "plan the architecture", turnId: id },
-      async (e: unknown) => e,
-    );
-    let sent: { model?: string; effort?: string } = {};
-    const chunks = await collect(
-      hooks.get("turn.step")!(
-        $,
-        { turnId: id, index: 0 },
-        (e: { model: string; effort: string }) => {
-          sent = e;
-          return answeredBy(e.model);
-        },
-      ),
-    );
-    return {
-      sent,
-      text: chunks
-        .filter((c) => c.kind === "text")
-        .map((c) => c.text)
-        .join(""),
-    };
-  }
-
-  const openHigh = {
-    AI_GATEWAY_API_KEY: "gw-key",
-    JEV_ROUTER_MEDIUM_OFF: "0",
-    JEV_ROUTER_XHIGH_OFF: "0",
-  };
-
-  test("default max+ultra off: Jev’s max caps at xhigh once ceilings are open", async () => {
-    const { hooks, $, setTier } = load({
-      ...openHigh,
-      JEV_ROUTER_MAX_OFF: "1",
-      JEV_ROUTER_ULTRA_OFF: "1",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 4);
-    const t = await turn(hooks, $, "mu0");
-    assert.equal(t.sent.effort, "xhigh");
-    assert.match(t.text, /capped:max/);
-  });
-
-  test("/jev max on allows max; ultra still capped", async () => {
-    const { hooks, $, setTier } = load({
-      ...openHigh,
-      JEV_ROUTER_MAX_OFF: "1",
-      JEV_ROUTER_ULTRA_OFF: "1",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    await run(hooks, $, "max on");
-    setTier("fable", 0.9, 4);
-    assert.equal((await turn(hooks, $, "mu1")).sent.effort, "max");
-    setTier("fable", 0.9, 5);
-    const ultra = await turn(hooks, $, "mu2");
-    assert.equal(ultra.sent.effort, "max");
-    assert.match(ultra.text, /capped:ultra/);
-  });
-
-  test("/jev ultra on is independent of max", async () => {
-    const { hooks, $, setTier } = load({
-      ...openHigh,
-      JEV_ROUTER_MAX_OFF: "0",
-      JEV_ROUTER_ULTRA_OFF: "1",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    await run(hooks, $, "ultra on");
-    setTier("fable", 0.9, 5);
-    assert.equal((await turn(hooks, $, "mu3")).sent.effort, "ultra");
-    assert.match((await run(hooks, $, "")).text, /ultra\s+on/);
-  });
-
-  test("JEV_ROUTER_MAX_OFF=0 and ULTRA_OFF=0 allow both", async () => {
-    const { hooks, $, setTier } = load({
-      ...openHigh,
-      JEV_ROUTER_MAX_OFF: "0",
-      JEV_ROUTER_ULTRA_OFF: "0",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 5);
-    assert.equal((await turn(hooks, $, "mu4")).sent.effort, "ultra");
-  });
-});
-
-describe("register: the medium subcommand", () => {
-  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
-    hooks.get('command.run:{"command":"jev"}')!($, { args });
-
-  async function turn(
-    hooks: Map<string, Function>,
-    $: unknown,
-    id: string,
-  ) {
-    await hooks.get("turn.start")!(
-      $,
-      { text: "plan the architecture", turnId: id },
-      async (e: unknown) => e,
-    );
-    let sent: { model?: string; effort?: string } = {};
-    const chunks = await collect(
-      hooks.get("turn.step")!(
-        $,
-        { turnId: id, index: 0 },
-        (e: { model: string; effort: string }) => {
-          sent = e;
-          return answeredBy(e.model);
-        },
-      ),
-    );
-    return {
-      sent,
-      text: chunks
-        .filter((c) => c.kind === "text")
-        .map((c) => c.text)
-        .join(""),
-    };
-  }
-
-  test("default seeds medium off, so high is capped at medium", async () => {
-    const { hooks, $, setTier } = load();
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 2);
-    const t = await turn(hooks, $, "md0");
-    assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /capped:high/);
-    assert.match((await run(hooks, $, "")).text, /medium\s+off for all/);
-  });
-
-  test("/jev medium off opus leaves fable alone", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    await run(hooks, $, "medium off opus");
-    setTier("fable", 0.9, 2);
-    assert.equal((await turn(hooks, $, "md2")).sent.effort, "high");
-    setTier("opus", 0.9, 2);
-    const opus = await turn(hooks, $, "md3");
-    assert.equal(opus.sent.effort, "medium");
-    assert.match(opus.text, /capped:high/);
-  });
-
-  test("JEV_ROUTER_MEDIUM_OFF=1 seeds the session", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "1",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 3);
-    const t = await turn(hooks, $, "md4");
-    assert.equal(t.sent.effort, "medium", "xhigh is capped too");
-    assert.match(t.text, /capped:xhigh/);
-  });
-
-  test("/jev medium on clears the env seed", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "all",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    await run(hooks, $, "medium on");
-    setTier("fable", 0.9, 2);
-    assert.equal((await turn(hooks, $, "md5")).sent.effort, "high");
-  });
-});
-
-describe("register: the low subcommand", () => {
-  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
-    hooks.get('command.run:{"command":"jev"}')!($, { args });
-
-  async function turn(
-    hooks: Map<string, Function>,
-    $: unknown,
-    id: string,
-  ) {
-    await hooks.get("turn.start")!(
-      $,
-      { text: "plan the architecture", turnId: id },
-      async (e: unknown) => e,
-    );
-    let sent: { model?: string; effort?: string } = {};
-    const chunks = await collect(
-      hooks.get("turn.step")!(
-        $,
-        { turnId: id, index: 0 },
-        (e: { model: string; effort: string }) => {
-          sent = e;
-          return answeredBy(e.model);
-        },
-      ),
-    );
-    return {
-      sent,
-      text: chunks
-        .filter((c) => c.kind === "text")
-        .map((c) => c.text)
-        .join(""),
-    };
-  }
-
-  test("default leaves medium alone; /jev low off caps at low", async () => {
-    const { hooks, $, setTier } = load();
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 1);
-    assert.equal((await turn(hooks, $, "lo0")).sent.effort, "medium");
-    await run(hooks, $, "low off");
-    setTier("fable", 0.9, 1);
-    const t = await turn(hooks, $, "lo1");
-    assert.equal(t.sent.effort, "low");
-    assert.match(t.text, /capped:medium/);
-    assert.match((await run(hooks, $, "")).text, /low\s+off for all/);
-  });
-
-  test("JEV_ROUTER_LOW_OFF=1 seeds the session", async () => {
-    const { hooks, $, setTier } = load({
-      AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_LOW_OFF: "1",
-    });
-    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
-    setTier("fable", 0.9, 2);
-    const t = await turn(hooks, $, "lo2");
-    assert.equal(t.sent.effort, "low");
-    assert.match(t.text, /capped:high/);
-  });
-});
-
 describe("register: a tier named in the prompt", () => {
   const started = async (over: Record<string, string> = {}) => {
     const kit = load({
@@ -1256,8 +919,7 @@ describe("register: a tier named in the prompt", () => {
 
   test("a forced Sonnet turn skips Jev and says forced", async () => {
     const { hooks, $, setTier, fetches } = await started({
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "0",
+      JEV_ROUTER_CEILING: "max",
     });
     setTier("sonnet", 0.9, 1, 0.9);
     await turn(hooks, $, "fs1", "small edit");
@@ -1394,8 +1056,7 @@ describe("register: effort on Sonnet", () => {
     const kit = load({
       AI_GATEWAY_API_KEY: "gw-key",
       JEV_ROUTER_STICKY: "1",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "0",
+      JEV_ROUTER_CEILING: "max",
       ...over,
     });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
@@ -1464,8 +1125,7 @@ describe("register: effort on Sonnet", () => {
   test("with stickiness off nothing is held, on Sonnet either", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
-      JEV_ROUTER_MEDIUM_OFF: "0",
-      JEV_ROUTER_XHIGH_OFF: "0",
+      JEV_ROUTER_CEILING: "max",
     });
     setTier("sonnet", 0.9, 1, 0.9);
     await turn(hooks, $, "s7");
@@ -1473,10 +1133,9 @@ describe("register: effort on Sonnet", () => {
     assert.equal((await turn(hooks, $, "s8")).sent.effort, "xhigh");
   });
 
-  test("default medium-off caps a cleared Sonnet effort flip at medium", async () => {
+  test("the default ceiling caps a cleared Sonnet effort flip at medium", async () => {
     const { hooks, $, setTier } = await started({
-      JEV_ROUTER_MEDIUM_OFF: "",
-      JEV_ROUTER_XHIGH_OFF: "",
+      JEV_ROUTER_CEILING: "",
     });
     setTier("sonnet", 0.9, 1, 0.9);
     await turn(hooks, $, "s9");
@@ -1694,5 +1353,233 @@ describe("register: a spawned subagent", () => {
     assert.equal(sent.effort, "medium");
     const status = await run("");
     assert.doesNotMatch(status.text, /not routed at spawn/);
+  });
+});
+
+describe("register: a downgrade priced against the context", () => {
+  const started = async (over: Record<string, string | undefined> = {}) => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1", ...over });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+    text = "x",
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text, turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("at a working context a confident haiku pick stays on fable, and the line prices it", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "p1", "plan the migration");
+    setContext(200_000);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "p2", "what is 2+2");
+    assert.equal(t.sent.model, "claude-fable-5-1");
+    assert.equal(t.sent.effort, "low", "Jev's effort still applies");
+    assert.match(t.text, /held:haiku·\$\d+\.\d+>\$\d/);
+  });
+
+  test("at a small context the same pick goes through", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "q1", "plan the migration");
+    setContext(500);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "q2", "what is 2+2");
+    assert.equal(t.sent.model, "claude-haiku-4-5");
+    assert.doesNotMatch(t.text, /held/);
+  });
+
+  test("without the engine's count, the last turn's own usage stands in", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(null);
+    setTier("fable", 0.95, 3);
+    // answeredBy carries 10k and produces 3k; from 10k a fable→haiku
+    // downgrade does not pay (its break-even is ~6k), so a hold here proves
+    // the fallback was read: with nothing known, nothing would be held.
+    await turn(hooks, $, "r1", "plan the migration");
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "r2", "2+2");
+    assert.equal(t.sent.model, "claude-fable-5-1");
+    assert.match(t.text, /held:haiku·\$/);
+  });
+
+  test("an upgrade is not priced: a fable pick from haiku goes through at any context", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("haiku", 0.95, 0);
+    await turn(hooks, $, "u1", "2+2");
+    setContext(300_000);
+    setTier("fable", 0.9, 3);
+    assert.equal((await turn(hooks, $, "u2", "plan it")).sent.model, "claude-fable-5-1");
+  });
+
+  test("/jev sticky off switches freely, price and all", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "s1", "plan");
+    await run(hooks, $, "sticky off");
+    setContext(200_000);
+    setTier("haiku", 0.99, 0);
+    assert.equal((await turn(hooks, $, "s2", "2+2")).sent.model, "claude-haiku-4-5");
+  });
+
+  test("the five-minute cache is read from the environment and moves the bar", async () => {
+    const at = async (ttl: string | undefined, context: number) => {
+      const { hooks, $, setTier, setContext } = await started({ JEV_ROUTER_CACHE_TTL: ttl });
+      setTier("fable", 0.95, 3);
+      await turn(hooks, $, "t1", "plan");
+      setContext(context);
+      setTier("haiku", 0.99, 0);
+      return (await turn(hooks, $, "t2", "2+2")).sent.model;
+    };
+    // 3k output at 8k context: pays on the five-minute cache (break-even
+    // ~10k), not on the hour's (~6k).
+    assert.equal(await at("5m", 8_000), "claude-haiku-4-5");
+    assert.equal(await at(undefined, 8_000), "claude-fable-5-1");
+  });
+
+  test("/jev shows the context and the break-even, and the session's dollars", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "v1", "plan");
+    setContext(200_000);
+    const status = await run(hooks, $, "");
+    assert.match(status.text, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
+    assert.match(status.text, /spent\s+\$0\.\d+ this session/);
+    assert.match(status.text, /3k out {2}\$0\.\d+/);
+  });
+
+  test("a compaction forgets what was running, so the next turn starts from Jev", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "w1", "plan");
+    setContext(200_000);
+    await hooks.get("session.compact")!($, { trigger: "auto" }, async (e: unknown) => e);
+    setContext(null);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "w2", "2+2");
+    assert.equal(t.sent.model, "claude-haiku-4-5", "nothing to hold to");
+    assert.doesNotMatch(t.text, /held/);
+  });
+
+  test("a precompute compaction changes nothing", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.95, 3);
+    await turn(hooks, $, "x1", "plan");
+    setContext(200_000);
+    await hooks.get("session.compact")!($, { trigger: "precompute" }, async (e: unknown) => e);
+    setTier("haiku", 0.99, 0);
+    assert.equal((await turn(hooks, $, "x2", "2+2")).sent.model, "claude-fable-5-1");
+  });
+});
+
+describe("register: the ceiling subcommand", () => {
+  const started = async (over: Record<string, string | undefined> = {}) => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", ...over });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "plan the architecture", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""),
+    };
+  }
+
+  test("the default caps Jev's xhigh at medium and says so", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("fable", 0.9, 3);
+    const t = await turn(hooks, $, "c0");
+    assert.equal(t.sent.effort, "medium");
+    assert.match(t.text, /capped:xhigh/);
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
+  });
+
+  test("/jev ceiling xhigh lets xhigh through on every tier", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("fable", 0.9, 3);
+    await run(hooks, $, "ceiling xhigh");
+    const t = await turn(hooks, $, "c1");
+    assert.equal(t.sent.effort, "xhigh");
+    assert.doesNotMatch(t.text, /capped/);
+  });
+
+  test("/jev ceiling xhigh fable raises one tier and leaves the rest", async () => {
+    const { hooks, $, setTier } = await started();
+    await run(hooks, $, "ceiling xhigh fable");
+    setTier("fable", 0.9, 3);
+    assert.equal((await turn(hooks, $, "c2")).sent.effort, "xhigh");
+    setTier("opus", 0.9, 3);
+    assert.equal((await turn(hooks, $, "c3")).sent.effort, "medium");
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium \(fable: xhigh\)/);
+  });
+
+  test("the environment seeds it, and the command overrides", async () => {
+    const { hooks, $, setTier } = await started({ JEV_ROUTER_CEILING: "high" });
+    setTier("fable", 0.9, 4);
+    assert.equal((await turn(hooks, $, "c4")).sent.effort, "high");
+    await run(hooks, $, "ceiling off");
+    assert.equal((await turn(hooks, $, "c5")).sent.effort, "max");
+  });
+
+  test("a score past max is max, never a rung the engine lacks", async () => {
+    const { hooks, $, setTier } = await started({ JEV_ROUTER_CEILING: "off" });
+    setTier("fable", 0.9, 5);
+    assert.equal((await turn(hooks, $, "c6")).sent.effort, "max");
+  });
+
+  test("an unreadable effort changes nothing and says so", async () => {
+    const { hooks, $ } = await started();
+    const r = await run(hooks, $, "ceiling ultra");
+    assert.match(r.text, /not an effort/);
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
   });
 });

@@ -99,17 +99,16 @@ jev-router
   surface   desktop
   provider  typesafe · TYPESAFE_API_KEY is set
   budget    1500ms
-  sticky    on, switch needs 75%
-  low       on (JEV_ROUTER_LOW_OFF=1)
-  medium    off for all · capped at medium
-  xhigh     off for all · capped at high
-  max       off for all · capped at xhigh
-  ultra     off for all · capped at max
+  sticky    on, switch needs 75%, and a downgrade has to pay
+  ceiling   medium (fable: xhigh)
+  cache     1h writes · 201k context · fable→haiku pays below 3k
   tiers     haiku, sonnet, opus, fable
+  announce  on, a line per turn
+  spent     $4.12 this session
 
   Recent turns, newest first:
    653ms  fable·medium 0.61  [notify] Agent "Review library-sync cluster" com…
-          answered claude-fable-5-1 ✓  cache 98%  45k in  1k out
+          answered claude-fable-5-1 ✓  cache 98%  45k in  1k out  $0.061
      0ms  unrouted — [agent:general-purpose] Review library-sync cluster
           answered claude-opus-5-5  cache 82%  22k in  0k out
    641ms  fable·medium 0.97  help me plan the architecture
@@ -152,12 +151,12 @@ traffic or force a bogus model id to check the rewrite lands.
 
 `cache` is the share of the turn's input read from the prompt cache. The
 cache is per model, so the turn after a switch runs cold: `cache 4%` on the
-haiku turn above is the price of leaving fable. Cache-read multipliers differ
-by tier (Haiku/Sonnet ~10% of input, Opus ~5%, Fable ~2.5%). A same-model cold
-turn on Haiku/Sonnet is ~10× a warm one; a **cross-tier** switch is a different
-calculation — see `npm run measure-switch-cost`. Holding fable when Jev wants
-haiku only saves on the switch turn above ~90–100k context under that model.
-Watch `cache` to see whether switches are eating what cheaper tiers save.
+haiku turn above is the price of leaving fable. The dollars at the end of the
+line are the turn at Anthropic's list price (`hooks/pricing.ts`, checked
+2026-09-23), with cache writes billed at the one-hour rate Claude Code uses;
+`spent` in the header is the session's total. Watch both to see whether
+switches are eating what cheaper tiers save — at a working context they do,
+which is what the hold below is for.
 
 **The first line of every reply.** The route is written into the reply's
 own text, as the first text chunk streams through `turn.step`:
@@ -205,9 +204,9 @@ jev  haiku·medium · 75% · 402ms
 api  claude-haiku-4-5 ✓ · cache 4% · 128k in · 0k out
 ```
 
-That `4%` is the price of leaving fable. Cache-read pricing is per-tier
-(see `npm run measure-switch-cost`); do not treat every switch as a flat 10×. Watch it to see whether the switching is eating what
-the cheaper tiers save.
+That `4%` is the price of leaving fable, and the dollars on the `api` line
+say what it came to. `npm run measure-switch-cost` prints the same sum for
+every pair of tiers across a range of contexts.
 
 The footer is fenced because markdown collapses leading whitespace and joins
 consecutive lines: unfenced, the rule and the two rows render as one run-on
@@ -269,56 +268,78 @@ model, which this mod does not touch — the rewrite happens per request, in
   2026-09-20 ran 402ms to 839ms, so an earlier 800ms default was failing open
   on the slowest of them.
 - `/jev sticky` makes a tier switch clear a confidence bar before the model
-  moves, `/jev sticky 0.6` sets that bar, `/jev sticky off` stops. `--sticky`
-  works too. See below. **On by default** at 0.75.
+  moves, and holds a downgrade that would cost more than it saves;
+  `/jev sticky 0.6` sets the bar, `/jev sticky off` switches freely.
+  `--sticky` works too. See below. **On by default** at 0.75.
 - `JEV_ROUTER_STICKY=0` turns sticky off for a session; `JEV_ROUTER_STICKY_CONFIDENCE=0.6`
   sets the bar. The command overrides them from then on.
-- `/jev low off` blocks effort above low (medium through ultra) on every tier
-  and caps those turns at `low`; `/jev low off opus` for one tier;
-  `/jev low on` turns it back on. Opt-in — unset leaves medium allowed.
-- `JEV_ROUTER_LOW_OFF=1` (or `all`) seeds the low ceiling; `0`/`off` clears it.
-- `/jev medium off` blocks effort above medium (high through ultra) on
-  every tier and caps those turns at `medium`; `/jev medium off opus` for one
-  tier; `/jev medium on` / `/jev medium on fable` turn it back on. The route
-  line says `capped:high` (or `capped:xhigh`) when a turn was cut down.
-  **Off for all tiers is the default** (session ceiling is medium).
-- `JEV_ROUTER_MEDIUM_OFF=0` (or `off`/`false`/`none`) allows high;
-  unset/`1`/`all` keeps the default medium ceiling; `opus,fable` for named
-  ones. The command overrides.
-- `/jev xhigh on` allows effort at or above xhigh (xhigh, max, and ultra) on
-  every tier; `/jev xhigh on fable` for one tier; `/jev xhigh off` /
-  `/jev xhigh off opus` block it again and cap those turns at `high`. Also
-  **off by default** — raise the ceiling with `/jev medium on` then
-  `/jev xhigh on`.
-- `JEV_ROUTER_XHIGH_OFF=0` (or `off`/`false`/`none`) allows xhigh everywhere;
-  unset/`1`/`all` keeps the default block; `opus,fable` blocks only named
-  ones. The command overrides.
-- `/jev max on` allows max and ultra (caps at xhigh when off). Separate from
-  ultra. **Off by default**; only matters once xhigh is allowed.
-- `JEV_ROUTER_MAX_OFF=0` allows max; unset/`1`/`all` keeps the default block.
-- `/jev ultra on` allows ultra — the rung above max — and caps at max when
-  off. Separate from max. **Off by default**; only matters once max is
-  allowed. If the engine does not accept `ultra`, it may silently downgrade.
-- `JEV_ROUTER_ULTRA_OFF=0` allows ultra; unset/`1`/`all` keeps the default block.
+- `JEV_ROUTER_CACHE_TTL=5m` prices switches against the five-minute cache.
+  The default is `1h`, which is what Claude Code writes (every one of 18,204
+  writes in a week of transcripts, checked 2026-09-23).
+- `/jev ceiling` shows the most effort each tier may be asked for;
+  `/jev ceiling xhigh` raises every tier to it, `/jev ceiling xhigh fable`
+  one tier, `/jev ceiling off` lifts every cap (which is `max`; the engine has
+  no rung above it). **The default is `medium` on every tier.** A turn Jev
+  wanted higher is cut to the ceiling and the route line says
+  `capped:xhigh` for what it wanted.
+- `JEV_ROUTER_CEILING=xhigh`, or `fable:xhigh,opus:high` for some tiers,
+  seeds the ceiling; the command overrides it from then on. One engine quirk,
+  measured 2026-09-23: on Fable 5.1 the engine runs `medium` as `high` (the
+  transcript's `perTurnEffort` says so; `low` and `high` go through as sent),
+  so on that tier the default ceiling is `high` in effect and `low` is the
+  only cheaper rung.
+- `JEV_ROUTER_JEV_MODEL=jev-1.13.0` pins the Jev version on the direct API.
+  The default `jev-latest` is an alias that moves when TypeSafe ships, and
+  the confidences the bar is tuned against can move with it. A passthrough
+  such as OpenRouter spells the same pin `jev-1.13`.
 
-## Holding a shaky switch
+## Holding a shaky switch, and a switch that costs more than it saves
 
 The prompt cache is per model. A session cached under fable is cold for
-haiku, so the turn that switches pays full input tokens and a slower first
-token. A router that flips tier on a 51% hunch can pick the cheaper model
-every time and still cost more than staying put.
+haiku, so the turn that switches writes its whole context to haiku's cache,
+and the turn that comes back writes it all again to fable's, at $20 per
+million tokens. Over a week of this machine's transcripts (18,459 requests,
+checked 2026-09-23) the median context at a main-thread switch was 150k to
+330k tokens, and 31 of 38 returns from haiku to fable paid that re-write in
+full: a trivial question answered on haiku at 234k cost about $4.40 in cache
+writes to save $0.07 of output. A router that follows Jev's word at that
+size costs more than never routing at all — measured, not modelled: over 255
+routed turns the shipped policy came to $92 where staying put came to $8.
 
-Sticky is on by default. A turn that names a different tier than the last one
-has to clear the bar to move. `/jev sticky off` switches freely. Below it, the turn runs on the tier already
-loaded, and says so:
+So a switch has to clear two bars, and `/jev sticky off` lifts both:
+
+- **Jev's doubt.** A turn that names a different tier than the last one has
+  to clear the confidence bar (0.75) to move.
+- **The price, for a downgrade.** The turn is priced twice, from the context
+  the engine reports it will carry and the last turn's output: on the running
+  tier with its cache warm, and on the cheaper tier cold with the return
+  write added. If going costs at least what staying does, it stays. An
+  upgrade is never priced: whether the task needs fable is Jev's call, not
+  the cache's.
+
+Held either way, the turn runs on the tier already loaded, and says so:
 
 ```
 > ✳️ `fable` · low · 61% · held:haiku · 512ms
+> ✳️ `fable` · low · 99% · held:haiku·$4.41>$0.125 · 301ms
 ```
 
-Jev wanted haiku, was 61% sure, and the bar is 75%, so the turn stayed on
-fable. The same `held:haiku` appears in the footer and in `/jev`, because a
-hold nobody can see is indistinguishable from a router that is not running.
+The first: Jev wanted haiku, was 61% sure, and the bar is 75%. The second:
+Jev was sure, and going ($4.41) cost more than staying ($0.125). The same tag
+appears in the footer and in `/jev`, because a hold nobody can see is
+indistinguishable from a router that is not running; `/jev` also prints the
+context it is pricing against and where the cheapest downgrade stops paying
+(`fable→haiku pays below 3k`), so a hold is never a surprise.
+`npm run measure-switch-cost` prints the whole table.
+
+What this means in practice: on a fable- or opus-homed session, the main
+loop's tier is settled in its first few turns while the context is small and
+a switch is cheap, and after that the router's work is picking the **effort**
+on the tier already warm (a trivial question on fable at `low` is a few cents;
+the same question after a detour to haiku is dollars), moving **up** when a
+task needs it, and routing **subagents**, which start with an empty
+conversation and so have no cache to lose. A compaction empties the cache and
+the context both, so the hold is dropped and the next turn starts from Jev.
 
 Only the model is held, on Opus and Haiku. There the effort Jev asked for is
 applied either way, since the engine sends it per request and it costs no
@@ -440,15 +461,19 @@ An unrouted turn announces itself too, with the reason:
 ## Layout
 
 ```
-hooks/register.ts   the six hooks, the per-turn cache, the turn history
+hooks/register.ts   the seven hooks, the settings read once, the turn history
 hooks/jev.ts        the request shape, timeout, named failures
 hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
-hooks/policy.ts     the tiers, the criteria, answers → model and effort
+hooks/policy.ts     the tiers, the criteria, answers → model and effort,
+                    the ceiling, what a hold is
+hooks/pricing.ts    Anthropic's list prices; what a turn cost, what a switch
+                    would cost
 hooks/label.ts      decision → footer string
 hooks/status.ts     the per-turn line, what /jev prints, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks
                     with a fake engine and asserts the stream transform
-scripts/            check-jev and try-prompts, for setup and tuning
+scripts/            check-jev, try-prompts and measure-switch-cost, for
+                    setup and tuning
 ```
 
 `jev.ts` takes `fetch` and `sleep` as arguments rather than importing them, so

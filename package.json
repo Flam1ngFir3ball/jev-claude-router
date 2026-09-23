@@ -11,7 +11,7 @@
     "check-jev": "node --experimental-strip-types scripts/check-jev.mjs",
     "check-gateway": "node --experimental-strip-types scripts/check-jev.mjs",
     "try-prompts": "node --experimental-strip-types scripts/try-prompts.mjs",
-    "measure-switch-cost": "node scripts/measure-switch-cost.mjs"
+    "measure-switch-cost": "node --experimental-strip-types scripts/measure-switch-cost.mjs"
   },
   "devDependencies": {
     "typescript": "^5"

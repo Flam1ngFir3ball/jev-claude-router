@@ -11,6 +11,12 @@
  * TYPESAFE_BASE_URL overrides the TypeSafe endpoint base (defaults to
  * https://api.typesafe.ai). Only https://api.typesafe.ai and hosts under
  * *.typesafe.ai are accepted unless JEV_ROUTER_ALLOW_CUSTOM_BASE=1.
+ *
+ * JEV_ROUTER_JEV_MODEL pins the Jev version on the direct API. The default
+ * `jev-latest` is an alias that moves when TypeSafe ships a release, and the
+ * confidences the sticky bar is tuned against can move with it; TypeSafe's
+ * own advice is to pin (`jev-1.13.0` on api.typesafe.ai; a passthrough such
+ * as OpenRouter spells it `jev-1.13`, measured 2026-09-23).
  */
 
 export type ProviderResult =
@@ -32,7 +38,10 @@ export type ProviderEnv = {
   JEV_ROUTER_PROVIDER: string | undefined;
   TYPESAFE_BASE_URL: string | undefined;
   JEV_ROUTER_ALLOW_CUSTOM_BASE?: string | undefined;
+  JEV_ROUTER_JEV_MODEL?: string | undefined;
 };
+
+const TYPESAFE_MODEL_DEFAULT = "jev-latest";
 
 const TYPESAFE_BASE_DEFAULT = "https://api.typesafe.ai";
 const GATEWAY_BASE = "https://ai-gateway.vercel.sh";
@@ -88,11 +97,12 @@ function typesafeProvider(
     env.JEV_ROUTER_ALLOW_CUSTOM_BASE,
   );
   if (!base.ok) return base;
+  const pinned = (env.JEV_ROUTER_JEV_MODEL ?? "").trim();
   return {
     ok: true,
     name: "typesafe",
     endpoint: `${base.base}/v1/systemone`,
-    model: "jev-latest",
+    model: pinned || TYPESAFE_MODEL_DEFAULT,
     apiKey,
   };
 }

@@ -4,13 +4,12 @@ import { describe, test } from "node:test";
 import {
   announceReply,
   attemptOf,
+  ceilingCommand,
+  ceilingLine,
+  continuationOf,
   heldMark,
+  spawnAttemptOf,
   stickyCommand,
-  lowCommand,
-  mediumCommand,
-  maxCommand,
-  ultraCommand,
-  xhighCommand,
   liveLine,
   REPLY_SEPARATOR,
   statusReport,
@@ -22,7 +21,11 @@ import {
   type Attempt,
   type Usage,
 } from "../hooks/status.ts";
-import { DEFAULT_STICKY_CONFIDENCE, TIERS } from "../hooks/policy.ts";
+import {
+  ceilingAt,
+  DEFAULT_STICKY_CONFIDENCE,
+  TIERS,
+} from "../hooks/policy.ts";
 import type { ProviderResult } from "../hooks/provider.ts";
 
 const decision = {
@@ -51,15 +54,14 @@ const base: Status = {
   provider: goodProvider,
   timeoutMs: 1500,
   sticky: null,
-  lowOff: [],
-  mediumOff: [],
-  xhighOff: [],
-  maxOff: [],
-  ultraOff: [],
+  ceiling: ceilingAt("max"),
+  ttl: "1h",
+  contextTokens: null,
   offered: ["haiku", "sonnet", "opus", "fable"],
   excluded: [],
   announce: true,
   attempts: [],
+  spent: 0,
 };
 
 describe("status report", () => {
@@ -658,248 +660,265 @@ describe("the sticky subcommand", () => {
   });
 });
 
-describe("the xhigh subcommand", () => {
-  test("bare reports whether it is on", () => {
-    const r = xhighCommand("", new Set());
-    assert.equal(r.xhighOff.size, 0);
-    assert.match(r.text, /allowed on every tier/);
+describe("the ceiling subcommand", () => {
+  test("bare reports without changing anything", () => {
+    const r = ceilingCommand("", ceilingAt("medium"));
+    assert.deepEqual(r.ceiling, ceilingAt("medium"));
+    assert.match(r.text, /medium for all/);
   });
 
-  test("off with no tier blocks every tier", () => {
-    const r = xhighCommand("off", new Set());
-    assert.equal(r.xhighOff.size, TIERS.length);
-    assert.match(r.text, /off for all/);
+  test("an effort raises every tier", () => {
+    const r = ceilingCommand("xhigh", ceilingAt("medium"));
+    assert.deepEqual(r.ceiling, ceilingAt("xhigh"));
+    assert.match(r.text, /xhigh for all/);
   });
 
-  test("on with no tier clears every block", () => {
-    const r = xhighCommand("on", new Set(TIERS));
-    assert.equal(r.xhighOff.size, 0);
+  test("an effort and tiers raise only those", () => {
+    const r = ceilingCommand("xhigh fable opus", ceilingAt("medium"));
+    assert.equal(r.ceiling.fable, "xhigh");
+    assert.equal(r.ceiling.opus, "xhigh");
+    assert.equal(r.ceiling.haiku, "medium");
+    assert.match(r.text, /medium \(opus: xhigh, fable: xhigh\)/);
   });
 
-  test("off opus blocks only that tier", () => {
-    const r = xhighCommand("off opus", new Set());
-    assert.deepEqual([...r.xhighOff], ["opus"]);
-    assert.match(r.text, /opus/);
+  test("off lifts every cap, which is max", () => {
+    assert.deepEqual(ceilingCommand("off", ceilingAt("medium")).ceiling, ceilingAt("max"));
   });
 
-  test("on opus unblocks one while leaving the others", () => {
-    const r = xhighCommand("on opus", new Set(["opus", "fable"]));
-    assert.deepEqual([...r.xhighOff], ["fable"]);
+  test("an unknown effort or tier changes nothing and says so", () => {
+    const bad = ceilingCommand("ultra", ceilingAt("medium"));
+    assert.deepEqual(bad.ceiling, ceilingAt("medium"));
+    assert.match(bad.text, /not an effort/);
+    const tier = ceilingCommand("xhigh gpt", ceilingAt("medium"));
+    assert.deepEqual(tier.ceiling, ceilingAt("medium"));
+    assert.match(tier.text, /"gpt" is not a tier/);
   });
 
-  test("an unknown tier is refused", () => {
-    const r = xhighCommand("off gpt", new Set());
-    assert.equal(r.xhighOff.size, 0);
-    assert.match(r.text, /not a tier/);
+  test("the status report names the ceiling and the cache", () => {
+    const report = statusReport({
+      ...base,
+      ceiling: { ...ceilingAt("medium"), fable: "xhigh" },
+    });
+    assert.match(report, /ceiling\s+medium \(fable: xhigh\)/);
+    assert.match(report, /cache\s+1h writes · no context yet/);
   });
 
-  test("attemptOf caps xhigh when the hold says so", () => {
-    const attempt = attemptOf(
-      "plan it",
-      {
-        ok: true,
-        ms: 10,
-        answers: {
-          tier: { type: "choice", choice: "fable", confidence: 0.9 },
-          effort: { type: "score", score: 3, confidence: 0.8 },
-        },
-      },
-      TIERS,
-      { sticky: null, running: null, xhighOff: new Set(["fable"]) },
-    );
-    assert.equal("decision" in attempt && attempt.decision.effort, "high");
-    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "xhigh");
-    assert.equal(heldMark(attempt), "capped:xhigh");
-  });
-
-  test("the status report says which tiers are capped", () => {
-    assert.match(statusReport(base), /low\s+on \(JEV_ROUTER_LOW_OFF=1\)/);
-    assert.match(statusReport(base), /medium\s+on \(JEV_ROUTER_MEDIUM_OFF=0\)/);
-    assert.match(statusReport(base), /xhigh\s+on \(JEV_ROUTER_XHIGH_OFF=0\)/);
-    assert.match(statusReport(base), /max\s+on \(JEV_ROUTER_MAX_OFF=0\)/);
-    assert.match(
-      statusReport({ ...base, lowOff: [...TIERS] }),
-      /low\s+off for all/,
-    );
-    assert.match(
-      statusReport({ ...base, mediumOff: ["opus", "fable"] }),
-      /medium\s+off for opus, fable/,
-    );
-    assert.match(
-      statusReport({ ...base, mediumOff: [...TIERS] }),
-      /medium\s+off for all/,
-    );
-    assert.match(
-      statusReport({ ...base, xhighOff: ["opus", "fable"] }),
-      /xhigh\s+off for opus, fable/,
-    );
-    assert.match(
-      statusReport({ ...base, xhighOff: [...TIERS] }),
-      /xhigh\s+off for all/,
-    );
-    assert.match(
-      statusReport({ ...base, maxOff: [...TIERS] }),
-      /max\s+off for all/,
-    );
-    assert.match(
-      statusReport({ ...base, ultraOff: [...TIERS] }),
-      /ultra\s+off for all/,
-    );
-  });
-});
-
-describe("the max subcommand", () => {
-  test("bare reports whether max is allowed", () => {
-    const r = maxCommand("", new Set());
-    assert.equal(r.maxOff.size, 0);
-    assert.match(r.text, /max allowed/);
-  });
-
-  test("off with no tier blocks every tier", () => {
-    const r = maxCommand("off", new Set());
-    assert.equal(r.maxOff.size, TIERS.length);
-    assert.match(r.text, /caps at xhigh/);
-  });
-
-  test("attemptOf caps max at xhigh when the hold says so", () => {
-    const attempt = attemptOf(
-      "plan it",
-      {
-        ok: true,
-        ms: 10,
-        answers: {
-          tier: { type: "choice", choice: "fable", confidence: 0.9 },
-          effort: { type: "score", score: 4, confidence: 0.8 },
-        },
-      },
-      TIERS,
-      {
-        sticky: null,
-        running: null,
-        xhighOff: new Set(),
-        maxOff: new Set(["fable"]),
-      },
-    );
-    assert.equal("decision" in attempt && attempt.decision.effort, "xhigh");
-    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "max");
-    assert.equal(heldMark(attempt), "capped:max");
-  });
-});
-
-describe("the ultra subcommand", () => {
-  test("bare reports whether ultra is allowed", () => {
-    const r = ultraCommand("", new Set());
-    assert.equal(r.ultraOff.size, 0);
-    assert.match(r.text, /ultra allowed/);
-  });
-
-  test("off with no tier blocks every tier", () => {
-    const r = ultraCommand("off", new Set());
-    assert.equal(r.ultraOff.size, TIERS.length);
-    assert.match(r.text, /caps at max/);
-  });
-
-  test("attemptOf caps ultra at max when the hold says so", () => {
-    const attempt = attemptOf(
-      "plan it",
-      {
-        ok: true,
-        ms: 10,
-        answers: {
-          tier: { type: "choice", choice: "fable", confidence: 0.9 },
-          effort: { type: "score", score: 5, confidence: 0.8 },
-        },
-      },
-      TIERS,
-      {
-        sticky: null,
-        running: null,
-        xhighOff: new Set(),
-        maxOff: new Set(),
-        ultraOff: new Set(["fable"]),
-      },
-    );
-    assert.equal("decision" in attempt && attempt.decision.effort, "max");
+  test("ceilingLine picks the common effort and lists the rest", () => {
+    assert.equal(ceilingLine(ceilingAt("low")), "low for all");
     assert.equal(
-      "decision" in attempt && attempt.decision.cappedEffort,
-      "ultra",
+      ceilingLine({ haiku: "low", sonnet: "medium", opus: "medium", fable: "xhigh" }),
+      "medium (haiku: low, fable: xhigh)",
     );
-    assert.equal(heldMark(attempt), "capped:ultra");
   });
 });
 
-describe("the low subcommand", () => {
-  test("bare reports whether medium is allowed", () => {
-    const r = lowCommand("", new Set());
-    assert.equal(r.lowOff.size, 0);
-    assert.match(r.text, /medium and above allowed/);
+describe("the ceiling on a turn", () => {
+  const jev = (tier: string, score: number) => ({
+    ok: true as const,
+    ms: 300,
+    answers: {
+      tier: { type: "choice", choice: tier, confidence: 0.9 },
+      effort: { type: "score", score },
+    },
   });
 
-  test("off with no tier blocks every tier", () => {
-    const r = lowCommand("off", new Set());
-    assert.equal(r.lowOff.size, TIERS.length);
-    assert.match(r.text, /caps at low/);
+  test("a routed turn is capped at its tier's ceiling and tagged", () => {
+    const a = attemptOf("plan it", jev("fable", 4), TIERS, {
+      sticky: null,
+      running: null,
+      ceiling: ceilingAt("medium"),
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.effort, "medium");
+    assert.equal(a.decision.cappedEffort, "max");
+    assert.match(liveLine(a), /capped:max/);
   });
 
-  test("attemptOf caps medium when the hold says so", () => {
-    const attempt = attemptOf(
-      "plan it",
-      {
-        ok: true,
-        ms: 10,
-        answers: {
-          tier: { type: "choice", choice: "fable", confidence: 0.9 },
-          effort: { type: "score", score: 1, confidence: 0.8 },
-        },
-      },
+  test("a continuation is re-capped, so a change mid-session binds", () => {
+    const running = {
+      tier: "fable" as const,
+      model: "claude-fable-5-1",
+      effort: "xhigh" as const,
+      confidence: 0.9,
+    };
+    const a = continuationOf("yes", running, ceilingAt("high"));
+    assert.ok("decision" in a);
+    assert.equal(a.decision.effort, "high");
+  });
+
+  test("a subagent is capped too", () => {
+    const a = spawnAttemptOf(
+      "review it",
+      jev("opus", 3),
       TIERS,
-      { sticky: null, running: null, lowOff: new Set(["fable"]) },
+      { type: "general-purpose", label: "review it" },
+      ceilingAt("medium"),
     );
-    assert.equal("decision" in attempt && attempt.decision.effort, "low");
-    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "medium");
-    assert.equal(heldMark(attempt), "capped:medium");
+    assert.ok("decision" in a);
+    assert.equal(a.decision.effort, "medium");
+    assert.equal(a.decision.cappedEffort, "xhigh");
+  });
+
+  test("with no ceiling given nothing is capped", () => {
+    const a = attemptOf("plan it", jev("fable", 4), TIERS);
+    assert.ok("decision" in a);
+    assert.equal(a.decision.effort, "max");
   });
 });
 
-describe("the medium subcommand", () => {
-  test("bare reports whether high is allowed", () => {
-    const r = mediumCommand("", new Set());
-    assert.equal(r.mediumOff.size, 0);
-    assert.match(r.text, /high allowed/);
+describe("a downgrade held on its price", () => {
+  const jev = (tier: string) => ({
+    ok: true as const,
+    ms: 300,
+    answers: {
+      tier: { type: "choice", choice: tier, confidence: 0.99 },
+      effort: { type: "score", score: 0 },
+    },
+  });
+  const onFable = {
+    tier: "fable" as const,
+    model: "claude-fable-5-1",
+    effort: "xhigh" as const,
+    confidence: 0.9,
+  };
+
+  test("at a working context the switch is held, whatever Jev's confidence", () => {
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
+      sticky: 0.75,
+      running: onFable,
+      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "fable");
+    assert.equal(a.decision.held, "haiku");
+    assert.equal(a.decision.effort, "low", "Jev's effort still applies");
+    assert.match(liveLine(a), /held:haiku·\$4\.41>\$0\.125/);
+    assert.match(heldMark(a)!, /^held:haiku·\$/);
   });
 
-  test("off with no tier blocks every tier", () => {
-    const r = mediumCommand("off", new Set());
-    assert.equal(r.mediumOff.size, TIERS.length);
-    assert.match(r.text, /caps at medium/);
+  test("at a small context the switch goes through", () => {
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
+      sticky: 0.75,
+      running: onFable,
+      economics: { contextTokens: 1_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "haiku");
+    assert.equal(a.decision.held, undefined);
   });
 
-  test("on with no tier clears every block", () => {
-    const r = mediumCommand("on", new Set(TIERS));
-    assert.equal(r.mediumOff.size, 0);
+  test("with nothing known about the context there is nothing to protect", () => {
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
+      sticky: 0.75,
+      running: onFable,
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "haiku");
   });
 
-  test("off opus blocks only that tier", () => {
-    const r = mediumCommand("off opus", new Set());
-    assert.deepEqual([...r.mediumOff], ["opus"]);
+  test("an upgrade is never priced: capability is Jev's call", () => {
+    const onHaiku = { ...onFable, tier: "haiku" as const, model: "claude-haiku-4-5" };
+    const a = attemptOf("plan the architecture", jev("fable"), TIERS, {
+      sticky: 0.75,
+      running: onHaiku,
+      economics: { contextTokens: 300_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "fable");
   });
 
-  test("attemptOf caps high when the hold says so", () => {
-    const attempt = attemptOf(
-      "plan it",
-      {
-        ok: true,
-        ms: 10,
-        answers: {
-          tier: { type: "choice", choice: "fable", confidence: 0.9 },
-          effort: { type: "score", score: 2, confidence: 0.8 },
-        },
-      },
-      TIERS,
-      { sticky: null, running: null, mediumOff: new Set(["fable"]) },
-    );
-    assert.equal("decision" in attempt && attempt.decision.effort, "medium");
-    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "high");
-    assert.equal(heldMark(attempt), "capped:high");
+  test("with stickiness off the price is not consulted", () => {
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
+      sticky: null,
+      running: onFable,
+      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "haiku");
+  });
+
+  test("a forced tier is never held", () => {
+    const a = attemptOf("use haiku", { ok: false, ms: 0, reason: "forced" }, TIERS, {
+      sticky: 0.75,
+      running: onFable,
+      forced: "haiku",
+      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "haiku");
+    assert.equal(a.decision.forced, true);
+  });
+
+  test("the status report shows the context and where a downgrade stops paying", () => {
+    const routed: Attempt = { prompt: "plan", ms: 300, decision: onFable };
+    addUsage(routed, {
+      model: "claude-fable-5-1",
+      input_tokens: 1000,
+      output_tokens: 1500,
+      cache_read_input_tokens: 199_000,
+      cache_creation_input_tokens: 0,
+    });
+    const report = statusReport({
+      ...base,
+      contextTokens: 200_000,
+      attempts: [routed],
+    });
+    assert.match(report, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
+  });
+});
+
+describe("dollars", () => {
+  const priced: Attempt = {
+    prompt: "plan",
+    ms: 300,
+    decision: {
+      tier: "fable",
+      model: "claude-fable-5-1",
+      effort: "medium",
+      confidence: 0.9,
+    },
+  };
+
+  test("a turn's usage is priced at list, at the session's cache TTL", () => {
+    addUsage(priced, {
+      model: "claude-fable-5-1",
+      input_tokens: 1000,
+      output_tokens: 2000,
+      cache_read_input_tokens: 200_000,
+      cache_creation_input_tokens: 10_000,
+    });
+    // 1000·10 + 10000·20 + 200000·0.25 + 2000·50 = 10000+200000+50000+100000 = $0.36
+    assert.equal(priced.cost, 0.36);
+    assert.match(usageFooter(priced)!, /2k out · \$0\.36/);
+    assert.match(statusReport({ ...base, attempts: [priced] }), /2k out {2}\$0\.36/);
+  });
+
+  test("a second step adds to the same turn and re-prices the sum", () => {
+    addUsage(priced, {
+      model: "claude-fable-5-1",
+      input_tokens: 0,
+      output_tokens: 2000,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    });
+    assert.equal(priced.cost, 0.46);
+  });
+
+  test("a model with no price shows the tokens and no dollars", () => {
+    const odd: Attempt = { prompt: "x", ms: 0, skipped: "off" };
+    addUsage(odd, {
+      model: "<synthetic>",
+      input_tokens: 10,
+      output_tokens: 10,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    });
+    assert.equal(odd.cost, undefined);
+    assert.doesNotMatch(usageFooter(odd)!, /\$/);
+  });
+
+  test("the report totals the session", () => {
+    assert.match(statusReport({ ...base, spent: 12.345 }), /spent\s+\$12\.35 this session/);
+    assert.doesNotMatch(statusReport(base), /spent/);
   });
 });

@@ -7,22 +7,31 @@
 import type { JevResult } from "./jev.ts";
 import { LOW_CONFIDENCE } from "./label.ts";
 import {
+  capTo,
+  ceilingAt,
   decisionOf,
   DEFAULT_STICKY_CONFIDENCE,
+  effortNamed,
+  EFFORTS,
   forcedDecision,
   holdsSonnetEffort,
   stickyDecision,
   SUBAGENT_CONFIDENCE,
   subagentDecision,
-  capLow,
-  capMedium,
-  capMax,
-  capUltra,
-  capXhigh,
   TIERS,
+  withCeiling,
+  type Ceiling,
   type Decision,
   type Tier,
 } from "./policy.ts";
+import {
+  breakEvenTokens,
+  isDowngrade,
+  switchVerdict,
+  usageCost,
+  usd,
+  type Ttl,
+} from "./pricing.ts";
 import type { ProviderResult } from "./provider.ts";
 
 /**
@@ -48,6 +57,8 @@ export type Attempt = {
   prompt: string;
   ms: number;
   usage?: Usage;
+  /** Dollars for `usage` at list price, or absent for a model without one. */
+  cost?: number;
   /**
    * What started the turn, when it was not the person typing a task. Absent
    * for a typed prompt. `notify`: the main loop woke because a background
@@ -76,15 +87,24 @@ export type AgentTag = {
 
 /**
  * The tags for a turn that did not run exactly as Jev asked: held on its
- * previous tier (`held:haiku`), held on its previous Sonnet effort
- * (`held-effort:low`), forced to a tier the prompt named (`forced`), and/or
- * capped off xhigh (`capped:xhigh`). Stacked when more than one applies.
+ * previous tier (`held:haiku`, with the two prices when it was the price
+ * that held it: `held:haiku·$0.47>$0.06`), held on its previous Sonnet
+ * effort (`held-effort:low`), forced to a tier the prompt named (`forced`),
+ * and/or capped at the tier's ceiling (`capped:xhigh`). Stacked when more
+ * than one applies.
  */
 export function heldMark(attempt: Attempt): string | null {
   if (!("decision" in attempt)) return null;
-  const { held, heldEffort, forced, cappedEffort } = attempt.decision;
+  const { held, heldCost, heldEffort, forced, cappedEffort } =
+    attempt.decision;
   const tags: string[] = [];
-  if (held !== undefined) tags.push(`held:${held}`);
+  if (held !== undefined) {
+    tags.push(
+      heldCost === undefined
+        ? `held:${held}`
+        : `held:${held}·${usd(heldCost.go)}>${usd(heldCost.stay)}`,
+    );
+  }
   if (heldEffort !== undefined) tags.push(`held-effort:${heldEffort}`);
   if (forced) tags.push("forced");
   if (cappedEffort !== undefined) tags.push(`capped:${cappedEffort}`);
@@ -117,10 +137,15 @@ export function notificationOf(text: string): string | null {
 
 /**
  * Folds one step's usage into its turn: counts sum, the model is the last
- * step's, as the engine defines a turn's usage. Mutates, because the same
- * object sits in the history and in the by-turn lookup.
+ * step's, as the engine defines a turn's usage, and the dollars are re-priced
+ * from the sum. Mutates, because the same object sits in the history and in
+ * the by-turn lookup.
  */
-export function addUsage(attempt: Attempt, usage: Usage): void {
+export function addUsage(
+  attempt: Attempt,
+  usage: Usage,
+  ttl: Ttl = "1h",
+): void {
   const prior = attempt.usage;
   attempt.usage = {
     model: usage.model,
@@ -132,6 +157,9 @@ export function addUsage(attempt: Attempt, usage: Usage): void {
       (prior?.cache_creation_input_tokens ?? 0) +
       usage.cache_creation_input_tokens,
   };
+  const cost = usageCost(attempt.usage.model, attempt.usage, ttl);
+  if (cost === null) delete attempt.cost;
+  else attempt.cost = cost;
 }
 
 /**
@@ -147,6 +175,15 @@ export function cacheRatio(usage: Usage): number {
   return carried === 0 ? 0 : usage.cache_read_input_tokens / carried;
 }
 
+/** What the last turn carried into the model: the context size, in tokens. */
+export function carriedOf(usage: Usage): number {
+  return (
+    usage.input_tokens +
+    usage.cache_read_input_tokens +
+    usage.cache_creation_input_tokens
+  );
+}
+
 export type Status = {
   enabled: boolean;
   surface: string | null;
@@ -154,40 +191,49 @@ export type Status = {
   timeoutMs: number;
   /** The confidence a switch must clear, or null when stickiness is off. */
   sticky: number | null;
-  /** Tiers for which medium+ effort is blocked (cap at low). */
-  lowOff: readonly Tier[];
-  /** Tiers for which high+ effort is blocked (cap at medium). */
-  mediumOff: readonly Tier[];
-  /** Tiers for which xhigh+ effort is blocked (cap at high). */
-  xhighOff: readonly Tier[];
-  /** Tiers for which max+ effort is blocked (cap at xhigh). */
-  maxOff: readonly Tier[];
-  /** Tiers for which ultra effort is blocked (cap at max). */
-  ultraOff: readonly Tier[];
+  /** The most effort each tier may be asked for. */
+  ceiling: Ceiling;
+  /** Which prompt cache the session writes; the price of a switch depends on it. */
+  ttl: Ttl;
+  /** The context size the next turn would carry, or null before the first reply. */
+  contextTokens: number | null;
   offered: readonly Tier[];
   excluded: readonly Tier[];
   announce: boolean;
   attempts: readonly Attempt[];
+  /** Dollars across every turn the router saw this session, at list price. */
+  spent: number;
+};
+
+/**
+ * What a switch is priced against: the context the turn carries, the output
+ * it is likely to produce (the last turn's, or a typical one), and which
+ * cache the session writes.
+ */
+export type Economics = {
+  contextTokens: number;
+  outputTokens: number;
+  ttl: Ttl;
 };
 
 /**
  * What settles a main-loop turn beyond Jev's answer. `sticky` is the bar a
  * switch must clear, or null when switches are free; `running` what the last
  * routed turn ran on; `forced` a tier the prompt itself named, which takes
- * the tier question away from Jev and from stickiness both; `lowOff` /
- * `mediumOff` / `xhighOff` / `maxOff` / `ultraOff` the tiers whose effort is capped at
- * low / medium / high / xhigh / max.
+ * the tier question away from Jev and from stickiness both; `ceiling` the
+ * most effort each tier may be asked for; `economics` what a downgrade is
+ * priced against, absent when nothing is known about the context yet.
  */
 export type Hold = {
   sticky: number | null;
   running: Decision | null;
   forced?: Tier | null;
-  lowOff?: ReadonlySet<Tier>;
-  mediumOff?: ReadonlySet<Tier>;
-  xhighOff?: ReadonlySet<Tier>;
-  maxOff?: ReadonlySet<Tier>;
-  ultraOff?: ReadonlySet<Tier>;
+  ceiling?: Ceiling;
+  economics?: Economics;
 };
+
+/** A typical turn's output when the session has not produced one yet. */
+export const TYPICAL_OUTPUT_TOKENS = 1500;
 
 /**
  * One turn's outcome from Jev's answer, so the three ways a turn can fail to
@@ -197,7 +243,8 @@ export type Hold = {
  * engine applies and the line /jev shows are the same object, so the two
  * cannot disagree. The order is the policy: a named tier first (it needs no
  * answer from Jev at all — effort defaults to medium), then stickiness on
- * the tier, then, for a turn that stays on Sonnet, stickiness on the effort.
+ * the tier (Jev's doubt, or the price of a downgrade), then, for a turn that
+ * stays on Sonnet, stickiness on the effort, then the tier's ceiling.
  */
 export function attemptOf(
   text: string,
@@ -225,7 +272,20 @@ export function attemptOf(
     };
   }
   if (hold.sticky !== null && !decision.forced) {
-    decision = stickyDecision(decision, hold.running, hold.sticky);
+    const running = hold.running;
+    const verdict =
+      running !== null &&
+      hold.economics !== undefined &&
+      isDowngrade(running.tier, decision.tier)
+        ? switchVerdict(
+            running.tier,
+            decision.tier,
+            hold.economics.contextTokens,
+            hold.economics.outputTokens,
+            hold.economics.ttl,
+          )
+        : null;
+    decision = stickyDecision(decision, running, hold.sticky, verdict);
   }
   // A forced turn named its tier; effort comes from Jev when it was asked,
   // otherwise medium. The Sonnet effort gate does not get a vote here.
@@ -241,12 +301,7 @@ export function attemptOf(
       heldEffort: decision.effort,
     };
   }
-  // Tightest ceiling first so cappedEffort keeps what Jev named.
-  decision = capLow(decision, hold.lowOff ?? new Set());
-  decision = capMedium(decision, hold.mediumOff ?? new Set());
-  decision = capXhigh(decision, hold.xhighOff ?? new Set());
-  decision = capMax(decision, hold.maxOff ?? new Set());
-  decision = capUltra(decision, hold.ultraOff ?? new Set());
+  decision = capTo(decision, hold.ceiling ?? ceilingAt("max"));
   return { ...head, ms: result.ms, decision };
 }
 
@@ -254,37 +309,21 @@ export function attemptOf(
  * A bare go-ahead's outcome: the previous turn's decision, carried over as
  * is. `held` and the like are dropped, since they described that turn's
  * choice, not this one's; the `continue` tag says what happened here. The
- * effort caps are re-applied so a toggle mid-session still binds.
+ * ceiling is re-applied so a change mid-session still binds.
  */
 export function continuationOf(
   text: string,
   running: Decision,
-  xhighOff: ReadonlySet<Tier> = new Set(),
-  mediumOff: ReadonlySet<Tier> = new Set(),
-  lowOff: ReadonlySet<Tier> = new Set(),
-  maxOff: ReadonlySet<Tier> = new Set(),
-  ultraOff: ReadonlySet<Tier> = new Set(),
+  ceiling: Ceiling = ceilingAt("max"),
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
   return {
     prompt: text,
     ms: 0,
     kind: "continue",
-    decision: capUltra(
-      capMax(
-        capXhigh(
-          capMedium(
-            capLow(
-              { tier, model, effort, confidence, effortConfidence },
-              lowOff,
-            ),
-            mediumOff,
-          ),
-          xhighOff,
-        ),
-        maxOff,
-      ),
-      ultraOff,
+    decision: capTo(
+      { tier, model, effort, confidence, effortConfidence },
+      ceiling,
     ),
   };
 }
@@ -316,11 +355,7 @@ export function spawnAttemptOf(
   result: JevResult,
   offered: readonly Tier[],
   agent: AgentTag,
-  xhighOff: ReadonlySet<Tier> = new Set(),
-  mediumOff: ReadonlySet<Tier> = new Set(),
-  lowOff: ReadonlySet<Tier> = new Set(),
-  maxOff: ReadonlySet<Tier> = new Set(),
-  ultraOff: ReadonlySet<Tier> = new Set(),
+  ceiling: Ceiling = ceilingAt("max"),
 ): Attempt {
   const head = { prompt: description, kind: "agent" as const, agent };
   if (!result.ok) return { ...head, ms: result.ms, skipped: result.reason };
@@ -340,17 +375,7 @@ export function spawnAttemptOf(
       skipped: `${fresh.tier} at ${fresh.confidence.toFixed(2)}, under the ${SUBAGENT_CONFIDENCE} bar; left on its own model`,
     };
   }
-  return {
-    ...head,
-    ms: result.ms,
-    decision: capUltra(
-      capMax(
-        capXhigh(capMedium(capLow(decision, lowOff), mediumOff), xhighOff),
-        maxOff,
-      ),
-      ultraOff,
-    ),
-  };
+  return { ...head, ms: result.ms, decision: capTo(decision, ceiling) };
 }
 
 /** The last few turns, newest first, so the report stays one screen. */
@@ -385,6 +410,18 @@ function kOf(n: number): string {
   return `${Math.round(n / 1000)}k`;
 }
 
+/** `cache 83% · 214k in · 2k out · $0.14`, the dollars when the model has a price. */
+function costOf(attempt: Attempt, sep: string): string {
+  const usage = attempt.usage!;
+  const parts = [
+    `cache ${Math.round(cacheRatio(usage) * 100)}%`,
+    `${kOf(carriedOf(usage))} in`,
+    `${kOf(usage.output_tokens)} out`,
+  ];
+  if (attempt.cost !== undefined) parts.push(usd(attempt.cost));
+  return parts.join(sep);
+}
+
 /**
  * The line under a turn saying what the API reports actually answered, and
  * what the requests carried. This is the intrinsic check: the route line is
@@ -405,15 +442,7 @@ function usageLine(attempt: Attempt): string | null {
     verdict = matches ? " ✓" : ` ≠ ${asked}`;
   }
 
-  const carried =
-    usage.input_tokens +
-    usage.cache_read_input_tokens +
-    usage.cache_creation_input_tokens;
-  const pct = Math.round(cacheRatio(usage) * 100);
-  return (
-    `          answered ${usage.model}${verdict}  ` +
-    `cache ${pct}%  ${kOf(carried)} in  ${kOf(usage.output_tokens)} out`
-  );
+  return `          answered ${usage.model}${verdict}  ${costOf(attempt, "  ")}`;
 }
 
 /**
@@ -432,13 +461,7 @@ export function usageFooter(attempt: Attempt): string | null {
   const usage = attempt.usage;
   if (!usage) return null;
 
-  const carried =
-    usage.input_tokens +
-    usage.cache_read_input_tokens +
-    usage.cache_creation_input_tokens;
-  const cost =
-    `cache ${Math.round(cacheRatio(usage) * 100)}% · ` +
-    `${kOf(carried)} in · ${kOf(usage.output_tokens)} out`;
+  const cost = costOf(attempt, " · ");
 
   let jev: string;
   let api: string;
@@ -467,6 +490,28 @@ export function usageFooter(attempt: Attempt): string | null {
 }
 
 /**
+ * `medium for all`, or `medium (opus: xhigh, fable: xhigh)`: the effort most
+ * tiers share, then the exceptions in ladder order. A tie goes to the lower
+ * tier's effort, so the line reads from the bottom of the ladder up.
+ */
+export function ceilingLine(ceiling: Ceiling): string {
+  const counts = new Map<string, number>();
+  for (const tier of TIERS)
+    counts.set(ceiling[tier], (counts.get(ceiling[tier]) ?? 0) + 1);
+  let common = ceiling.haiku;
+  for (const tier of TIERS) {
+    const effort = ceiling[tier];
+    if ((counts.get(effort) ?? 0) > (counts.get(common) ?? 0)) common = effort;
+  }
+  const rest = TIERS.filter((t) => ceiling[t] !== common).map(
+    (t) => `${t}: ${ceiling[t]}`,
+  );
+  return rest.length === 0
+    ? `${common} for all`
+    : `${common} (${rest.join(", ")})`;
+}
+
+/**
  * The report, as plain lines. Written so the first three tell you whether
  * the thing is on at all, which is the question that brings people here.
  */
@@ -481,7 +526,9 @@ export function statusReport(status: Status): string {
       status.provider.name === "typesafe"
         ? "TYPESAFE_API_KEY"
         : "AI_GATEWAY_API_KEY";
-    lines.push(`  provider  ${status.provider.name} · ${key} is set`);
+    lines.push(
+      `  provider  ${status.provider.name} · ${key} is set · ${status.provider.model}`,
+    );
   } else {
     lines.push(`  provider  NO KEYS — nothing will route`);
   }
@@ -491,14 +538,11 @@ export function statusReport(status: Status): string {
     `  sticky    ${
       status.sticky === null
         ? "off (JEV_ROUTER_STICKY=0)"
-        : `on, switch needs ${Math.round(status.sticky * 100)}%`
+        : `on, switch needs ${Math.round(status.sticky * 100)}%, and a downgrade has to pay`
     }`,
   );
-  lines.push(`  low       ${lowStatusLine(status.lowOff)}`);
-  lines.push(`  medium    ${mediumStatusLine(status.mediumOff)}`);
-  lines.push(`  xhigh     ${xhighStatusLine(status.xhighOff)}`);
-  lines.push(`  max       ${maxStatusLine(status.maxOff)}`);
-  lines.push(`  ultra     ${ultraStatusLine(status.ultraOff)}`);
+  lines.push(`  ceiling   ${ceilingLine(status.ceiling)}`);
+  lines.push(`  cache     ${cacheLine(status)}`);
   lines.push(`  tiers     ${status.offered.join(", ")}`);
   lines.push(
     `  announce  ${status.announce ? "on, a line per turn" : "off (/jev loud)"}`,
@@ -506,6 +550,7 @@ export function statusReport(status: Status): string {
   if (status.excluded.length > 0) {
     lines.push(`  excluded  ${status.excluded.join(", ")}`);
   }
+  if (status.spent > 0) lines.push(`  spent     ${usd(status.spent)} this session`);
 
   lines.push("");
   if (status.attempts.length === 0) {
@@ -521,6 +566,32 @@ export function statusReport(status: Status): string {
   }
 
   return lines.join("\n");
+}
+
+/**
+ * `1h writes · 201k context · fable→haiku pays below 6k`: which cache the
+ * session writes, what the next turn carries, and where the cheapest
+ * downgrade from the running tier stops paying, so a hold is predictable.
+ */
+function cacheLine(status: Status): string {
+  const parts = [`${status.ttl} writes`];
+  if (status.contextTokens === null) return `${parts[0]} · no context yet`;
+  parts.push(`${kOf(status.contextTokens)} context`);
+  const running = status.attempts.find((a) => "decision" in a);
+  if (running !== undefined && "decision" in running) {
+    const from = running.decision.tier;
+    const to = TIERS.find((t) => isDowngrade(from, t));
+    if (to !== undefined) {
+      const out = running.usage?.output_tokens ?? TYPICAL_OUTPUT_TOKENS;
+      const be = breakEvenTokens(from, to, out, status.ttl);
+      parts.push(
+        be === 0
+          ? `${from}→${to} never pays`
+          : `${from}→${to} pays below ${kOf(be)}`,
+      );
+    }
+  }
+  return parts.join(" · ");
 }
 
 /** The reply to `/jev on`, `/jev off` and anything unrecognised. */
@@ -619,256 +690,57 @@ export function stickyCommand(
 
 function stuckAt(bar: number): string {
   return (
-    `Holding the tier until Jev is ${Math.round(bar * 100)}% sure of a switch. ` +
+    `Holding the tier until Jev is ${Math.round(bar * 100)}% sure of a switch, ` +
+    "and holding a downgrade that costs more than it saves. " +
     "/jev sticky off to switch freely."
   );
 }
 
-function lowStatusLine(off: readonly Tier[]): string {
-  if (off.length === 0) return "on (JEV_ROUTER_LOW_OFF=1)";
-  if (off.length === TIERS.length) return "off for all · capped at low";
-  return `off for ${off.join(", ")} · capped at low`;
-}
-
-function mediumStatusLine(off: readonly Tier[]): string {
-  if (off.length === 0) return "on (JEV_ROUTER_MEDIUM_OFF=0)";
-  if (off.length === TIERS.length) return "off for all · capped at medium";
-  return `off for ${off.join(", ")} · capped at medium`;
-}
-
-function xhighStatusLine(off: readonly Tier[]): string {
-  if (off.length === 0) return "on (JEV_ROUTER_XHIGH_OFF=0)";
-  if (off.length === TIERS.length) return "off for all · capped at high";
-  return `off for ${off.join(", ")} · capped at high`;
-}
-
-function maxStatusLine(off: readonly Tier[]): string {
-  if (off.length === 0) return "on (JEV_ROUTER_MAX_OFF=0)";
-  if (off.length === TIERS.length) return "off for all · capped at xhigh";
-  return `off for ${off.join(", ")} · capped at xhigh`;
-}
-
-function ultraStatusLine(off: readonly Tier[]): string {
-  if (off.length === 0) return "on (JEV_ROUTER_ULTRA_OFF=0)";
-  if (off.length === TIERS.length) return "off for all · capped at max";
-  return `off for ${off.join(", ")} · capped at max`;
-}
-
-/** Shared on/off/per-tier parser for effort-ceiling commands. */
-function effortBlockCommand(
-  name: string,
+/**
+ * Reads `/jev ceiling`, `/jev ceiling xhigh`, `/jev ceiling xhigh fable opus`,
+ * `/jev ceiling off`. A bare `ceiling` reports; an effort sets it on every
+ * tier, or on the tiers named after it; `off` lifts every cap (which is max).
+ * An unreadable effort or tier changes nothing and says so.
+ */
+export function ceilingCommand(
   rest: string,
-  current: ReadonlySet<Tier>,
-  reply: (off: ReadonlySet<Tier>) => string,
-): { next: Set<Tier>; text: string } {
+  current: Ceiling,
+): { ceiling: Ceiling; text: string } {
   const parts = rest.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const next = new Set(current);
-
   if (parts.length === 0) {
-    return { next, text: reply(next) };
+    return { ceiling: current, text: ceilingReply(current) };
   }
-
-  const action = parts[0];
-  if (action !== "on" && action !== "off") {
+  const effort = effortNamed(parts[0] ?? "");
+  if (effort === null) {
     return {
-      next,
+      ceiling: current,
       text:
-        `"${rest.trim()}" is not a ${name} switch. Try /jev ${name} off, ` +
-        `/jev ${name} on, or /jev ${name} off opus.`,
+        `"${parts[0]}" is not an effort. Use ${EFFORTS.join(", ")} ` +
+        "or off; /jev ceiling xhigh fable raises one tier.",
     };
   }
-
   const names = parts.slice(1);
-  if (names.length === 0) {
-    if (action === "off") {
-      for (const t of TIERS) next.add(t);
-    } else {
-      next.clear();
-    }
-    return { next, text: reply(next) };
-  }
-
   const unknown = names.filter((n) => !(TIERS as string[]).includes(n));
   if (unknown.length > 0) {
     return {
-      next,
+      ceiling: current,
       text:
         `"${unknown.join(", ")}" ${unknown.length === 1 ? "is" : "are"} not ` +
         `a tier. Use ${TIERS.join(", ")}.`,
     };
   }
-
-  for (const tierName of names) {
-    const tier = tierName as Tier;
-    if (action === "off") next.add(tier);
-    else next.delete(tier);
-  }
-  return { next, text: reply(next) };
-}
-
-/**
- * Reads `/jev low`, `/jev low off`, `/jev low on`, `/jev low off opus`.
- * Turns off (or back on) effort above low — medium through ultra.
- */
-export function lowCommand(
-  rest: string,
-  current: ReadonlySet<Tier>,
-): { lowOff: Set<Tier>; text: string } {
-  const { next, text } = effortBlockCommand("low", rest, current, lowReply);
-  return { lowOff: next, text };
-}
-
-function lowReply(off: ReadonlySet<Tier>): string {
-  if (off.size === 0) {
-    return (
-      "medium and above allowed (medium/xhigh/max/ultra still have their own switches). " +
-      "/jev low off blocks medium and above everywhere; " +
-      "/jev low off opus blocks one tier."
-    );
-  }
-  if (off.size === TIERS.length) {
-    return (
-      "low ceiling for all tiers — effort caps at low. /jev low on to allow " +
-      "medium again, or /jev low on fable for one tier."
-    );
-  }
-  return (
-    `low ceiling for ${[...off].join(", ")} — those cap at low. ` +
-    "/jev low on clears every block."
-  );
-}
-
-/**
- * Reads `/jev medium`, `/jev medium off`, `/jev medium on`, `/jev medium off opus`,
- * `/jev medium on fable`. Turns off (or back on) effort above medium — high
- * through ultra — for every tier or for named ones.
- */
-export function mediumCommand(
-  rest: string,
-  current: ReadonlySet<Tier>,
-): { mediumOff: Set<Tier>; text: string } {
-  const { next, text } = effortBlockCommand(
-    "medium",
-    rest,
+  const next = withCeiling(
     current,
-    mediumReply,
+    effort,
+    names.length === 0 ? TIERS : (names as Tier[]),
   );
-  return { mediumOff: next, text };
+  return { ceiling: next, text: ceilingReply(next) };
 }
 
-function mediumReply(off: ReadonlySet<Tier>): string {
-  if (off.size === 0) {
-    return (
-      "high allowed on every tier (xhigh/max/ultra still have their own switches). " +
-      "/jev medium off blocks high and above everywhere; " +
-      "/jev medium off opus blocks one tier."
-    );
-  }
-  if (off.size === TIERS.length) {
-    return (
-      "medium ceiling for all tiers — effort caps at medium. /jev medium on " +
-      "to allow high again, or /jev medium on fable for one tier."
-    );
-  }
+function ceilingReply(ceiling: Ceiling): string {
   return (
-    `medium ceiling for ${[...off].join(", ")} — those cap at medium. ` +
-    "/jev medium on clears every block."
-  );
-}
-
-/**
- * Reads `/jev xhigh`, `/jev xhigh off`, `/jev xhigh on`, `/jev xhigh off opus`,
- * `/jev xhigh on fable`. Turns off (or back on) effort at or above xhigh —
- * xhigh, max, and ultra — for every tier or for named ones. `current` is the
- * session's blocked set.
- */
-export function xhighCommand(
-  rest: string,
-  current: ReadonlySet<Tier>,
-): { xhighOff: Set<Tier>; text: string } {
-  const { next, text } = effortBlockCommand("xhigh", rest, current, xhighReply);
-  return { xhighOff: next, text };
-}
-
-function xhighReply(off: ReadonlySet<Tier>): string {
-  if (off.size === 0) {
-    return (
-      "xhigh allowed on every tier (max/ultra still have their own switches). " +
-      "/jev xhigh off blocks xhigh and above everywhere; " +
-      "/jev xhigh off opus blocks one tier."
-    );
-  }
-  if (off.size === TIERS.length) {
-    return (
-      "xhigh off for all tiers — effort caps at high. /jev xhigh on to allow " +
-      "it again, or /jev xhigh on fable for one tier."
-    );
-  }
-  return (
-    `xhigh off for ${[...off].join(", ")} — those cap at high. ` +
-    "/jev xhigh on clears every block."
-  );
-}
-
-/**
- * Reads `/jev max`, `/jev max off`, `/jev max on`, `/jev max off opus`.
- * Turns off (or back on) max and ultra — caps at xhigh.
- */
-export function maxCommand(
-  rest: string,
-  current: ReadonlySet<Tier>,
-): { maxOff: Set<Tier>; text: string } {
-  const { next, text } = effortBlockCommand("max", rest, current, maxReply);
-  return { maxOff: next, text };
-}
-
-function maxReply(off: ReadonlySet<Tier>): string {
-  if (off.size === 0) {
-    return (
-      "max allowed on every tier (ultra still has /jev ultra). " +
-      "/jev max off blocks max and ultra everywhere and caps at xhigh; " +
-      "/jev max off opus blocks one tier."
-    );
-  }
-  if (off.size === TIERS.length) {
-    return (
-      "max off for all tiers — caps at xhigh. /jev max on to allow " +
-      "max again, or /jev max on fable for one tier."
-    );
-  }
-  return (
-    `max off for ${[...off].join(", ")} — those cap at xhigh. ` +
-    "/jev max on clears every block."
-  );
-}
-
-/**
- * Reads `/jev ultra`, `/jev ultra off`, `/jev ultra on`, `/jev ultra off opus`.
- * Turns off (or back on) ultra — the rung above max — capping at max.
- */
-export function ultraCommand(
-  rest: string,
-  current: ReadonlySet<Tier>,
-): { ultraOff: Set<Tier>; text: string } {
-  const { next, text } = effortBlockCommand("ultra", rest, current, ultraReply);
-  return { ultraOff: next, text };
-}
-
-function ultraReply(off: ReadonlySet<Tier>): string {
-  if (off.size === 0) {
-    return (
-      "ultra allowed on every tier. /jev ultra off blocks ultra everywhere " +
-      "and caps at max; /jev ultra off opus blocks one tier."
-    );
-  }
-  if (off.size === TIERS.length) {
-    return (
-      "ultra off for all tiers — caps at max. /jev ultra on to allow " +
-      "ultra again, or /jev ultra on fable for one tier."
-    );
-  }
-  return (
-    `ultra off for ${[...off].join(", ")} — those cap at max. ` +
-    "/jev ultra on clears every block."
+    `Effort ceiling: ${ceilingLine(ceiling)}. Jev's pick above it is capped ` +
+    "and tagged capped:<what it wanted>. /jev ceiling xhigh raises every " +
+    "tier, /jev ceiling xhigh fable one, /jev ceiling off lifts them."
   );
 }

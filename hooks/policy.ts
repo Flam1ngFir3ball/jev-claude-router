@@ -6,9 +6,12 @@
  * `node` in tests.
  */
 
+import type { SwitchVerdict } from "./pricing.ts";
+
 export type Tier = "haiku" | "sonnet" | "opus" | "fable";
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** The efforts the engine accepts, low to high. There is no rung above max. */
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type Decision = {
   tier: Tier;
@@ -32,6 +35,11 @@ export type Decision = {
    */
   held?: Tier;
   /**
+   * The two prices a held downgrade was decided between, when it was the
+   * cost of the switch and not Jev's doubt that held it. Absent otherwise.
+   */
+  heldCost?: { stay: number; go: number };
+  /**
    * The effort Jev named, when a turn staying on Sonnet kept the previous
    * turn's effort instead (see `holdsSonnetEffort`). Absent otherwise.
    */
@@ -44,10 +52,16 @@ export type Decision = {
    */
   forced?: true;
   /**
-   * The effort Jev named, when a ceiling toggle capped this turn. Absent
+   * The effort Jev named, when the tier's ceiling capped this turn. Absent
    * when no cap applied.
    */
   cappedEffort?: Effort;
+  /**
+   * Jev's probability for each offered tier, when the answer carried them.
+   * They sum to one; `confidence` is derived from them when the provider
+   * sends none (the Vercel gateway does not).
+   */
+  probabilities?: Partial<Record<Tier, number>>;
 };
 
 export const TIERS: readonly Tier[] = ["haiku", "sonnet", "opus", "fable"];
@@ -58,7 +72,6 @@ export const EFFORTS: readonly Effort[] = [
   "high",
   "xhigh",
   "max",
-  "ultra",
 ];
 
 /** Model ids as the engine names them. */
@@ -90,14 +103,26 @@ export const TIER_CRITERIA: Record<Tier, string> = {
     "where working out the approach is itself the hard part.",
 };
 
-/** Ordered low to high; the index Jev scores is the effort level. */
+/**
+ * Ordered low to high; the index Jev scores is the effort level. Written as
+ * situations rather than degrees, which is what TypeSafe's guidance for a
+ * score question asks for ("with numbers only, the model has nothing to
+ * match against and splits the probability"). Five levels, one per effort
+ * the engine accepts.
+ */
 export const EFFORT_CRITERIA: readonly string[] = [
-  "No thinking needed. The answer is immediate.",
-  "A little thinking. One or two steps.",
-  "Real thinking. Several steps, or a choice worth weighing.",
-  "Hard thinking. Many interacting parts, or a subtle failure to chase down.",
-  "As hard as it gets. Open-ended, ambiguous, or the cost of being wrong is high.",
-  "Beyond max. The rare case that needs every token of reasoning available.",
+  "The answer is already known or on screen: a lookup, a rename, a yes or " +
+    "no, restating something.",
+  "One or two obvious steps: a small edit whose shape the request already " +
+    "gives, a short explanation.",
+  "Several steps that have to fit together, or a choice worth weighing: " +
+    "real code across a file or two, a bug with a likely cause.",
+  "Many interacting parts, or a subtle failure to chase down: a change " +
+    "across several files, a bug with no obvious cause, a design with " +
+    "trade-offs.",
+  "Open-ended or ambiguous, or the cost of being wrong is high: " +
+    "architecture, a systematic debugging campaign, a migration plan, " +
+    "anything where the approach itself is the hard part.",
 ];
 
 /** Tiers dropped from the question entirely, lowercase, from the env var. */
@@ -117,7 +142,12 @@ export function offeredTiers(excluded: Set<Tier>): Tier[] {
   return kept.length > 0 ? [...kept] : [...TIERS];
 }
 
-type ChoiceAnswer = { type: "choice"; choice?: unknown; confidence?: unknown };
+type ChoiceAnswer = {
+  type: "choice";
+  choice?: unknown;
+  confidence?: unknown;
+  probabilities?: unknown;
+};
 type ScoreAnswer = { type: "score"; score?: unknown; confidence?: unknown };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -154,26 +184,74 @@ export function decisionOf(
   const confidenceOf = (v: unknown) =>
     typeof v === "number" && Number.isFinite(v) ? v : 0;
 
+  const probabilities = probabilitiesOf(tier.probabilities, offered);
+  const confidence =
+    typeof tier.confidence === "number" && Number.isFinite(tier.confidence)
+      ? tier.confidence
+      : confidenceFrom(probabilities, offered.length);
+
   return {
     tier: choice as Tier,
     model: MODEL_OF[choice as Tier],
     effort: effortOf(isRecord(effort) ? effort.score : undefined),
-    confidence: confidenceOf(tier.confidence),
+    confidence,
     effortConfidence: confidenceOf(isRecord(effort) ? effort.confidence : 0),
+    ...(probabilities !== undefined ? { probabilities } : {}),
   };
+}
+
+/** The per-tier probabilities from a choice answer, offered tiers only. */
+function probabilitiesOf(
+  raw: unknown,
+  offered: readonly Tier[],
+): Partial<Record<Tier, number>> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const out: Partial<Record<Tier, number>> = {};
+  let any = false;
+  for (const tier of offered) {
+    const p = raw[tier];
+    if (typeof p === "number" && Number.isFinite(p)) {
+      out[tier] = p;
+      any = true;
+    }
+  }
+  return any ? out : undefined;
+}
+
+/**
+ * TypeSafe's confidence, from the probabilities, for a provider that sends
+ * none. Their documented measure is how far the mass sits on one option:
+ * all of it gives 1, an even spread gives 0, and their worked example
+ * (0.85 / 0.15 / 0 → 0.78) is `(n·p_max − 1) / (n − 1)` for n options. Same
+ * scale as the confidence the direct API sends, so the sticky bar means the
+ * same thing on either provider.
+ */
+export function confidenceFrom(
+  probabilities: Partial<Record<Tier, number>> | undefined,
+  options: number,
+): number {
+  if (probabilities === undefined) return 0;
+  const values = Object.values(probabilities).filter(
+    (v): v is number => typeof v === "number",
+  );
+  if (values.length === 0) return 0;
+  const max = Math.max(...values);
+  const clamp = (n: number) => Math.min(1, Math.max(0, n));
+  if (options <= 1) return clamp(max);
+  return clamp((options * max - 1) / (options - 1));
 }
 
 /**
  * The confidence a switch must clear before the model moves, when stickiness
- * is on.
+ * is on. Jev's confidence is its top probability, normalised so an even
+ * spread reads 0: with four tiers, 0.75 means the named tier holds about 81%
+ * of the mass. 0.75 is a starting point, not a measured optimum; retune with
+ * `/jev sticky` or `npm run try-prompts`.
  *
- * The prompt cache is per model: a session cached under one tier is cold for
- * the next, so the turn that switches pays full input tokens. Break-even
- * depends on context size and destination tier (see
- * `scripts/measure-switch-cost.mjs`): holding fable when Jev wants haiku only
- * saves on the switch turn above ~90–100k context. 0.75 is the starting
- * point, not a measured optimum; retune with `/jev sticky` or
- * `npm run try-prompts`.
+ * The bar is one of two things a shaky switch has to clear. The other is the
+ * price: a downgrade whose cold cache write costs more than the turn would
+ * cost on the tier already warm is held whatever Jev's confidence
+ * (`switchVerdict` in pricing.ts, with the context size from the engine).
  */
 export const DEFAULT_STICKY_CONFIDENCE = 0.75;
 
@@ -213,7 +291,10 @@ export function thresholdOf(raw: string | undefined): number {
 }
 
 /**
- * Holds a shaky switch on the tier the last turn used.
+ * Holds a switch on the tier the last turn used when Jev is not sure enough
+ * of it, or when it is a downgrade that would cost more than it saves
+ * (`verdict`, computed by the caller from the context size; null when the
+ * switch is an upgrade, whose worth is a question of capability, not price).
  *
  * Only the model is held here. The effort Jev asked for is applied either
  * way: on Opus and Haiku it is sent per request and costs no cache, so a
@@ -227,10 +308,13 @@ export function stickyDecision(
   fresh: Decision,
   previous: Decision | null,
   threshold: number,
+  verdict: SwitchVerdict | null = null,
 ): Decision {
   if (previous === null) return fresh;
   if (fresh.tier === previous.tier) return fresh;
-  if (fresh.confidence >= threshold) return fresh;
+  const shaky = fresh.confidence < threshold;
+  const unprofitable = verdict !== null && verdict.hold;
+  if (!shaky && !unprofitable) return fresh;
   return {
     tier: previous.tier,
     model: previous.model,
@@ -239,7 +323,13 @@ export function stickyDecision(
     // Sonnet effort gating reads this next; dropping it made every held
     // Sonnet turn look like effort confidence 0 and always hold effort.
     effortConfidence: fresh.effortConfidence,
+    ...(fresh.probabilities !== undefined
+      ? { probabilities: fresh.probabilities }
+      : {}),
     held: fresh.tier,
+    ...(unprofitable
+      ? { heldCost: { stay: verdict.stay, go: verdict.go } }
+      : {}),
   };
 }
 
@@ -329,7 +419,7 @@ const NEGATION_BRIDGE =
 
 /** Fold typographic apostrophes so iOS/macOS quotes match the ASCII forms. */
 function normalizeQuotes(text: string): string {
-  return text.replace(/[\u2018\u2019\u02BC]/g, "'");
+  return text.replace(/[‘’ʼ]/g, "'");
 }
 
 export function parseOverride(
@@ -350,7 +440,7 @@ export function parseOverride(
 
 /** True when the gap is only light bridge words and no clause break. */
 function proximityOk(gap: string): boolean {
-  if (/[.!?,;:\u2014\u2013\u2026]/.test(gap)) return false;
+  if (/[.!?,;:—–…]/.test(gap)) return false;
   return NEGATION_BRIDGE.test(gap);
 }
 
@@ -453,229 +543,69 @@ export function subagentDecision(
 }
 
 /**
- * Effort at or above xhigh: xhigh, max, and ultra. Blocked together when
- * xhigh is off.
+ * The most effort each tier may be asked for. The engine's own default is
+ * xhigh; the router's is medium on every tier, raised per session with
+ * `JEV_ROUTER_CEILING` or `/jev ceiling`. One effort per tier is the whole
+ * policy: what Jev asks for above it is capped to it, and `cappedEffort`
+ * keeps what Jev wanted so the route line can say so.
  */
-export function isXhighOrAbove(effort: Effort): boolean {
-  return effort === "xhigh" || effort === "max" || effort === "ultra";
+export type Ceiling = Record<Tier, Effort>;
+
+export const DEFAULT_CEILING: Effort = "medium";
+
+/** Ladder position of an effort, low to high. */
+export function effortRank(effort: Effort): number {
+  return EFFORTS.indexOf(effort);
 }
 
-/** The ceiling when xhigh is off: everything above becomes `high`. */
-export const XHIGH_CAP: Effort = "high";
-
-/**
- * Caps a decision's effort to `high` when xhigh is blocked for its tier.
- * Keeps what Jev wanted in `cappedEffort` so the route line can say so.
- */
-export function capXhigh(
-  decision: Decision,
-  blocked: ReadonlySet<Tier>,
-): Decision {
-  if (!blocked.has(decision.tier)) return decision;
-  if (!isXhighOrAbove(decision.effort)) return decision;
-  return {
-    ...decision,
-    effort: XHIGH_CAP,
-    cappedEffort: decision.effort,
-  };
+/** An effort by name, or null. `off` and `none` mean no cap, which is max. */
+export function effortNamed(raw: string): Effort | null {
+  const name = raw.trim().toLowerCase();
+  if (name === "off" || name === "none") return "max";
+  return (EFFORTS as string[]).includes(name) ? (name as Effort) : null;
 }
 
-/** Effort at or above max: max and ultra. */
-export function isMaxOrAbove(effort: Effort): boolean {
-  return effort === "max" || effort === "ultra";
-}
-
-/** The ceiling when max is off: everything above becomes `xhigh`. */
-export const MAX_CAP: Effort = "xhigh";
-
-/**
- * Caps a decision's effort to `xhigh` when max+ is blocked for its tier.
- * Only bites when xhigh itself is still allowed.
- */
-export function capMax(
-  decision: Decision,
-  blocked: ReadonlySet<Tier>,
-): Decision {
-  if (!blocked.has(decision.tier)) return decision;
-  if (!isMaxOrAbove(decision.effort)) return decision;
-  return {
-    ...decision,
-    effort: MAX_CAP,
-    cappedEffort: decision.effort,
-  };
-}
-
-/** Effort at ultra — the rung above max. */
-export function isUltra(effort: Effort): boolean {
-  return effort === "ultra";
-}
-
-/** The ceiling when ultra is off: ultra becomes `max`. */
-export const ULTRA_CAP: Effort = "max";
-
-/**
- * Caps a decision's effort to `max` when ultra is blocked for its tier.
- * Only bites when max itself is still allowed.
- */
-export function capUltra(
-  decision: Decision,
-  blocked: ReadonlySet<Tier>,
-): Decision {
-  if (!blocked.has(decision.tier)) return decision;
-  if (!isUltra(decision.effort)) return decision;
-  return {
-    ...decision,
-    effort: ULTRA_CAP,
-    cappedEffort: decision.effort,
-  };
+/** The same ceiling on every tier. */
+export function ceilingAt(effort: Effort): Ceiling {
+  return { haiku: effort, sonnet: effort, opus: effort, fable: effort };
 }
 
 /**
- * Effort above medium: high, xhigh, max, and ultra. Blocked together when
- * medium is off.
+ * Reads `JEV_ROUTER_CEILING`: one effort for every tier (`xhigh`), or a
+ * comma list of `tier:effort` pairs for some (`fable:xhigh,opus:high`) with
+ * the rest at the default. Anything unreadable is ignored, so a typo leaves
+ * the default in place rather than opening the ceiling.
  */
-export function isAboveMedium(effort: Effort): boolean {
-  return (
-    effort === "high" ||
-    effort === "xhigh" ||
-    effort === "max" ||
-    effort === "ultra"
-  );
-}
-
-/** The ceiling when medium is off: everything above becomes `medium`. */
-export const MEDIUM_CAP: Effort = "medium";
-
-/**
- * Caps a decision's effort to `medium` when high+ is blocked for its tier.
- * Keeps what Jev wanted in `cappedEffort` so the route line can say so.
- */
-export function capMedium(
-  decision: Decision,
-  blocked: ReadonlySet<Tier>,
-): Decision {
-  if (!blocked.has(decision.tier)) return decision;
-  if (!isAboveMedium(decision.effort)) return decision;
-  return {
-    ...decision,
-    effort: MEDIUM_CAP,
-    cappedEffort: decision.effort,
-  };
-}
-
-/**
- * Effort above low: medium through ultra. Blocked together when low is off.
- */
-export function isAboveLow(effort: Effort): boolean {
-  return (
-    effort === "medium" ||
-    effort === "high" ||
-    effort === "xhigh" ||
-    effort === "max" ||
-    effort === "ultra"
-  );
-}
-
-/** The ceiling when low is off: everything above becomes `low`. */
-export const LOW_CAP: Effort = "low";
-
-/**
- * Caps a decision's effort to `low` when medium+ is blocked for its tier.
- * Keeps what Jev wanted in `cappedEffort` so the route line can say so.
- */
-export function capLow(
-  decision: Decision,
-  blocked: ReadonlySet<Tier>,
-): Decision {
-  if (!blocked.has(decision.tier)) return decision;
-  if (!isAboveLow(decision.effort)) return decision;
-  return {
-    ...decision,
-    effort: LOW_CAP,
-    cappedEffort: decision.effort,
-  };
-}
-
-/**
- * Shared reader for `JEV_ROUTER_*_OFF` block lists. When `defaultAll` is
- * true, unset/empty blocks every tier (medium/xhigh/max/ultra defaults);
- * when false, unset means nothing blocked (low is opt-in).
- * `0`/`false`/`off`/`no`/`none` clears the block; `1`/`all`/`true`/`yes`/`on`
- * blocks every tier; otherwise a comma list of tier names.
- */
-export function tierBlockOf(
-  raw: string | undefined,
-  defaultAll: boolean,
-): Set<Tier> {
-  const flag = (raw ?? "").trim().toLowerCase();
-  if (!flag) return defaultAll ? new Set(TIERS) : new Set();
-  if (
-    flag === "0" ||
-    flag === "false" ||
-    flag === "off" ||
-    flag === "no" ||
-    flag === "none"
-  ) {
-    return new Set();
+export function ceilingOf(raw: string | undefined): Ceiling {
+  const ceiling = ceilingAt(DEFAULT_CEILING);
+  const text = (raw ?? "").trim().toLowerCase();
+  if (!text) return ceiling;
+  const whole = effortNamed(text);
+  if (whole !== null) return ceilingAt(whole);
+  for (const part of text.split(",")) {
+    const [tierName, effortName] = part.split(":").map((s) => s.trim());
+    if (tierName === undefined || effortName === undefined) continue;
+    const effort = effortNamed(effortName);
+    if (effort === null || !(TIERS as string[]).includes(tierName)) continue;
+    ceiling[tierName as Tier] = effort;
   }
-  if (
-    flag === "1" ||
-    flag === "all" ||
-    flag === "true" ||
-    flag === "yes" ||
-    flag === "on"
-  ) {
-    return new Set(TIERS);
-  }
-  return new Set(
-    flag
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter((n): n is Tier => (TIERS as string[]).includes(n)),
-  );
+  return ceiling;
 }
 
-/**
- * Reads `JEV_ROUTER_XHIGH_OFF`. Default (unset/empty) blocks every tier so
- * effort caps at `high` (unless a tighter ceiling is also off). Opt in with
- * `0`/`false`/`off`/`no`/`none`.
- */
-export function xhighOffOf(raw: string | undefined): Set<Tier> {
-  return tierBlockOf(raw, true);
+/** A copy of `ceiling` with `effort` set on `tiers`, or on every tier. */
+export function withCeiling(
+  ceiling: Ceiling,
+  effort: Effort,
+  tiers: readonly Tier[] = TIERS,
+): Ceiling {
+  const next = { ...ceiling };
+  for (const tier of tiers) next[tier] = effort;
+  return next;
 }
 
-/**
- * Reads `JEV_ROUTER_MAX_OFF`. Default (unset/empty) blocks every tier so
- * max+ caps at `xhigh`. Opt in with `0`/`false`/`off`/`no`/`none`. Only
- * matters once xhigh itself is allowed.
- */
-export function maxOffOf(raw: string | undefined): Set<Tier> {
-  return tierBlockOf(raw, true);
-}
-
-/**
- * Reads `JEV_ROUTER_ULTRA_OFF`. Default (unset/empty) blocks every tier so
- * ultra caps at `max`. Opt in with `0`/`false`/`off`/`no`/`none`. Only
- * matters once max itself is allowed.
- */
-export function ultraOffOf(raw: string | undefined): Set<Tier> {
-  return tierBlockOf(raw, true);
-}
-
-/**
- * Reads `JEV_ROUTER_MEDIUM_OFF`. Default (unset/empty) blocks every tier so
- * effort caps at `medium` — the session default. Opt in to high with
- * `0`/`false`/`off`/`no`/`none` (xhigh still has its own switch).
- */
-export function mediumOffOf(raw: string | undefined): Set<Tier> {
-  return tierBlockOf(raw, true);
-}
-
-/**
- * Reads `JEV_ROUTER_LOW_OFF`. Unset/empty leaves medium allowed. `1`/`all`
- * blocks every tier so effort caps at `low`; `0`/`false`/`off`/`no`/`none`
- * clears the block; otherwise a comma list of tier names.
- */
-export function lowOffOf(raw: string | undefined): Set<Tier> {
-  return tierBlockOf(raw, false);
+/** Caps a decision's effort at its tier's ceiling, keeping what Jev named. */
+export function capTo(decision: Decision, ceiling: Ceiling): Decision {
+  const cap = ceiling[decision.tier];
+  if (effortRank(decision.effort) <= effortRank(cap)) return decision;
+  return { ...decision, effort: cap, cappedEffort: decision.effort };
 }

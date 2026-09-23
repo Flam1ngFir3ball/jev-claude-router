@@ -28,6 +28,22 @@ import type { ProviderResult } from "./provider.ts";
  */
 export const DEFAULT_TIMEOUT_MS = 1500;
 
+/**
+ * Jev takes 32k tokens of state and reads the whole of it; TypeSafe's own
+ * guidance is that accuracy falls as the state grows with content unrelated
+ * to the decision. A routing decision is made on how a request opens, so a
+ * long paste is cut here rather than sent whole and refused with a 422.
+ */
+export const MAX_STATE_CHARS = 12_000;
+
+/** The state Jev is sent: the prompt, cut at MAX_STATE_CHARS. */
+export function stateOf(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= MAX_STATE_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, MAX_STATE_CHARS)}…`;
+}
+
 /** A timeout from the environment, or the default when it is unusable. */
 export function timeoutOf(raw: string | undefined): number {
   const parsed = Number(raw);
@@ -128,7 +144,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
   const controller = new AbortController();
 
   const body = {
-    ...requestBodyOf(state, offered),
+    ...requestBodyOf(stateOf(state), offered),
     model: provider.model,
   };
 
