@@ -243,33 +243,57 @@ export function isContinuation(text: string): boolean {
  * "run on" are accepted; bare "on"/"for"/"with"/"using" are not (they turned
  * "happy with opus" and "I'm using opus for comparison" into routes). A bare
  * tier glued to another word ("sonnet-level") is not a name either. Negations
- * a few words back are skipped (`don't want to use`, `won't use`, `avoid
- * using`), and the last affirmative match wins. A model id
- * ("use claude-opus-5-5") names its tier too. Returns the tier, or null when
- * none is named or the named one is not offered.
+ * (`don't want to use`, `won't use`, `avoid using`) skip only the first run-on
+ * after the negation, so "don't use haiku use opus" still forces opus. A model
+ * id ("use claude-opus-5-5") names its tier too. Returns the tier, or null
+ * when none is named or the named one is not offered.
  */
 const OVERRIDE =
   /\b(?:use|do (?:it |this )?using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
 
 /**
- * Negation of a run-on verb, allowing a few words in between
- * ("don't want to use", "never ever use", "can't use").
+ * Negation starters. Bare `\bnot` is omitted on purpose: "why not use opus"
+ * is an affirmative ask. `do not` is included instead.
  */
-const OVERRIDE_NEGATION =
-  /(?:\bdo\s*n'?t|\bwon'?t|\bcan(?:'?t|not)|\bnever|\bnot|\bavoid|\bstop)\s+(?:\w+\s+){0,5}$/i;
+const OVERRIDE_NEGATION_AT =
+  /\b(?:do\s*n'?t|won'?t|can(?:'?t|not)|never|avoid|stop|do\s+not)\b/gi;
 
 export function parseOverride(
   text: string,
   offered: readonly Tier[] = TIERS,
 ): Tier | null {
+  const matches = [...text.matchAll(OVERRIDE)];
   let named: Tier | null = null;
-  for (const match of text.matchAll(OVERRIDE)) {
+  for (const match of matches) {
     const at = match.index ?? 0;
-    if (OVERRIDE_NEGATION.test(text.slice(0, at))) continue;
+    if (overrideNegated(text, at, matches)) continue;
     const tier = match[1]?.toLowerCase() as Tier | undefined;
     if (tier !== undefined && offered.includes(tier)) named = tier;
   }
   return named;
+}
+
+/**
+ * True when this match is the first run-on after a negation. A later
+ * affirmative in the same sentence ("don't use haiku use opus") is not.
+ */
+function overrideNegated(
+  text: string,
+  matchAt: number,
+  matches: RegExpMatchArray[],
+): boolean {
+  const before = text.slice(0, matchAt);
+  let lastNeg = -1;
+  for (const neg of before.matchAll(OVERRIDE_NEGATION_AT)) {
+    lastNeg = neg.index ?? -1;
+  }
+  if (lastNeg < 0) return false;
+  for (const other of matches) {
+    const otherAt = other.index ?? 0;
+    if (otherAt < lastNeg) continue;
+    return otherAt === matchAt;
+  }
+  return false;
 }
 
 /** A decision forced to a named tier; Jev's effort is kept, its tier is not. */

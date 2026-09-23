@@ -106,7 +106,7 @@ jev-router
    653ms  fable·xhigh 0.61  [notify] Agent "Review library-sync cluster" com…
           answered claude-fable-5-1 ✓  cache 98%  45k in  1k out
      0ms  unrouted — [agent:general-purpose] Review library-sync cluster
-          answered claude-opus-5  cache 82%  22k in  0k out
+          answered claude-opus-5-5  cache 82%  22k in  0k out
    641ms  fable·xhigh 0.97  help me plan the architecture
           answered claude-fable-5-1 ✓  cache 91%  130k in  2k out
    402ms  haiku·medium 0.75  rename the variable foo to bar
@@ -141,7 +141,7 @@ The `answered` line under each turn is the API's own report, taken from the
 `usage` on each step's `stop` chunk: which model actually answered, and what
 the turn's requests carried. The route line above it is what the mod asked
 for; this is what it got. `✓` means they agree (a dated id such as
-`claude-opus-5-20260901` still counts); `≠ claude-opus-5` means something else
+`claude-opus-5-5-20260901` still counts); `≠ claude-opus-5-5` means something else
 answered, which is the one case worth looking into. There is no need to proxy
 traffic or force a bogus model id to check the rewrite lands.
 
@@ -187,7 +187,7 @@ api  claude-fable-5-1 ✓ · cache 90% · 130k in · 1k out
 `api` is read off the `usage` on the step's stop chunk, so `✓` is the API's
 own confirmation that the model rewrite landed — no proxy, no bogus model id.
 A dated id such as `claude-fable-5-1-20260901` still counts as a match; a real
-mismatch reads `claude-opus-5 ≠ claude-fable-5-1`.
+mismatch reads `claude-opus-5-5 ≠ claude-fable-5-1`.
 
 `cache` is the share of the turn's input read from the prompt cache. The cache
 is per model, so the turn after a switch runs cold:
@@ -327,10 +327,10 @@ so stickiness refused it. A tier named with a run-on verb (`use`, `do it using`,
 needs no answer from Jev, and is tagged `forced`. Jev's effort still applies.
 Bare "on", "for", "with", and "using" are not verbs here: "search for opus
 docs" is a search, "happy with opus" and "I'm using opus for comparison" are
-not routes. Negations a few words back are skipped (`don't want to use`,
-`won't use`, `avoid using`) and the last affirmative match wins
-("don't use haiku, use opus" → opus). A tier the environment excluded cannot
-be named back in.
+not routes. Negations skip only the first run-on after them, so a later
+affirmative still wins ("don't use haiku use opus" → opus). "why not use
+opus" is an affirmative ask. A tier the environment excluded cannot be named
+back in.
 
 ## Subagents
 

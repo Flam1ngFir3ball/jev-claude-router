@@ -160,6 +160,27 @@ export function register(on: On) {
     }
   };
 
+  /**
+   * Drop idle turn rows, but never an in-flight one still in `pending` or
+   * `decisions` — those still need the route line and usage fold-in. If every
+   * entry is protected, the map is allowed to grow past the limit.
+   */
+  const trimByTurn = () => {
+    let scanned = 0;
+    while (byTurn.size > CACHE_LIMIT && scanned < byTurn.size) {
+      const oldest = byTurn.keys().next();
+      if (oldest.done) break;
+      const key = oldest.value;
+      if (pending.has(key) || decisions.has(key)) {
+        touch(byTurn, key, byTurn.get(key)!);
+        scanned++;
+        continue;
+      }
+      byTurn.delete(key);
+      scanned = 0;
+    }
+  };
+
   /** Move a live entry to the end so FIFO trim drops idle keys first. */
   const touch = <V>(map: Map<string, V>, key: string, value: V) => {
     map.delete(key);
@@ -172,6 +193,16 @@ export function register(on: On) {
       if (oldest.done) break;
       set.delete(oldest.value);
     }
+  };
+
+  const clearRouting = () => {
+    decisions.clear();
+    byTurn.clear();
+    pending.clear();
+    spawned.clear();
+    latest = null;
+    continueFrom = null;
+    running = null;
   };
 
   const record = (attempt: Attempt) => {
@@ -196,13 +227,7 @@ export function register(on: On) {
 
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
-      if (!enabled) {
-        latest = null;
-        // Intervening session-model turns must not be continued as if the
-        // pre-off routed decision were still the previous turn.
-        continueFrom = null;
-        running = null;
-      }
+      if (!enabled) clearRouting();
       return { text: toggleReply(enabled) };
     }
 
@@ -278,7 +303,7 @@ export function register(on: On) {
     // announcement can never disagree about what happened.
     record(attempt);
     byTurn.set(e.turnId, attempt);
-    trim(byTurn);
+    trimByTurn();
 
     // The line goes into the reply's own text, in turn.step below. Render
     // hooks and $.ui.log both drew nothing in the desktop app; the model's
@@ -316,6 +341,13 @@ export function register(on: On) {
   // sees its past replies open with the line; that is the price of a marker
   // that reaches a surface which draws neither render sites nor ui.log.
   on("turn.step", async function* ($, e, next) {
+    // Routing off is authoritative for every step, including subagents whose
+    // spawn decision was cached before /jev off.
+    if (!enabled) {
+      for await (const chunk of next(e)) yield chunk;
+      return;
+    }
+
     // A subagent's loop gets no turn.start (probed live: its steps arrive
     // with agentId set and nothing in byTurn), so its turn is first seen
     // here. Its decision was made at agent.spawn, keyed by the id the spawn
@@ -334,8 +366,9 @@ export function register(on: On) {
       // every routed subagent twice.
       attempt = spawned.get(e.agentId);
       if (attempt !== undefined) {
-        // Touch for LRU: an active agent's decision must outlive a burst of
-        // newer spawns, or its later steps miss the row and run unrouted.
+        // Touch keeps the row warm; spawned itself is never trimmed — dropping
+        // an in-flight agent silently reverts its later steps to the session
+        // model and invents a "not routed at spawn" history row.
         touch(spawned, e.agentId, attempt);
       } else {
         // A fork, or a spawn from before the router loaded: nothing was
@@ -351,7 +384,7 @@ export function register(on: On) {
         record(attempt);
       }
       byTurn.set(e.turnId, attempt);
-      trim(byTurn);
+      trimByTurn();
     }
     let decision = decisions.get(e.turnId);
     if (decision !== undefined) {
@@ -445,8 +478,9 @@ export function register(on: On) {
       "decision" in attempt ? { ...e, model: attempt.decision.model } : e,
     );
     if (started.agentId !== undefined) {
+      // Never trimmed: FIFO eviction here silently dropped effort routing for
+      // resumed agents and invented "not routed at spawn" history rows.
       spawned.set(started.agentId, attempt);
-      trim(spawned);
     }
     return started;
   });

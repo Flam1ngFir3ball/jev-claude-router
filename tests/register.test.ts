@@ -1197,4 +1197,37 @@ describe("register: a spawned subagent", () => {
     assert.equal(passed?.model, undefined);
     assert.equal(kit.fetches(), 0);
   });
+
+  test("routing off stops steps of a spawn made while on", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98, 1);
+    await kit.hooks.get("agent.spawn")!(
+      kit.$,
+      spawnOf(),
+      async (e: { model?: string }) => ({
+        model: e.model ?? "claude-fable-5-1",
+        agentId: "agent-1",
+      }),
+    );
+    await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "off" });
+    let sent: { model?: string; effort?: string } = {};
+    await collect(
+      kit.hooks.get("turn.step")!(
+        kit.$,
+        {
+          turnId: "sub-after-off",
+          index: 0,
+          agentId: "agent-1",
+          model: "claude-fable-5-1",
+          effort: "high",
+        },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    assert.equal(sent.model, "claude-fable-5-1", "cached spawn decision is not applied");
+    assert.equal(sent.effort, "high");
+  });
 });
