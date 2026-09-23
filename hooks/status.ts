@@ -14,6 +14,8 @@ import {
   stickyDecision,
   SUBAGENT_CONFIDENCE,
   subagentDecision,
+  capLow,
+  capMedium,
   capXhigh,
   TIERS,
   type Decision,
@@ -150,6 +152,10 @@ export type Status = {
   timeoutMs: number;
   /** The confidence a switch must clear, or null when stickiness is off. */
   sticky: number | null;
+  /** Tiers for which medium+ effort is blocked (cap at low). */
+  lowOff: readonly Tier[];
+  /** Tiers for which high+ effort is blocked (cap at medium). */
+  mediumOff: readonly Tier[];
   /** Tiers for which xhigh (and max) effort is blocked. */
   xhighOff: readonly Tier[];
   offered: readonly Tier[];
@@ -162,13 +168,16 @@ export type Status = {
  * What settles a main-loop turn beyond Jev's answer. `sticky` is the bar a
  * switch must clear, or null when switches are free; `running` what the last
  * routed turn ran on; `forced` a tier the prompt itself named, which takes
- * the tier question away from Jev and from stickiness both; `xhighOff` the
- * tiers whose effort is capped at high.
+ * the tier question away from Jev and from stickiness both; `lowOff` /
+ * `mediumOff` / `xhighOff` the tiers whose effort is capped at low / medium /
+ * high.
  */
 export type Hold = {
   sticky: number | null;
   running: Decision | null;
   forced?: Tier | null;
+  lowOff?: ReadonlySet<Tier>;
+  mediumOff?: ReadonlySet<Tier>;
   xhighOff?: ReadonlySet<Tier>;
 };
 
@@ -224,6 +233,9 @@ export function attemptOf(
       heldEffort: decision.effort,
     };
   }
+  // Tightest ceiling first so cappedEffort keeps what Jev named.
+  decision = capLow(decision, hold.lowOff ?? new Set());
+  decision = capMedium(decision, hold.mediumOff ?? new Set());
   decision = capXhigh(decision, hold.xhighOff ?? new Set());
   return { ...head, ms: result.ms, decision };
 }
@@ -232,12 +244,14 @@ export function attemptOf(
  * A bare go-ahead's outcome: the previous turn's decision, carried over as
  * is. `held` and the like are dropped, since they described that turn's
  * choice, not this one's; the `continue` tag says what happened here. The
- * xhigh cap is re-applied so a toggle mid-session still binds.
+ * effort caps are re-applied so a toggle mid-session still binds.
  */
 export function continuationOf(
   text: string,
   running: Decision,
   xhighOff: ReadonlySet<Tier> = new Set(),
+  mediumOff: ReadonlySet<Tier> = new Set(),
+  lowOff: ReadonlySet<Tier> = new Set(),
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
   return {
@@ -245,7 +259,13 @@ export function continuationOf(
     ms: 0,
     kind: "continue",
     decision: capXhigh(
-      { tier, model, effort, confidence, effortConfidence },
+      capMedium(
+        capLow(
+          { tier, model, effort, confidence, effortConfidence },
+          lowOff,
+        ),
+        mediumOff,
+      ),
       xhighOff,
     ),
   };
@@ -279,6 +299,8 @@ export function spawnAttemptOf(
   offered: readonly Tier[],
   agent: AgentTag,
   xhighOff: ReadonlySet<Tier> = new Set(),
+  mediumOff: ReadonlySet<Tier> = new Set(),
+  lowOff: ReadonlySet<Tier> = new Set(),
 ): Attempt {
   const head = { prompt: description, kind: "agent" as const, agent };
   if (!result.ok) return { ...head, ms: result.ms, skipped: result.reason };
@@ -298,7 +320,14 @@ export function spawnAttemptOf(
       skipped: `${fresh.tier} at ${fresh.confidence.toFixed(2)}, under the ${SUBAGENT_CONFIDENCE} bar; left on its own model`,
     };
   }
-  return { ...head, ms: result.ms, decision: capXhigh(decision, xhighOff) };
+  return {
+    ...head,
+    ms: result.ms,
+    decision: capXhigh(
+      capMedium(capLow(decision, lowOff), mediumOff),
+      xhighOff,
+    ),
+  };
 }
 
 /** The last few turns, newest first, so the report stays one screen. */
@@ -442,6 +471,8 @@ export function statusReport(status: Status): string {
         : `on, switch needs ${Math.round(status.sticky * 100)}%`
     }`,
   );
+  lines.push(`  low       ${lowStatusLine(status.lowOff)}`);
+  lines.push(`  medium    ${mediumStatusLine(status.mediumOff)}`);
   lines.push(`  xhigh     ${xhighStatusLine(status.xhighOff)}`);
   lines.push(`  tiers     ${status.offered.join(", ")}`);
   lines.push(
@@ -568,10 +599,144 @@ function stuckAt(bar: number): string {
   );
 }
 
+function lowStatusLine(off: readonly Tier[]): string {
+  if (off.length === 0) return "on (JEV_ROUTER_LOW_OFF=1)";
+  if (off.length === TIERS.length) return "off for all · capped at low";
+  return `off for ${off.join(", ")} · capped at low`;
+}
+
+function mediumStatusLine(off: readonly Tier[]): string {
+  if (off.length === 0) return "on (JEV_ROUTER_MEDIUM_OFF=0)";
+  if (off.length === TIERS.length) return "off for all · capped at medium";
+  return `off for ${off.join(", ")} · capped at medium`;
+}
+
 function xhighStatusLine(off: readonly Tier[]): string {
   if (off.length === 0) return "on (JEV_ROUTER_XHIGH_OFF=0)";
   if (off.length === TIERS.length) return "off for all · capped at high";
   return `off for ${off.join(", ")} · capped at high`;
+}
+
+/** Shared on/off/per-tier parser for effort-ceiling commands. */
+function effortBlockCommand(
+  name: string,
+  rest: string,
+  current: ReadonlySet<Tier>,
+  reply: (off: ReadonlySet<Tier>) => string,
+): { next: Set<Tier>; text: string } {
+  const parts = rest.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const next = new Set(current);
+
+  if (parts.length === 0) {
+    return { next, text: reply(next) };
+  }
+
+  const action = parts[0];
+  if (action !== "on" && action !== "off") {
+    return {
+      next,
+      text:
+        `"${rest.trim()}" is not a ${name} switch. Try /jev ${name} off, ` +
+        `/jev ${name} on, or /jev ${name} off opus.`,
+    };
+  }
+
+  const names = parts.slice(1);
+  if (names.length === 0) {
+    if (action === "off") {
+      for (const t of TIERS) next.add(t);
+    } else {
+      next.clear();
+    }
+    return { next, text: reply(next) };
+  }
+
+  const unknown = names.filter((n) => !(TIERS as string[]).includes(n));
+  if (unknown.length > 0) {
+    return {
+      next,
+      text:
+        `"${unknown.join(", ")}" ${unknown.length === 1 ? "is" : "are"} not ` +
+        `a tier. Use ${TIERS.join(", ")}.`,
+    };
+  }
+
+  for (const tierName of names) {
+    const tier = tierName as Tier;
+    if (action === "off") next.add(tier);
+    else next.delete(tier);
+  }
+  return { next, text: reply(next) };
+}
+
+/**
+ * Reads `/jev low`, `/jev low off`, `/jev low on`, `/jev low off opus`.
+ * Turns off (or back on) effort above low — medium through max.
+ */
+export function lowCommand(
+  rest: string,
+  current: ReadonlySet<Tier>,
+): { lowOff: Set<Tier>; text: string } {
+  const { next, text } = effortBlockCommand("low", rest, current, lowReply);
+  return { lowOff: next, text };
+}
+
+function lowReply(off: ReadonlySet<Tier>): string {
+  if (off.size === 0) {
+    return (
+      "medium and above allowed (medium/xhigh still have their own switches). " +
+      "/jev low off blocks medium and above everywhere; " +
+      "/jev low off opus blocks one tier."
+    );
+  }
+  if (off.size === TIERS.length) {
+    return (
+      "low ceiling for all tiers — effort caps at low. /jev low on to allow " +
+      "medium again, or /jev low on fable for one tier."
+    );
+  }
+  return (
+    `low ceiling for ${[...off].join(", ")} — those cap at low. ` +
+    "/jev low on clears every block."
+  );
+}
+
+/**
+ * Reads `/jev medium`, `/jev medium off`, `/jev medium on`, `/jev medium off opus`,
+ * `/jev medium on fable`. Turns off (or back on) effort above medium — high,
+ * xhigh, and max — for every tier or for named ones.
+ */
+export function mediumCommand(
+  rest: string,
+  current: ReadonlySet<Tier>,
+): { mediumOff: Set<Tier>; text: string } {
+  const { next, text } = effortBlockCommand(
+    "medium",
+    rest,
+    current,
+    mediumReply,
+  );
+  return { mediumOff: next, text };
+}
+
+function mediumReply(off: ReadonlySet<Tier>): string {
+  if (off.size === 0) {
+    return (
+      "high allowed on every tier (xhigh still has its own switch). " +
+      "/jev medium off blocks high and above everywhere; " +
+      "/jev medium off opus blocks one tier."
+    );
+  }
+  if (off.size === TIERS.length) {
+    return (
+      "medium ceiling for all tiers — effort caps at medium. /jev medium on " +
+      "to allow high again, or /jev medium on fable for one tier."
+    );
+  }
+  return (
+    `medium ceiling for ${[...off].join(", ")} — those cap at medium. ` +
+    "/jev medium on clears every block."
+  );
 }
 
 /**
@@ -584,49 +749,8 @@ export function xhighCommand(
   rest: string,
   current: ReadonlySet<Tier>,
 ): { xhighOff: Set<Tier>; text: string } {
-  const parts = rest.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const next = new Set(current);
-
-  if (parts.length === 0) {
-    return { xhighOff: next, text: xhighReply(next) };
-  }
-
-  const action = parts[0];
-  if (action !== "on" && action !== "off") {
-    return {
-      xhighOff: next,
-      text:
-        `"${rest.trim()}" is not an xhigh switch. Try /jev xhigh off, ` +
-        "/jev xhigh on, or /jev xhigh off opus.",
-    };
-  }
-
-  const names = parts.slice(1);
-  if (names.length === 0) {
-    if (action === "off") {
-      for (const t of TIERS) next.add(t);
-    } else {
-      next.clear();
-    }
-    return { xhighOff: next, text: xhighReply(next) };
-  }
-
-  const unknown = names.filter((n) => !(TIERS as string[]).includes(n));
-  if (unknown.length > 0) {
-    return {
-      xhighOff: next,
-      text:
-        `"${unknown.join(", ")}" ${unknown.length === 1 ? "is" : "are"} not ` +
-        `a tier. Use ${TIERS.join(", ")}.`,
-    };
-  }
-
-  for (const name of names) {
-    const tier = name as Tier;
-    if (action === "off") next.add(tier);
-    else next.delete(tier);
-  }
-  return { xhighOff: next, text: xhighReply(next) };
+  const { next, text } = effortBlockCommand("xhigh", rest, current, xhighReply);
+  return { xhighOff: next, text };
 }
 
 function xhighReply(off: ReadonlySet<Tier>): string {

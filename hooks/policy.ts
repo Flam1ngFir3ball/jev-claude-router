@@ -437,15 +437,80 @@ export function capXhigh(
 }
 
 /**
- * Reads `JEV_ROUTER_XHIGH_OFF`. Default (unset/empty) blocks every tier so
- * effort caps at `high`: xhigh thinking is the expensive rung, and sessions
- * should opt into it. `0`/`false`/`off`/`no`/`none` clears the block;
- * `1`/`all`/`true`/`yes`/`on` blocks every tier; otherwise a comma list of
- * tier names.
+ * Effort above medium: high, xhigh, and max. Blocked together when medium
+ * is off, same idea as xhigh+max — leaving a higher rung open would undo
+ * the cheaper ceiling.
  */
-export function xhighOffOf(raw: string | undefined): Set<Tier> {
+export function isAboveMedium(effort: Effort): boolean {
+  return effort === "high" || effort === "xhigh" || effort === "max";
+}
+
+/** The ceiling when medium is off: everything above becomes `medium`. */
+export const MEDIUM_CAP: Effort = "medium";
+
+/**
+ * Caps a decision's effort to `medium` when high+ is blocked for its tier.
+ * Keeps what Jev wanted in `cappedEffort` so the route line can say so.
+ */
+export function capMedium(
+  decision: Decision,
+  blocked: ReadonlySet<Tier>,
+): Decision {
+  if (!blocked.has(decision.tier)) return decision;
+  if (!isAboveMedium(decision.effort)) return decision;
+  return {
+    ...decision,
+    effort: MEDIUM_CAP,
+    cappedEffort: decision.effort,
+  };
+}
+
+/**
+ * Effort above low: medium, high, xhigh, and max. Blocked together when
+ * low is off.
+ */
+export function isAboveLow(effort: Effort): boolean {
+  return (
+    effort === "medium" ||
+    effort === "high" ||
+    effort === "xhigh" ||
+    effort === "max"
+  );
+}
+
+/** The ceiling when low is off: everything above becomes `low`. */
+export const LOW_CAP: Effort = "low";
+
+/**
+ * Caps a decision's effort to `low` when medium+ is blocked for its tier.
+ * Keeps what Jev wanted in `cappedEffort` so the route line can say so.
+ */
+export function capLow(
+  decision: Decision,
+  blocked: ReadonlySet<Tier>,
+): Decision {
+  if (!blocked.has(decision.tier)) return decision;
+  if (!isAboveLow(decision.effort)) return decision;
+  return {
+    ...decision,
+    effort: LOW_CAP,
+    cappedEffort: decision.effort,
+  };
+}
+
+/**
+ * Shared reader for `JEV_ROUTER_*_OFF` block lists. When `defaultAll` is
+ * true, unset/empty blocks every tier (medium/xhigh defaults); when false,
+ * unset means nothing blocked (low is opt-in). `0`/`false`/`off`/`no`/`none`
+ * clears the block; `1`/`all`/`true`/`yes`/`on` blocks every tier; otherwise
+ * a comma list of tier names.
+ */
+export function tierBlockOf(
+  raw: string | undefined,
+  defaultAll: boolean,
+): Set<Tier> {
   const flag = (raw ?? "").trim().toLowerCase();
-  if (!flag) return new Set(TIERS);
+  if (!flag) return defaultAll ? new Set(TIERS) : new Set();
   if (
     flag === "0" ||
     flag === "false" ||
@@ -470,4 +535,31 @@ export function xhighOffOf(raw: string | undefined): Set<Tier> {
       .map((s) => s.trim().toLowerCase())
       .filter((n): n is Tier => (TIERS as string[]).includes(n)),
   );
+}
+
+/**
+ * Reads `JEV_ROUTER_XHIGH_OFF`. Default (unset/empty) blocks every tier so
+ * effort caps at `high` (unless a tighter ceiling is also off). Opt in with
+ * `0`/`false`/`off`/`no`/`none`.
+ */
+export function xhighOffOf(raw: string | undefined): Set<Tier> {
+  return tierBlockOf(raw, true);
+}
+
+/**
+ * Reads `JEV_ROUTER_MEDIUM_OFF`. Default (unset/empty) blocks every tier so
+ * effort caps at `medium` — the session default. Opt in to high with
+ * `0`/`false`/`off`/`no`/`none` (xhigh still has its own switch).
+ */
+export function mediumOffOf(raw: string | undefined): Set<Tier> {
+  return tierBlockOf(raw, true);
+}
+
+/**
+ * Reads `JEV_ROUTER_LOW_OFF`. Unset/empty leaves medium allowed. `1`/`all`
+ * blocks every tier so effort caps at `low`; `0`/`false`/`off`/`no`/`none`
+ * clears the block; otherwise a comma list of tier names.
+ */
+export function lowOffOf(raw: string | undefined): Set<Tier> {
+  return tierBlockOf(raw, false);
 }

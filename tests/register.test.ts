@@ -138,11 +138,11 @@ describe("register: the route in the reply", () => {
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
 
     assert.equal(sent.model, "claude-opus-5-5");
-    assert.equal(sent.effort, "high");
+    assert.equal(sent.effort, "medium");
     // The latency is wall-clock, so it is matched loosely.
     assert.match(
       texts[0]!,
-      /^> ✳️ `opus` · high · 91% · \d+ms\n\n---\n\nHello$/,
+      /^> ✳️ `opus` · medium · 91% · capped:high · \d+ms\n\n---\n\nHello$/,
     );
     assert.equal(texts[1], " there.");
     assert.equal(
@@ -331,7 +331,7 @@ describe("register: the route in the reply", () => {
 
     const texts = chunks.filter((c) => c.kind === "text");
     const footer = texts.at(-1)!.text;
-    assert.match(footer, /```\n─+\njev {2}opus·high/);
+    assert.match(footer, /```\n─+\njev {2}opus·medium/);
     assert.match(footer, /api {2}claude-opus-5-5 ✓/);
     assert.equal(
       chunks.at(-1)!.kind,
@@ -377,7 +377,7 @@ describe("register: the route in the reply", () => {
     );
     assert.match(
       last.filter((c) => c.kind === "text").at(-1)!.text,
-      /jev {2}opus·high/,
+      /jev {2}opus·medium/,
     );
   });
 
@@ -459,8 +459,8 @@ describe("register: the route in the reply", () => {
       ),
     );
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
-    assert.match(texts[0]!, /^> ✳️ `opus` · high · 91% · notify · 0ms/);
-    assert.match(texts.at(-1)!, /jev {2}opus·high · 91% · notify · 0ms/);
+    assert.match(texts[0]!, /^> ✳️ `opus` · medium · 91% · capped:high · notify · 0ms/);
+    assert.match(texts.at(-1)!, /jev {2}opus·medium · 91% · capped:high · notify · 0ms/);
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
@@ -857,19 +857,21 @@ describe("register: the xhigh subcommand", () => {
     };
   }
 
-  test("default seeds xhigh off, so Jev’s xhigh is capped at high", async () => {
+  test("default seeds medium+xhigh off, so Jev’s xhigh is capped at medium", async () => {
     const { hooks, $, setTier } = load();
     await hooks.get("session.start")!($, {}, async (e: unknown) => e);
     setTier("fable", 0.9, 3);
     const t = await turn(hooks, $, "xh0");
-    assert.equal(t.sent.effort, "high");
+    assert.equal(t.sent.effort, "medium");
     assert.match(t.text, /capped:xhigh/);
+    assert.match((await run(hooks, $, "")).text, /medium\s+off for all/);
     assert.match((await run(hooks, $, "")).text, /xhigh\s+off for all/);
   });
 
   test("/jev xhigh off caps every tier at high", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
     });
     await hooks.get("session.start")!($, {}, async (e: unknown) => e);
@@ -884,6 +886,7 @@ describe("register: the xhigh subcommand", () => {
   test("/jev xhigh off opus leaves fable alone", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
     });
     await hooks.get("session.start")!($, {}, async (e: unknown) => e);
@@ -899,6 +902,7 @@ describe("register: the xhigh subcommand", () => {
   test("JEV_ROUTER_XHIGH_OFF=1 seeds the session", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "1",
     });
     await hooks.get("session.start")!($, {}, async (e: unknown) => e);
@@ -911,6 +915,7 @@ describe("register: the xhigh subcommand", () => {
   test("JEV_ROUTER_XHIGH_OFF=0 allows xhigh", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
     });
     await hooks.get("session.start")!($, {}, async (e: unknown) => e);
@@ -921,12 +926,156 @@ describe("register: the xhigh subcommand", () => {
   test("/jev xhigh on clears the env seed", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "all",
     });
     await hooks.get("session.start")!($, {}, async (e: unknown) => e);
     await run(hooks, $, "xhigh on");
     setTier("fable", 0.9, 3);
     assert.equal((await turn(hooks, $, "xh5")).sent.effort, "xhigh");
+  });
+});
+
+describe("register: the medium subcommand", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "plan the architecture", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("default seeds medium off, so high is capped at medium", async () => {
+    const { hooks, $, setTier } = load();
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 2);
+    const t = await turn(hooks, $, "md0");
+    assert.equal(t.sent.effort, "medium");
+    assert.match(t.text, /capped:high/);
+    assert.match((await run(hooks, $, "")).text, /medium\s+off for all/);
+  });
+
+  test("/jev medium off opus leaves fable alone", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    await run(hooks, $, "medium off opus");
+    setTier("fable", 0.9, 2);
+    assert.equal((await turn(hooks, $, "md2")).sent.effort, "high");
+    setTier("opus", 0.9, 2);
+    const opus = await turn(hooks, $, "md3");
+    assert.equal(opus.sent.effort, "medium");
+    assert.match(opus.text, /capped:high/);
+  });
+
+  test("JEV_ROUTER_MEDIUM_OFF=1 seeds the session", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "1",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 3);
+    const t = await turn(hooks, $, "md4");
+    assert.equal(t.sent.effort, "medium", "xhigh is capped too");
+    assert.match(t.text, /capped:xhigh/);
+  });
+
+  test("/jev medium on clears the env seed", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "all",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    await run(hooks, $, "medium on");
+    setTier("fable", 0.9, 2);
+    assert.equal((await turn(hooks, $, "md5")).sent.effort, "high");
+  });
+});
+
+describe("register: the low subcommand", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "plan the architecture", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("default leaves medium alone; /jev low off caps at low", async () => {
+    const { hooks, $, setTier } = load();
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 1);
+    assert.equal((await turn(hooks, $, "lo0")).sent.effort, "medium");
+    await run(hooks, $, "low off");
+    setTier("fable", 0.9, 1);
+    const t = await turn(hooks, $, "lo1");
+    assert.equal(t.sent.effort, "low");
+    assert.match(t.text, /capped:medium/);
+    assert.match((await run(hooks, $, "")).text, /low\s+off for all/);
+  });
+
+  test("JEV_ROUTER_LOW_OFF=1 seeds the session", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_LOW_OFF: "1",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 2);
+    const t = await turn(hooks, $, "lo2");
+    assert.equal(t.sent.effort, "low");
+    assert.match(t.text, /capped:high/);
   });
 });
 
@@ -1004,6 +1153,7 @@ describe("register: a tier named in the prompt", () => {
 
   test("a forced Sonnet turn is not effort-held, and the line says forced", async () => {
     const { hooks, $, setTier } = await started({
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
     });
     setTier("sonnet", 0.9, 1, 0.9);
@@ -1064,9 +1214,9 @@ describe("register: a bare go-ahead", () => {
     const second = await turn(hooks, $, "g2", "yes");
     assert.equal(second.sent.model, "claude-fable-5-1");
     // Default xhigh-off caps the first turn at high; the go-ahead carries that.
-    assert.equal(second.sent.effort, "high");
+    assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "no round trip for a go-ahead");
-    assert.match(second.text, /`fable` · high · 90% · continue · 0ms/);
+    assert.match(second.text, /`fable` · medium · 90% · continue · 0ms/);
   });
 
   test("does not carry a hold tag over from the turn it continues", async () => {
@@ -1139,6 +1289,7 @@ describe("register: effort on Sonnet", () => {
     const kit = load({
       AI_GATEWAY_API_KEY: "gw-key",
       JEV_ROUTER_STICKY: "1",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
       ...over,
     });
@@ -1208,6 +1359,7 @@ describe("register: effort on Sonnet", () => {
   test("with stickiness off nothing is held, on Sonnet either", async () => {
     const { hooks, $, setTier } = load({
       AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
     });
     setTier("sonnet", 0.9, 1, 0.9);
@@ -1216,14 +1368,17 @@ describe("register: effort on Sonnet", () => {
     assert.equal((await turn(hooks, $, "s8")).sent.effort, "xhigh");
   });
 
-  test("default xhigh-off caps a cleared Sonnet effort flip at high", async () => {
-    const { hooks, $, setTier } = await started({ JEV_ROUTER_XHIGH_OFF: "" });
+  test("default medium-off caps a cleared Sonnet effort flip at medium", async () => {
+    const { hooks, $, setTier } = await started({
+      JEV_ROUTER_MEDIUM_OFF: "",
+      JEV_ROUTER_XHIGH_OFF: "",
+    });
     setTier("sonnet", 0.9, 1, 0.9);
     await turn(hooks, $, "s9");
     await run(hooks, $, "sticky 0.3");
     setTier("sonnet", 0.9, 3, 0.49);
     const t = await turn(hooks, $, "s10");
-    assert.equal(t.sent.effort, "high");
+    assert.equal(t.sent.effort, "medium");
     assert.match(t.text, /capped:xhigh/);
   });
 });

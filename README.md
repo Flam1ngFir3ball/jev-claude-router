@@ -100,15 +100,17 @@ jev-router
   provider  typesafe · TYPESAFE_API_KEY is set
   budget    1500ms
   sticky    on, switch needs 75%
+  low       on (JEV_ROUTER_LOW_OFF=1)
+  medium    off for all · capped at medium
   xhigh     off for all · capped at high
   tiers     haiku, sonnet, opus, fable
 
   Recent turns, newest first:
-   653ms  fable·high 0.61  [notify] Agent "Review library-sync cluster" com…
+   653ms  fable·medium 0.61  [notify] Agent "Review library-sync cluster" com…
           answered claude-fable-5-1 ✓  cache 98%  45k in  1k out
      0ms  unrouted — [agent:general-purpose] Review library-sync cluster
           answered claude-opus-5-5  cache 82%  22k in  0k out
-   641ms  fable·high 0.97  help me plan the architecture
+   641ms  fable·medium 0.97  help me plan the architecture
           answered claude-fable-5-1 ✓  cache 91%  130k in  2k out
    402ms  haiku·medium 0.75  rename the variable foo to bar
           answered claude-haiku-4-5 ✓  cache 4%  128k in  0k out
@@ -264,11 +266,22 @@ model, which this mod does not touch — the rewrite happens per request, in
 - `JEV_ROUTER_STICKY=1` and `JEV_ROUTER_STICKY_CONFIDENCE=0.6` set the same
   thing for a session before it starts, for a project that always wants it.
   The command overrides them from then on.
+- `/jev low off` blocks effort above low (medium through max) on every tier
+  and caps those turns at `low`; `/jev low off opus` for one tier;
+  `/jev low on` turns it back on. Opt-in — unset leaves medium allowed.
+- `JEV_ROUTER_LOW_OFF=1` (or `all`) seeds the low ceiling; `0`/`off` clears it.
+- `/jev medium off` blocks effort above medium (high, xhigh, and max) on
+  every tier and caps those turns at `medium`; `/jev medium off opus` for one
+  tier; `/jev medium on` / `/jev medium on fable` turn it back on. The route
+  line says `capped:high` (or `capped:xhigh`) when a turn was cut down.
+  **Off for all tiers is the default** (session ceiling is medium).
+- `JEV_ROUTER_MEDIUM_OFF=0` (or `off`/`false`/`none`) allows high;
+  unset/`1`/`all` keeps the default medium ceiling; `opus,fable` for named
+  ones. The command overrides.
 - `/jev xhigh on` allows effort at or above xhigh (xhigh and max) on every
   tier; `/jev xhigh on fable` for one tier; `/jev xhigh off` / `/jev xhigh off opus`
-  block it again and cap those turns at `high`. The route line says
-  `capped:xhigh` when a turn was cut down. **Off for all tiers is the
-  default** — sessions opt in with the command or the env below.
+  block it again and cap those turns at `high`. Also **off by default** —
+  raise the ceiling with `/jev medium on` then `/jev xhigh on`.
 - `JEV_ROUTER_XHIGH_OFF=0` (or `off`/`false`/`none`) allows xhigh everywhere;
   unset/`1`/`all` keeps the default block; `opus,fable` blocks only named
   ones. The command overrides.

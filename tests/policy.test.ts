@@ -8,6 +8,8 @@ import {
   excludedTiers,
   forcedDecision,
   holdsSonnetEffort,
+  isAboveLow,
+  isAboveMedium,
   isContinuation,
   isXhighOrAbove,
   MODEL_OF,
@@ -19,8 +21,14 @@ import {
   subagentDecision,
   thresholdOf,
   TIERS,
+  capLow,
+  capMedium,
   capXhigh,
+  lowOffOf,
+  mediumOffOf,
   xhighOffOf,
+  LOW_CAP,
+  MEDIUM_CAP,
   XHIGH_CAP,
   type Decision,
   type Effort,
@@ -538,5 +546,99 @@ describe("xhigh cap", () => {
     assert.deepEqual([...xhighOffOf("all")].sort(), [...TIERS].sort());
     assert.deepEqual([...xhighOffOf("opus,fable")].sort(), ["fable", "opus"]);
     assert.deepEqual([...xhighOffOf("nope,opus")], ["opus"]);
+  });
+});
+
+describe("medium cap", () => {
+  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+    tier,
+    model: MODEL_OF[tier],
+    effort,
+    confidence: 0.9,
+  });
+
+  test("high and above are blocked when medium is off", () => {
+    assert.equal(isAboveMedium("high"), true);
+    assert.equal(isAboveMedium("xhigh"), true);
+    assert.equal(isAboveMedium("max"), true);
+    assert.equal(isAboveMedium("medium"), false);
+    assert.equal(isAboveMedium("low"), false);
+  });
+
+  test("a blocked tier is capped to medium, and what Jev wanted is kept", () => {
+    const d = capMedium(at("fable", "high"), new Set(["fable"]));
+    assert.equal(d.effort, MEDIUM_CAP);
+    assert.equal(d.cappedEffort, "high");
+    assert.equal(
+      capMedium(at("fable", "xhigh"), new Set(["fable"])).cappedEffort,
+      "xhigh",
+    );
+  });
+
+  test("an unblocked tier is left alone", () => {
+    const d = capMedium(at("fable", "high"), new Set(["opus"]));
+    assert.equal(d.effort, "high");
+    assert.equal(d.cappedEffort, undefined);
+  });
+
+  test("medium and below are never capped", () => {
+    assert.equal(capMedium(at("opus", "medium"), new Set(TIERS)).effort, "medium");
+    assert.equal(capMedium(at("opus", "low"), new Set(TIERS)).cappedEffort, undefined);
+  });
+
+  test("the env defaults to all-off; 0 turns it back on", () => {
+    assert.deepEqual([...mediumOffOf(undefined)].sort(), [...TIERS].sort());
+    assert.deepEqual([...mediumOffOf("")].sort(), [...TIERS].sort());
+    assert.deepEqual([...mediumOffOf("0")], []);
+    assert.deepEqual([...mediumOffOf("false")], []);
+    assert.deepEqual([...mediumOffOf("1")].sort(), [...TIERS].sort());
+    assert.deepEqual([...mediumOffOf("all")].sort(), [...TIERS].sort());
+    assert.deepEqual([...mediumOffOf("opus,fable")].sort(), ["fable", "opus"]);
+  });
+
+  test("medium cap wins over xhigh cap when both apply", () => {
+    let d = capMedium(at("fable", "xhigh"), new Set(TIERS));
+    d = capXhigh(d, new Set(TIERS));
+    assert.equal(d.effort, "medium");
+    assert.equal(d.cappedEffort, "xhigh");
+  });
+});
+
+describe("low cap", () => {
+  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+    tier,
+    model: MODEL_OF[tier],
+    effort,
+    confidence: 0.9,
+  });
+
+  test("medium and above are blocked when low is off", () => {
+    assert.equal(isAboveLow("medium"), true);
+    assert.equal(isAboveLow("high"), true);
+    assert.equal(isAboveLow("xhigh"), true);
+    assert.equal(isAboveLow("max"), true);
+    assert.equal(isAboveLow("low"), false);
+  });
+
+  test("a blocked tier is capped to low", () => {
+    const d = capLow(at("fable", "medium"), new Set(["fable"]));
+    assert.equal(d.effort, LOW_CAP);
+    assert.equal(d.cappedEffort, "medium");
+  });
+
+  test("the env is off until set; 1 blocks all", () => {
+    assert.deepEqual([...lowOffOf(undefined)], []);
+    assert.deepEqual([...lowOffOf("")], []);
+    assert.deepEqual([...lowOffOf("0")], []);
+    assert.deepEqual([...lowOffOf("1")].sort(), [...TIERS].sort());
+    assert.deepEqual([...lowOffOf("opus")],[ "opus" ]);
+  });
+
+  test("low cap wins when stacked with medium and xhigh", () => {
+    let d = capLow(at("fable", "xhigh"), new Set(TIERS));
+    d = capMedium(d, new Set(TIERS));
+    d = capXhigh(d, new Set(TIERS));
+    assert.equal(d.effort, "low");
+    assert.equal(d.cappedEffort, "xhigh");
   });
 });

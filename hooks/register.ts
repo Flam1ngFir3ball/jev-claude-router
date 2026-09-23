@@ -10,6 +10,8 @@ import { labelOf, withLabel } from "./label.ts";
 import {
   excludedTiers,
   isContinuation,
+  lowOffOf,
+  mediumOffOf,
   offeredTiers,
   parseOverride,
   stickyOf,
@@ -34,6 +36,8 @@ import {
   statusReport,
   toggleReply,
   stickyCommand,
+  lowCommand,
+  mediumCommand,
   xhighCommand,
   usageFooter,
   type AgentTag,
@@ -114,6 +118,35 @@ async function seedXhigh(
 }
 
 /**
+ * Seeds the medium ceiling block list from env once per session. Same
+ * `$`-flow rule as `seedSticky` / `seedXhigh`.
+ */
+async function seedMedium(
+  $: Engine,
+  state: { mediumOff: Set<Tier>; mediumReady: boolean },
+): Promise<{ mediumOff: Set<Tier>; mediumReady: boolean }> {
+  if (state.mediumReady) return state;
+  return {
+    mediumOff: mediumOffOf(await $.env.get("JEV_ROUTER_MEDIUM_OFF")),
+    mediumReady: true,
+  };
+}
+
+/**
+ * Seeds the low ceiling block list from env once per session.
+ */
+async function seedLow(
+  $: Engine,
+  state: { lowOff: Set<Tier>; lowReady: boolean },
+): Promise<{ lowOff: Set<Tier>; lowReady: boolean }> {
+  if (state.lowReady) return state;
+  return {
+    lowOff: lowOffOf(await $.env.get("JEV_ROUTER_LOW_OFF")),
+    lowReady: true,
+  };
+}
+
+/**
  * Names the subagent a step runs in, from the session's agent list. A row may
  * not be there yet for a loop that only just started; then the id stands in,
  * which still says "not the main loop", the part that matters.
@@ -178,6 +211,19 @@ export function register(on: On) {
    */
   let xhighOff = new Set<Tier>(TIERS);
   let xhighReady = false;
+  /**
+   * Tiers for which high+ effort is blocked (cap at medium). Defaults to
+   * every tier (session default ceiling is medium); `JEV_ROUTER_MEDIUM_OFF`
+   * and `/jev medium` override from then on.
+   */
+  let mediumOff = new Set<Tier>(TIERS);
+  let mediumReady = false;
+  /**
+   * Tiers for which medium+ effort is blocked (cap at low). Empty by
+   * default — tighten with `JEV_ROUTER_LOW_OFF` or `/jev low off`.
+   */
+  let lowOff = new Set<Tier>();
+  let lowReady = false;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
   /**
@@ -258,10 +304,15 @@ export function register(on: On) {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "jev",
-      description: "Jev routing: status, on/off, sticky, xhigh.",
+      description: "Jev routing: status, on/off, sticky, low, medium, xhigh.",
     });
     surface = await $.session.surface();
     ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
+    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+    ({ mediumOff, mediumReady } = await seedMedium($, {
+      mediumOff,
+      mediumReady,
+    }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
     return next(e);
   });
@@ -291,6 +342,25 @@ export function register(on: On) {
       return { text: result.text };
     }
 
+    if (sub === "low" || sub.startsWith("low ")) {
+      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+      const result = lowCommand(sub.slice("low".length), lowOff);
+      lowOff = result.lowOff;
+      lowReady = true;
+      return { text: result.text };
+    }
+
+    if (sub === "medium" || sub.startsWith("medium ")) {
+      ({ mediumOff, mediumReady } = await seedMedium($, {
+        mediumOff,
+        mediumReady,
+      }));
+      const result = mediumCommand(sub.slice("medium".length), mediumOff);
+      mediumOff = result.mediumOff;
+      mediumReady = true;
+      return { text: result.text };
+    }
+
     if (sub === "xhigh" || sub.startsWith("xhigh ")) {
       ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
       const result = xhighCommand(sub.slice("xhigh".length), xhighOff);
@@ -300,6 +370,11 @@ export function register(on: On) {
     }
 
     ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
+    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+    ({ mediumOff, mediumReady } = await seedMedium($, {
+      mediumOff,
+      mediumReady,
+    }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
     if (surface === null) surface = await $.session.surface();
     const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
@@ -316,6 +391,8 @@ export function register(on: On) {
         provider,
         timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
         sticky,
+        lowOff: [...lowOff],
+        mediumOff: [...mediumOff],
         xhighOff: [...xhighOff],
         offered: offeredTiers(excluded),
         excluded: [...excluded],
@@ -329,6 +406,11 @@ export function register(on: On) {
     if (!enabled) return next(e);
 
     ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
+    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+    ({ mediumOff, mediumReady } = await seedMedium($, {
+      mediumOff,
+      mediumReady,
+    }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
     if (surface === null) surface = await $.session.surface();
 
@@ -344,12 +426,14 @@ export function register(on: On) {
     // Jev — that would clear sticky with a ~1.00 haiku pick.
     const attempt = isContinuation(e.text)
       ? continueFrom !== null
-        ? continuationOf(e.text, continueFrom, xhighOff)
+        ? continuationOf(e.text, continueFrom, xhighOff, mediumOff, lowOff)
         : continuationSkipped(e.text)
       : attemptOf(e.text, await classify($, e.text, offered), offered, {
           sticky,
           running,
           forced: parseOverride(e.text, offered),
+          lowOff,
+          mediumOff,
           xhighOff,
         });
 
@@ -517,6 +601,11 @@ export function register(on: On) {
   on("agent.spawn", async ($, e, next) => {
     if (!enabled || e.fork || e.model !== undefined) return next(e);
 
+    ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+    ({ mediumOff, mediumReady } = await seedMedium($, {
+      mediumOff,
+      mediumReady,
+    }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
     const offered = offeredTiers(
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
@@ -527,6 +616,8 @@ export function register(on: On) {
       offered,
       { type: e.subagentType, label: e.description },
       xhighOff,
+      mediumOff,
+      lowOff,
     );
     record(attempt);
 

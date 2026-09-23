@@ -6,6 +6,8 @@ import {
   attemptOf,
   heldMark,
   stickyCommand,
+  lowCommand,
+  mediumCommand,
   xhighCommand,
   liveLine,
   REPLY_SEPARATOR,
@@ -47,6 +49,8 @@ const base: Status = {
   provider: goodProvider,
   timeoutMs: 1500,
   sticky: null,
+  lowOff: [],
+  mediumOff: [],
   xhighOff: [],
   offered: ["haiku", "sonnet", "opus", "fable"],
   excluded: [],
@@ -705,7 +709,21 @@ describe("the xhigh subcommand", () => {
   });
 
   test("the status report says which tiers are capped", () => {
+    assert.match(statusReport(base), /low\s+on \(JEV_ROUTER_LOW_OFF=1\)/);
+    assert.match(statusReport(base), /medium\s+on \(JEV_ROUTER_MEDIUM_OFF=0\)/);
     assert.match(statusReport(base), /xhigh\s+on \(JEV_ROUTER_XHIGH_OFF=0\)/);
+    assert.match(
+      statusReport({ ...base, lowOff: [...TIERS] }),
+      /low\s+off for all/,
+    );
+    assert.match(
+      statusReport({ ...base, mediumOff: ["opus", "fable"] }),
+      /medium\s+off for opus, fable/,
+    );
+    assert.match(
+      statusReport({ ...base, mediumOff: [...TIERS] }),
+      /medium\s+off for all/,
+    );
     assert.match(
       statusReport({ ...base, xhighOff: ["opus", "fable"] }),
       /xhigh\s+off for opus, fable/,
@@ -714,5 +732,81 @@ describe("the xhigh subcommand", () => {
       statusReport({ ...base, xhighOff: [...TIERS] }),
       /xhigh\s+off for all/,
     );
+  });
+});
+
+describe("the low subcommand", () => {
+  test("bare reports whether medium is allowed", () => {
+    const r = lowCommand("", new Set());
+    assert.equal(r.lowOff.size, 0);
+    assert.match(r.text, /medium and above allowed/);
+  });
+
+  test("off with no tier blocks every tier", () => {
+    const r = lowCommand("off", new Set());
+    assert.equal(r.lowOff.size, TIERS.length);
+    assert.match(r.text, /caps at low/);
+  });
+
+  test("attemptOf caps medium when the hold says so", () => {
+    const attempt = attemptOf(
+      "plan it",
+      {
+        ok: true,
+        ms: 10,
+        answers: {
+          tier: { type: "choice", choice: "fable", confidence: 0.9 },
+          effort: { type: "score", score: 1, confidence: 0.8 },
+        },
+      },
+      TIERS,
+      { sticky: null, running: null, lowOff: new Set(["fable"]) },
+    );
+    assert.equal("decision" in attempt && attempt.decision.effort, "low");
+    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "medium");
+    assert.equal(heldMark(attempt), "capped:medium");
+  });
+});
+
+describe("the medium subcommand", () => {
+  test("bare reports whether high is allowed", () => {
+    const r = mediumCommand("", new Set());
+    assert.equal(r.mediumOff.size, 0);
+    assert.match(r.text, /high allowed/);
+  });
+
+  test("off with no tier blocks every tier", () => {
+    const r = mediumCommand("off", new Set());
+    assert.equal(r.mediumOff.size, TIERS.length);
+    assert.match(r.text, /caps at medium/);
+  });
+
+  test("on with no tier clears every block", () => {
+    const r = mediumCommand("on", new Set(TIERS));
+    assert.equal(r.mediumOff.size, 0);
+  });
+
+  test("off opus blocks only that tier", () => {
+    const r = mediumCommand("off opus", new Set());
+    assert.deepEqual([...r.mediumOff], ["opus"]);
+  });
+
+  test("attemptOf caps high when the hold says so", () => {
+    const attempt = attemptOf(
+      "plan it",
+      {
+        ok: true,
+        ms: 10,
+        answers: {
+          tier: { type: "choice", choice: "fable", confidence: 0.9 },
+          effort: { type: "score", score: 2, confidence: 0.8 },
+        },
+      },
+      TIERS,
+      { sticky: null, running: null, mediumOff: new Set(["fable"]) },
+    );
+    assert.equal("decision" in attempt && attempt.decision.effort, "medium");
+    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "high");
+    assert.equal(heldMark(attempt), "capped:high");
   });
 });
