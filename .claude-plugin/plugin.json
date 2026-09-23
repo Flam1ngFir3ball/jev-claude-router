@@ -1,8 +1,11 @@
 {
   "name": "jev-router",
-  "version": "0.2.0",
-  "description": "Routes each turn to a Claude model chosen by TypeSafe's Jev, via TypeSafe direct or the Vercel AI Gateway.",
+  "version": "1.0.0",
+  "description": "Routes each Claude Code turn to the model and effort TypeSafe's Jev picks, weighed against what a switch costs, and compacts with Jev instead of a lossy summary.",
   "author": {
-    "name": "Satvik Sinha"
-  }
+    "name": "Andrew Parrish (fork of Satvik Sinha's jev-model-router)"
+  },
+  "homepage": "https://github.com/Flam1ngFir3ball/jev-claude-router",
+  "repository": "https://github.com/Flam1ngFir3ball/jev-claude-router",
+  "license": "MIT"
 }
