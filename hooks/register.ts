@@ -72,6 +72,9 @@ type Engine = {
 /** Turns kept in the decision cache before the oldest are dropped. */
 const CACHE_LIMIT = 32;
 
+/** Store key prefix for which copy of the module owns a session. */
+const OWNER_PREFIX = "owner:";
+
 /**
  * Stop reasons that mean the turn continues: the engine will step again, so
  * a summary would land in the middle of a reply. `tool_use` and `pause_turn`
@@ -224,12 +227,47 @@ async function saveSnapshot(
 ): Promise<void> {
   try {
     if (first) {
-      for (const stale of staleKeys(await $.store.keys(), key))
+      for (const stale of staleKeys(await $.store.keys(), key)) {
         await $.store.delete(stale);
+        await $.store.delete(`${OWNER_PREFIX}${stale}`);
+      }
     }
     await $.store.set(key, pack(state));
   } catch {
     // The store refused (over 4 MiB, a disk error): carry on unsaved.
+  }
+}
+
+/**
+ * Whether this copy of the module owns the session. When the plugin's files
+ * change, the engine loads a fresh copy without retiring the old one, and
+ * both then handle every turn: two Jev calls, two route lines, a summary
+ * from each (seen 2026-09-23, from 14:54 on in one session). The newest copy
+ * wins: each is stamped with its load time, the highest stamp is kept in the
+ * store under `owner:<session>`, and a copy that finds a newer stamp there
+ * stands aside. `claim` writes this copy's stamp when it is the newer one.
+ * A store that cannot be read leaves every copy in charge, as before.
+ */
+async function ownsSession(
+  $: {
+    store: {
+      get: (key: string) => Promise<unknown>;
+      set: (key: string, value: unknown) => Promise<void>;
+    };
+  },
+  key: string,
+  birth: number,
+  claim: boolean,
+): Promise<boolean> {
+  try {
+    const at = `${OWNER_PREFIX}${key}`;
+    const stored = await $.store.get(at);
+    const owner = typeof stored === "number" ? stored : 0;
+    if (owner > birth) return false;
+    if (claim && owner < birth) await $.store.set(at, birth);
+    return true;
+  } catch {
+    return true;
   }
 }
 
@@ -306,6 +344,10 @@ async function agentTagOf(
  * @param on the engine's registrar
  */
 export function register(on: On) {
+  /** When this copy was loaded; the newest copy owns the session. */
+  const birth = Date.now() + Math.random();
+  /** True once a newer copy has claimed the session: this one stands aside. */
+  let inert = false;
   let settings: Settings | null = null;
   const decisions = new Map<string, Decision>();
   /**
@@ -554,7 +596,7 @@ export function register(on: On) {
       running = null;
       continueFrom = null;
       lastUsage = null;
-      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     }
     return next(e);
   });
@@ -569,7 +611,7 @@ export function register(on: On) {
     if (typeof e.to_model === "string") sessionModel = e.to_model;
     running = null;
     continueFrom = null;
-    if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return next(e);
   });
 
@@ -586,13 +628,13 @@ export function register(on: On) {
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
       if (!enabled) clearRouting();
-      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: toggleReply(enabled) };
     }
 
     if (arg === "quiet" || arg === "loud") {
       announce = arg === "loud";
-      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: announceReply(announce) };
     }
 
@@ -602,7 +644,7 @@ export function register(on: On) {
     if (sub === "sticky" || sub.startsWith("sticky ")) {
       const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
       settings.sticky = result.sticky;
-      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
 
@@ -612,7 +654,7 @@ export function register(on: On) {
         settings.ceiling,
       );
       settings.ceiling = result.ceiling;
-      if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
 
@@ -625,7 +667,7 @@ export function register(on: On) {
       if ((effortNamed(head) !== null || head === "ultra") && !legacy) {
         const result = ceilingCommand(sub, settings.ceiling);
         settings.ceiling = result.ceiling;
-        if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         return { text: result.text };
       }
       return { text: unknownCommandReply(sub, legacy) };
@@ -665,6 +707,9 @@ export function register(on: On) {
         applyState(await loadSnapshot($, snapshotKey));
       restoreOnKey = true;
     }
+    // The newest copy of the module handles the turn; an older one stands aside.
+    if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
+    if (inert) return next(e);
     if (surface === null) surface = await surfaceOf($);
     const { offered, ceiling } = settings;
 
@@ -793,7 +838,7 @@ export function register(on: On) {
       continueFrom = null;
     }
 
-    if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
 
     return next(e);
   });
@@ -815,6 +860,14 @@ export function register(on: On) {
       if (snapshotKey !== null && restoreOnKey)
         applyState(await loadSnapshot($, snapshotKey));
       restoreOnKey = true;
+    }
+    if (
+      inert ||
+      (snapshotKey && !(await ownsSession($, snapshotKey, birth, true)))
+    ) {
+      inert = true;
+      for await (const chunk of next(e)) yield chunk;
+      return;
     }
 
     // Routing off is authoritative for every step, including subagents whose
@@ -859,7 +912,7 @@ export function register(on: On) {
         attempt = {
           prompt: agent.label,
           ms: 0,
-          skipped: "not routed at spawn, so it keeps its own model",
+          skipped: "not routed at spawn",
           kind: "agent",
           agent,
         };
@@ -900,14 +953,18 @@ export function register(on: On) {
       const at = (chunk as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
       if (chunk.kind === "text") {
-        if (attempt && pending.has(e.turnId)) {
+        if (
+          attempt &&
+          pending.has(e.turnId) &&
+          !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+        ) {
           pending.delete(e.turnId);
           yield {
             ...chunk,
             text: `${liveLine(attempt)}${REPLY_SEPARATOR}${chunk.text}`,
           };
           // Saved now, so a reload later in the turn does not write it twice.
-          if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+          if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
           continue;
         }
       }
@@ -925,7 +982,7 @@ export function register(on: On) {
               output: chunk.usage.output_tokens,
             };
           }
-          if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+          if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         }
 
         // The summary goes under the reply once it is over: this step ends
@@ -955,7 +1012,9 @@ export function register(on: On) {
           // null: the request failed, and there is no response to sum up.
           chunk.stopReason != null &&
           !MID_TURN.has(chunk.stopReason) &&
-          !(await agentsRunning($, replyAgents))
+          !(await agentsRunning($, replyAgents)) &&
+          // Still the newest copy: one loaded mid-turn may have claimed since.
+          !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
         ) {
           const summary = replySummary(reply);
           if (summary !== null) {
@@ -967,7 +1026,7 @@ export function register(on: On) {
             // Written once; what comes after is a new reply's worth.
             reply = [];
             replyAgents = new Set();
-            if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
           }
         }
       }
@@ -1002,6 +1061,13 @@ export function register(on: On) {
         applyState(await loadSnapshot($, snapshotKey));
       restoreOnKey = true;
     }
+    if (
+      inert ||
+      (snapshotKey && !(await ownsSession($, snapshotKey, birth, true)))
+    ) {
+      inert = true;
+      return next(e);
+    }
 
     const attempt = spawnAttemptOf(
       e.description,
@@ -1033,13 +1099,14 @@ export function register(on: On) {
         }
       }
     }
-    if (snapshotKey && settings) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return started;
   });
 
   // The footer, where a surface draws one. The announcement above is what
   // carries on surfaces that draw no footer, which is most of them.
   on("ui.render", { component: "SessionMode" }, async ($, e, next) => {
+    if (inert) return next(e);
     const modes = withLabel(e.props.modes, labelOf(latest, enabled));
     return next({ ...e, props: { ...e.props, modes } });
   });

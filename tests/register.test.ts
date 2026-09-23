@@ -192,7 +192,7 @@ describe("register: the route in the reply", () => {
     // The latency is wall-clock, so it is matched loosely.
     assert.match(
       texts[0]!,
-      /^> ✳️ opus · medium effort · Jev 91% sure · capped from high · \d+ms\n\n---\n\nHello$/,
+      /^> ✳️ opus · medium · Jev 91% · capped from high · \d+ms\n\n---\n\nHello$/,
     );
     assert.equal(texts[1], " there.");
     assert.equal(
@@ -241,7 +241,7 @@ describe("register: the route in the reply", () => {
     );
     assert.equal(
       chunks.find((c) => c.kind === "text")!.text,
-      "> ⚠️ not routed · no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY · the session model answers\n\n---\n\nreply",
+      "> ⚠️ not routed: no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY\n\n---\n\nreply",
     );
   });
 
@@ -311,7 +311,7 @@ describe("register: the route in the reply", () => {
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /answered by claude-opus-5-5 ✓/);
+    assert.match(out.text, /opus-5-5 ✓/);
     assert.match(out.text, /90% cached/);
   });
 
@@ -353,7 +353,7 @@ describe("register: the route in the reply", () => {
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /answered by claude-haiku-4-5 — asked for claude-opus-5-5/);
+    assert.match(out.text, /haiku-4-5 ⚠ asked opus-5-5/);
   });
 
   test("a stop chunk for a turn we never saw is left alone", async () => {
@@ -381,8 +381,8 @@ describe("register: the route in the reply", () => {
 
     const texts = chunks.filter((c) => c.kind === "text");
     const footer = texts.at(-1)!.text;
-    assert.match(footer, /```\n─+\nModel  answered by claude-opus-5-5 ✓ at medium effort · Jev 91% sure/);
-    assert.match(footer, /Cost   \$/);
+    assert.match(footer, /```\nopus-5-5 ✓ medium · Jev 91%/);
+    assert.match(footer, /\$/);
     assert.equal(
       chunks.at(-1)!.kind,
       "stop",
@@ -427,7 +427,7 @@ describe("register: the route in the reply", () => {
     );
     assert.match(
       last.filter((c) => c.kind === "text").at(-1)!.text,
-      /Model  answered by claude-opus-5-5 ✓ at medium effort/,
+      /opus-5-5 ✓ medium/,
     );
   });
 
@@ -509,13 +509,13 @@ describe("register: the route in the reply", () => {
       ),
     );
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
-    assert.match(texts[0]!, /^> ✳️ opus · medium effort · Jev 91% sure · capped from high · woken by a finished task · 0ms/);
-    assert.match(texts.at(-1)!, /Model  answered by claude-opus-5-5 ✓ at medium effort · Jev 91% sure, 0ms/);
-    assert.match(texts.at(-1)!, /Note   capped from high/);
+    assert.match(texts[0]!, /^> ✳️ opus · medium · Jev 91% · capped from high · task finished · 0ms/);
+    assert.match(texts.at(-1)!, /opus-5-5 ✓ medium · Jev 91% · /);
+    assert.match(texts.at(-1)!, /capped from high/);
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /\[woken by a finished task\] Agent "reviewer" completed/);
+    assert.match(out.text, /\[task finished\] Agent "reviewer" completed/);
   });
 
   test("a subagent’s step, which no turn.start announced, is recorded unrouted with what ran it", async () => {
@@ -552,7 +552,7 @@ describe("register: the route in the reply", () => {
       out.text,
       /not routed — \[general-purpose agent\] Review library-sync cluster/,
     );
-    assert.match(out.text, /answered by claude-opus-5/);
+    assert.match(out.text, /opus-5/);
     assert.equal(listCalls(), 1);
   });
 
@@ -672,7 +672,7 @@ describe("register: stickiness", () => {
       "claude-opus-5-5",
       "held on the first turn’s tier",
     );
-    assert.match(second.text, /stayed on opus: Jev wanted haiku/);
+    assert.match(second.text, /kept opus: Jev \d+% on haiku/);
   });
 
   test("a confident switch still goes through with the flag on", async () => {
@@ -926,7 +926,7 @@ describe("register: a tier named in the prompt", () => {
     assert.equal(second.sent.model, "claude-opus-5-5");
     assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "forced skips Jev");
-    assert.match(second.text, /opus · medium effort · as you asked/);
+    assert.match(second.text, /opus · medium · your pick/);
     assert.doesNotMatch(second.text, /held/);
   });
 
@@ -937,7 +937,7 @@ describe("register: a tier named in the prompt", () => {
     const t = await turn(hooks, $, "f3", "switch to haiku");
     assert.equal(t.sent.model, "claude-haiku-4-5");
     assert.equal(fetches(), asked, "Jev is not called");
-    assert.match(t.text, /haiku · medium effort · as you asked/);
+    assert.match(t.text, /haiku · medium · your pick/);
   });
 
   test("cannot name a tier the environment excluded", async () => {
@@ -945,7 +945,7 @@ describe("register: a tier named in the prompt", () => {
     setTier("opus", 0.9);
     const t = await turn(hooks, $, "f4", "use fable and plan it");
     assert.equal(t.sent.model, "claude-opus-5-5", "Jev’s pick stands");
-    assert.doesNotMatch(t.text, /as you asked/);
+    assert.doesNotMatch(t.text, /your pick/);
   });
 
   test("a forced Sonnet turn skips Jev and says forced", async () => {
@@ -959,8 +959,8 @@ describe("register: a tier named in the prompt", () => {
     const t = await turn(hooks, $, "fs2", "use sonnet for this");
     assert.equal(t.sent.effort, "medium", "forced defaults effort");
     assert.equal(fetches(), asked, "Jev is not asked");
-    assert.match(t.text, /as you asked/);
-    assert.doesNotMatch(t.text, /kept .* effort/);
+    assert.match(t.text, /your pick/);
+    assert.doesNotMatch(t.text, /kept \w+: Jev/);
   });
 });
 
@@ -1015,7 +1015,7 @@ describe("register: a bare go-ahead", () => {
     // request ran as high; the go-ahead carries what Jev asked, medium.
     assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "no round trip for a go-ahead");
-    assert.match(second.text, /fable · medium effort · continuing without asking Jev · 0ms/);
+    assert.match(second.text, /fable · medium · continuing · 0ms/);
   });
 
   test("does not carry a hold tag over from the turn it continues", async () => {
@@ -1024,11 +1024,11 @@ describe("register: a bare go-ahead", () => {
     await turn(hooks, $, "g3", "plan it");
     setTier("haiku", 0.4);
     const held = await turn(hooks, $, "g4", "now the tests");
-    assert.match(held.text, /stayed on fable: Jev wanted haiku/);
+    assert.match(held.text, /kept fable: Jev \d+% on haiku/);
     const go = await turn(hooks, $, "g5", "ok");
     assert.equal(go.sent.model, "claude-fable-5-1");
-    assert.doesNotMatch(go.text, /stayed on/);
-    assert.match(go.text, /continuing without asking Jev/);
+    assert.doesNotMatch(go.text, /kept/);
+    assert.match(go.text, /continuing/);
   });
 
   test("on the first turn there is nothing to continue, so the session model stays", async () => {
@@ -1131,7 +1131,7 @@ describe("register: effort on Sonnet", () => {
     const t = await turn(hooks, $, "s2");
     assert.equal(t.sent.model, "claude-sonnet-5");
     assert.equal(t.sent.effort, "medium", "the previous effort, not xhigh");
-    assert.match(t.text, /sonnet · medium effort · Jev 90% sure · kept medium effort: Jev wanted xhigh, only 49% sure/);
+    assert.match(t.text, /sonnet · medium · Jev 90% · kept medium: Jev 49% on xhigh/);
   });
 
   test("the bar is the session’s, so /jev sticky 0.3 lowers it here too", async () => {
@@ -1248,7 +1248,7 @@ describe("register: a spawned subagent", () => {
     const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
       args: "",
     });
-    assert.match(out.text, /haiku·medium  Jev 98% sure  \[Explore agent\] Count hook files/);
+    assert.match(out.text, /haiku·medium  Jev 98%  \[Explore agent\] Count hook files/);
     assert.equal(
       out.text.split("\n").filter((l: string) => /\[Explore agent\]/.test(l)).length,
       1,
@@ -1265,7 +1265,7 @@ describe("register: a spawned subagent", () => {
     const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
       args: "",
     });
-    assert.match(out.text, /not routed — .*Jev said sonnet but was only 22% sure \(under 50%\)/);
+    assert.match(out.text, /not routed — .*Jev 22% on sonnet, needs 50%/);
   });
 
   test("a call that named a model is the caller’s decision", async () => {
@@ -1437,7 +1437,7 @@ describe("register: a downgrade priced against the context", () => {
     const t = await turn(hooks, $, "p2", "what is 2+2");
     assert.equal(t.sent.model, "claude-fable-5-1");
     assert.equal(t.sent.effort, "low", "Jev's effort still applies");
-    assert.match(t.text, /stayed on fable: haiku would cost \$\d+\.\d+ vs \$\d/);
+    assert.match(t.text, /kept fable: haiku costs \$\d+\.\d+ vs \$\d/);
   });
 
   test("at a small context the same pick goes through", async () => {
@@ -1462,7 +1462,7 @@ describe("register: a downgrade priced against the context", () => {
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "r2", "2+2");
     assert.equal(t.sent.model, "claude-fable-5-1");
-    assert.match(t.text, /stayed on fable: haiku would cost \$/);
+    assert.match(t.text, /kept fable: haiku costs \$/);
   });
 
   test("an upgrade is not priced: a fable pick from haiku goes through at any context", async () => {
@@ -1507,7 +1507,7 @@ describe("register: a downgrade priced against the context", () => {
     const status = await run(hooks, $, "");
     assert.match(status.text, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
     assert.match(status.text, /spent\s+\$0\.\d+ this session/);
-    assert.match(status.text, /answered by claude-fable-5-1 ✓ · \$0\.\d+ · 10k in, 90% cached · 3k out/);
+    assert.match(status.text, /fable-5-1 ✓ · \$0\.\d+ · 10k in \(90% cached\) · 3k out/);
   });
 
   test("a compaction forgets what was running, so the next turn starts from Jev", async () => {
@@ -1680,9 +1680,9 @@ describe("register: a conversation's first request", () => {
     setTier("fable", 0.9, 1);
     const first = await turn(hooks, $, "f1");
     assert.equal(first.sent.effort, "high");
-    assert.match(first.text, /fable · high effort · Jev 90% sure · medium runs as high on a first request · \d+ms/);
+    assert.match(first.text, /fable · high · Jev 90% · 1st request runs medium as high · \d+ms/);
     const status = await hooks.get('command.run:{"command":"jev"}')!($, { args: "" });
-    assert.match(status.text, /fable·high  Jev 90% sure; medium runs as high on a first request/);
+    assert.match(status.text, /fable·high  Jev 90%; 1st request runs medium as high/);
   });
 
   test("the turn after starts from the medium Jev asked for", async () => {
@@ -1705,7 +1705,7 @@ describe("register: a conversation's first request", () => {
     setTier("fable", 0.9, 1);
     const t = await turn(hooks, $, "f4");
     assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /fable · medium effort/);
+    assert.match(t.text, /fable · medium/);
   });
 
   test("a compaction makes the next request a first one again", async () => {
@@ -1789,16 +1789,16 @@ describe("register: one summary per reply", () => {
         hooks.get("turn.step")!($, { turnId: "r1", index: 0 }, (e: { model: string }) => answeredBy(e.model)),
       )
     ).filter((c) => c.kind === "text").map((c) => c.text).join("");
-    assert.doesNotMatch(first, /Model  /, "its agent is still running, so the reply is not over");
+    assert.doesNotMatch(first, /% cached\)/, "its agent is still running, so the reply is not over");
     setAgentStatus("completed");
     const woken = await turn(hooks, $, "r2", notice);
-    assert.match(woken, /Model  2 turns: opus·medium ✓, opus·medium ✓ \(1 woken by finished tasks\)/);
-    assert.match(woken, /Agents general-purpose on opus/);
-    assert.match(woken, /Cost   \$/);
-    assert.equal(woken.match(/Model  /g)?.length, 1);
+    assert.match(woken, /2 turns: opus, opus \(1 woken by tasks\)/);
+    assert.match(woken, /agents: general-purpose opus/);
+    assert.match(woken, /\$/);
+    assert.equal(woken.match(/% cached\)/g)?.length, 1);
     // The summary was written; the next typed prompt starts a new reply.
     const next = await turn(hooks, $, "r3", "and now this");
-    assert.match(next, /Model  answered by claude-opus-5-5 ✓/);
+    assert.match(next, /opus-5-5 ✓/);
     assert.doesNotMatch(next, /2 turns/);
   });
 
@@ -1810,7 +1810,7 @@ describe("register: one summary per reply", () => {
     await collect(hooks.get("turn.step")!($, { turnId: "e1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
     // Still running, and the person moves on.
     const later = await turn(hooks, $, "e2", "unrelated quick question");
-    assert.match(later, /Model  answered by claude-opus-5-5 ✓/);
+    assert.match(later, /opus-5-5 ✓/);
   });
 
   test("a spawn the router leaves alone still belongs to the reply", async () => {
@@ -1823,13 +1823,13 @@ describe("register: one summary per reply", () => {
         hooks.get("turn.step")!($, { turnId: "f1", index: 0 }, (e: { model: string }) => answeredBy(e.model)),
       )
     ).filter((c) => c.kind === "text").map((c) => c.text).join("");
-    assert.doesNotMatch(first, /Model  /);
+    assert.doesNotMatch(first, /% cached\)/);
   });
 
   test("a compaction mid-turn is not the end of the reply", async () => {
     const { hooks, $ } = await started();
     const mid = await turn(hooks, $, "c1", "long task", "compaction");
-    assert.doesNotMatch(mid, /Model  /);
+    assert.doesNotMatch(mid, /% cached\)/);
   });
 
   test("the engine's nudge continues the last decision without asking Jev, and writes nothing", async () => {
@@ -1862,7 +1862,7 @@ describe("register: one summary per reply", () => {
       "no line, no summary: the engine prodded, the person did not ask",
     );
     const status = await hooks.get('command.run:{"command":"jev"}')!($, { args: "" });
-    assert.match(status.text, /\[nudged by the engine, continuing\]/);
+    assert.match(status.text, /\[continuing\]/);
   });
 
   test("a nudge with nothing to continue leaves the session model alone, and Jev unasked", async () => {
@@ -1882,7 +1882,7 @@ describe("register: one summary per reply", () => {
     await turn(hooks, $, "o2", "The user hasn't heard from you in a while — say what you're doing, then continue.");
     setAgentStatus("completed");
     const woken = await turn(hooks, $, "o3", notice);
-    assert.match(woken, /Model  3 turns: fable·medium ✓, fable·medium ✓, fable·medium ✓ \(1 woken by finished tasks, 1 nudged by the engine\)/);
+    assert.match(woken, /3 turns: fable, fable, fable \(1 woken by tasks, 1 nudged\)/);
   });
 });
 
@@ -1918,7 +1918,7 @@ describe("register: a session that was already running", () => {
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "s1", "what is 2+2");
     assert.equal(t.sent.model, "claude-opus-5", "stays on the model with the warm cache");
-    assert.match(t.text, /stayed on opus: haiku would cost \$/);
+    assert.match(t.text, /kept opus: haiku costs \$/);
   });
 
   test("the same rung on the ladder's own model is a switch too, and priced", async () => {
@@ -1932,7 +1932,7 @@ describe("register: a session that was already running", () => {
     setTier("opus", 0.99, 1);
     const t = await turn(hooks, $, "s2");
     assert.equal(t.sent.model, "claude-opus-5");
-    assert.match(t.text, /stayed on claude-opus-5: claude-opus-5-5 would cost \$/);
+    assert.match(t.text, /kept claude-opus-5: claude-opus-5-5 costs \$/);
     assert.match((await run(hooks, $, "")).text, /session\s+claude-opus-5-5, running on opus/);
   });
 
@@ -1963,7 +1963,7 @@ describe("register: a session that was already running", () => {
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "s4", "what is 2+2");
     assert.equal(t.sent.model, "claude-opus-5");
-    assert.match(t.text, /stayed on opus: haiku would cost/);
+    assert.match(t.text, /kept opus: haiku costs/);
   });
 
   test("/model mid-session moves what the next routed turn is priced against", async () => {
@@ -2002,7 +2002,7 @@ describe("register: a session that was already running", () => {
     setTier("haiku", 1, 0);
     const t = await turn(hooks, $, "w2", "what is 2+2");
     assert.equal(t.sent.model, "claude-fable-5-1");
-    assert.match(t.text, /stayed on fable: haiku takes 200k and this turn carries 300k/);
+    assert.match(t.text, /kept fable: too long for haiku \(300k\)/);
     const forced = await turn(hooks, $, "w3", "use haiku for this");
     assert.equal(forced.sent.model, "claude-fable-5-1");
   });
@@ -2016,7 +2016,7 @@ describe("register: a session that was already running", () => {
     setTier("opus", 0.95, 1);
     const t = await turn(hooks, $, "m3");
     assert.equal(t.sent.model, "claude-opus-5-5[1m]", "nothing changes under the loop");
-    assert.doesNotMatch(t.text, /stayed on/);
+    assert.doesNotMatch(t.text, /kept/);
   });
 
   test("what the session spends is counted while routing is off", async () => {
@@ -2061,6 +2061,7 @@ describe("register: a reload of the module", () => {
 
     // The module is reloaded: a new register, the same store and session.
     // session.start does not fire again on a reload, so the next hook restores.
+    await new Promise((r) => setTimeout(r, 5));
     const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
     const status = (await run(after.hooks, after.$, "")).text;
     assert.match(status, /fable·medium .* plan it/, "the history is back");
@@ -2069,7 +2070,7 @@ describe("register: a reload of the module", () => {
     after.setTier("haiku", 0.99, 0);
     const t = await turn(after.hooks, after.$, "a2", "what is 2+2");
     assert.equal(t.sent.model, "claude-fable-5-1", "held to the tier that is warm, not reset");
-    assert.match(t.text, /stayed on fable: haiku would cost/);
+    assert.match(t.text, /kept fable: haiku costs/);
   });
 
   test("/jev sticky and /jev ceiling survive a reload", async () => {
@@ -2078,6 +2079,7 @@ describe("register: a reload of the module", () => {
     await run(before.hooks, before.$, "sticky 0.6");
     await run(before.hooks, before.$, "ceiling xhigh fable");
     await run(before.hooks, before.$, "quiet");
+    await new Promise((r) => setTimeout(r, 5));
     const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
     const status = (await run(after.hooks, after.$, "")).text;
     assert.match(status, /switch needs 60%/);
@@ -2124,6 +2126,7 @@ describe("register: a reload of the module", () => {
     );
     assert.match(first.filter((c) => c.kind === "text").map((c) => c.text).join(""), /✳️/);
 
+    await new Promise((r) => setTimeout(r, 5));
     const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
     let sent: { model?: string; effort?: string } = {};
     const rest = await collect(
@@ -2135,7 +2138,7 @@ describe("register: a reload of the module", () => {
     const out = rest.filter((c) => c.kind === "text").map((c) => c.text).join("");
     assert.equal(sent.model, "claude-fable-5-1", "still routed after the reload");
     assert.doesNotMatch(out, /✳️/, "the route line is not written a second time");
-    assert.match(out, /Model  answered by claude-fable-5-1 ✓/, "and the reply is summarised");
+    assert.match(out, /fable-5-1 ✓/, "and the reply is summarised");
   });
 
   test("a reload mid-agent does not treat the agent's next request as its first", async () => {
@@ -2158,6 +2161,7 @@ describe("register: a reload of the module", () => {
       return sent.effort;
     };
     assert.equal(await step(before, "x1"), "high", "first request: medium runs as high");
+    await new Promise((r) => setTimeout(r, 5));
     const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
     assert.equal(await step(after, "x2"), "medium", "after the reload, Jev's ask");
   });
@@ -2223,7 +2227,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     setContext(190_000);
     const t = await turn(hooks, $, "g2", "yes");
     assert.equal(t.sent.model, undefined, "left on the session model");
-    assert.match(t.text, /haiku takes 200k and this turn carries 190k/);
+    assert.match(t.text, /too long for haiku \(190k\)/);
   });
 
   test("a compaction in the middle of a turn keeps that turn routed and summarised", async () => {
@@ -2240,7 +2244,7 @@ describe("register: audit regressions (2026-09-23)", () => {
       }),
     );
     assert.equal(sent.model, "claude-fable-5-1");
-    assert.match(text(last), /Model  answered by claude-fable-5-1 ✓/);
+    assert.match(text(last), /fable-5-1 ✓/);
   });
 
   test("a subagent's compaction leaves the main loop alone", async () => {
@@ -2289,6 +2293,63 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(status, /No turns yet/);
   });
 
+  test("two copies of the module in one session: the newest routes and writes, the old stands aside", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-TWO" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const old = load(env, shared);
+    await old.hooks.get("session.start")!(old.$, {}, async (e: unknown) => e);
+    old.setTier("opus", 0.9, 1);
+    await turn(old.hooks, old.$, "d0", "implement it");
+    await new Promise((r) => setTimeout(r, 5));
+    // The plugin's files change: the engine loads a second copy and keeps the first.
+    const fresh = load(env, shared);
+    fresh.setTier("opus", 0.9, 1);
+
+    // The engine runs both copies' hooks on each event, the older one outermost.
+    const both = async (id: string, prompt: string) => {
+      await old.hooks.get("turn.start")!(old.$, { text: prompt, turnId: id }, (e: unknown) =>
+        fresh.hooks.get("turn.start")!(fresh.$, e, async (x: unknown) => x),
+      );
+      const chunks = await collect(
+        old.hooks.get("turn.step")!(old.$, { turnId: id, index: 0 }, (e: { model: string }) =>
+          fresh.hooks.get("turn.step")!(fresh.$, e, (x: { model: string }) => answeredBy(x.model)),
+        ),
+      );
+      return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    };
+
+    const first = await both("d1", "and the tests");
+    assert.equal(first.match(/✳️/g)?.length, 1, "one route line, not two");
+    assert.equal(first.match(/% cached\)/g)?.length, 1, "one summary, not two");
+
+    const asked = old.fetches();
+    const second = await both("d2", "and the docs");
+    assert.equal(old.fetches(), asked, "the old copy no longer asks Jev");
+    assert.equal(second.match(/✳️/g)?.length, 1);
+    assert.equal(second.match(/% cached\)/g)?.length, 1);
+
+    // A third copy loaded in the middle of a turn: still one summary for it.
+    await old.hooks.get("turn.start")!(old.$, { text: "long task", turnId: "d9" }, (e: unknown) =>
+      fresh.hooks.get("turn.start")!(fresh.$, e, async (x: unknown) => x),
+    );
+    await collect(
+      old.hooks.get("turn.step")!(old.$, { turnId: "d9", index: 0 }, (e: { model: string }) =>
+        fresh.hooks.get("turn.step")!(fresh.$, e, (x: { model: string }) => answeredBy(x.model, "tool_use")),
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    const third = load(env, shared);
+    const end = await collect(
+      old.hooks.get("turn.step")!(old.$, { turnId: "d9", index: 1 }, (e: { model: string }) =>
+        fresh.hooks.get("turn.step")!(fresh.$, e, (x: { model: string }) =>
+          third.hooks.get("turn.step")!(third.$, x, (y: { model: string }) => answeredBy(y.model)),
+        ),
+      ),
+    );
+    const endText = end.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.equal(endText.match(/% cached\)/g)?.length, 1, "one summary when a copy arrives mid-turn");
+  });
+
   test("the model a resume restores is not a move", async () => {
     const { hooks, $, setTier, setContext } = await boot();
     setContext(150_000);
@@ -2312,7 +2373,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     await hooks.get("turn.start")!($, { text: "plan it", turnId: "n1" }, async (e: unknown) => e);
     await collect(hooks.get("turn.step")!($, { turnId: "n1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
     const nudged = await turn(hooks, $, "n2", "The user hasn’t heard from you in a while — say what you’re doing, then continue.");
-    assert.match(nudged.text, /Model  2 turns: fable·medium ✓, fable·medium ✓ \(1 nudged by the engine\)/);
+    assert.match(nudged.text, /2 turns: fable, fable \(1 nudged\)/);
     assert.doesNotMatch(nudged.text, /✳️/, "still no route line for the nudge");
   });
 
@@ -2337,7 +2398,7 @@ describe("register: audit regressions (2026-09-23)", () => {
       return { stopReason: "max_tokens" };
     }
     const chunks = await collect(hooks.get("turn.step")!($, { turnId: "i1", index: 0 }, () => textThenTool()));
-    const summary = chunks.find((c) => c.kind === "text" && /Model  /.test(c.text ?? ""));
+    const summary = chunks.find((c) => c.kind === "text" && /% cached\)/.test(c.text ?? ""));
     assert.equal((summary as { index: number }).index, 2);
 
     await hooks.get("turn.start")!($, { text: "y", turnId: "i2" }, async (e: unknown) => e);
@@ -2346,7 +2407,7 @@ describe("register: audit regressions (2026-09-23)", () => {
       return { stopReason: null };
     }
     const none = await collect(hooks.get("turn.step")!($, { turnId: "i2", index: 0 }, () => failed()));
-    assert.doesNotMatch(text(none), /Model  /);
+    assert.doesNotMatch(text(none), /% cached\)/);
   });
 
   test("a held turn names the bar it did not clear", async () => {
@@ -2356,7 +2417,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     setContext(150_000);
     setTier("fable", 0.76, 3);
     const t = await turn(hooks, $, "b2", "plan the rest");
-    assert.match(t.text, /stayed on opus: Jev wanted fable, 76% sure, needs 90%/);
+    assert.match(t.text, /kept opus: Jev 76% on fable, needs 90%/);
     await run(hooks, $, "");
   });
 });

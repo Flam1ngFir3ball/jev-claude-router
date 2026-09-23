@@ -4,13 +4,11 @@
  * output row draws on every surface, where a footer label may not, so
  * anything you need to be sure of belongs here.
  *
- * Everything shown to the person is in plain words. `held:haiku·$4.41>$0.125`
- * was exact and unreadable; "stayed on fable: haiku would cost $4.41 vs
- * $0.13" says the same thing to someone who has never opened this file.
+ * Everything shown to the person is in short plain words: `kept fable:
+ * haiku costs $4.41 vs $0.13`, not `held:haiku·$4.41>$0.125`.
  */
 
 import type { JevResult } from "./jev.ts";
-import { LOW_CONFIDENCE } from "./label.ts";
 import {
   capTo,
   ceilingAt,
@@ -33,6 +31,7 @@ import {
   type Tier,
 } from "./policy.ts";
 import {
+  baseModel,
   breakEvenTokens,
   isDowngrade,
   PRICE,
@@ -119,25 +118,26 @@ export function reasonsOf(attempt: Attempt): string[] {
     const kept = d.held === d.tier ? d.model : d.tier;
     out.push(
       d.heldWindow !== undefined
-        ? `stayed on ${kept}: ${wanted} takes ${kOf(WINDOW_TOKENS[d.held])} and this turn carries ${kOf(d.heldWindow)}`
+        ? `kept ${kept}: too long for ${wanted} (${kOf(d.heldWindow)})`
         : d.heldCost !== undefined
-          ? `stayed on ${kept}: ${wanted} would cost ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
-          : `stayed on ${kept}: Jev wanted ${wanted}, ${pct(d.confidence)} sure` +
+          ? `kept ${kept}: ${wanted} costs ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
+          : `kept ${kept}: Jev ${pct(d.confidence)} on ${wanted}` +
             (d.heldBar !== undefined ? `, needs ${pct(d.heldBar)}` : ""),
     );
   }
+  // Sonnet only: an effort change there re-caches half the prefix.
   if (d.heldEffort !== undefined) {
     out.push(
-      `kept ${d.effort} effort: Jev wanted ${d.heldEffort}, only ${pct(d.effortConfidence ?? 0)} sure, and a change re-caches on Sonnet`,
+      `kept ${d.effort}: Jev ${pct(d.effortConfidence ?? 0)} on ${d.heldEffort}`,
     );
   }
-  if (d.forced) out.push("as you asked");
+  if (d.forced) out.push("your pick");
   // A first request that runs the capped effort as the one Jev wanted has
   // not been capped in any way that matters.
   if (d.cappedEffort !== undefined && d.cappedEffort !== d.effort)
     out.push(`capped from ${d.cappedEffort}`);
   if (d.askedEffort !== undefined)
-    out.push(`${d.askedEffort} runs as ${d.effort} on a first request`);
+    out.push(`1st request runs ${d.askedEffort} as ${d.effort}`);
   return out;
 }
 
@@ -145,9 +145,9 @@ export function reasonsOf(attempt: Attempt): string[] {
 export function originOf(
   attempt: Pick<Attempt, "kind" | "agent">,
 ): string | null {
-  if (attempt.kind === "notify") return "woken by a finished task";
-  if (attempt.kind === "continue") return "continuing without asking Jev";
-  if (attempt.kind === "nudge") return "nudged by the engine, continuing";
+  if (attempt.kind === "notify") return "task finished";
+  if (attempt.kind === "continue") return "continuing";
+  if (attempt.kind === "nudge") return "continuing";
   if (attempt.kind === "agent")
     return attempt.agent?.type ? `${attempt.agent.type} agent` : "agent";
   return null;
@@ -316,8 +316,7 @@ export function attemptOf(
         ...head,
         ms: result.ms,
         skipped:
-          `${decision.tier} takes ${kOf(WINDOW_TOKENS[decision.tier])} and ` +
-          `this turn carries ${kOf(hold.economics.contextTokens)}`,
+          `too long for ${decision.tier} (${kOf(hold.economics.contextTokens)})`,
       };
     }
     if (fits.heldWindow !== undefined) {
@@ -410,8 +409,7 @@ export function continuationOf(
       ms: 0,
       kind: "continue",
       skipped:
-        `${tier} takes ${kOf(WINDOW_TOKENS[tier])} and this turn carries ` +
-        `${kOf(contextTokens)}, so the session model answers`,
+        `too long for ${tier} (${kOf(contextTokens)})`,
     };
   }
   return {
@@ -436,7 +434,7 @@ export function continuationSkipped(text: string): Attempt {
     prompt: text,
     ms: 0,
     kind: "continue",
-    skipped: "nothing to continue, so the session model answers",
+    skipped: "nothing to continue",
   };
 }
 
@@ -469,7 +467,7 @@ export function spawnAttemptOf(
     return {
       ...head,
       ms: result.ms,
-      skipped: `Jev said ${fresh.tier} but was only ${pct(fresh.confidence)} sure (under ${pct(SUBAGENT_CONFIDENCE)}), so it keeps its own model`,
+      skipped: `Jev ${pct(fresh.confidence)} on ${fresh.tier}, needs ${pct(SUBAGENT_CONFIDENCE)}`,
     };
   }
   return { ...head, ms: result.ms, decision: capTo(decision, ceiling) };
@@ -484,13 +482,20 @@ function shorten(text: string, width = 44): string {
 }
 
 /**
- * `Jev 57% sure`, or `Jev only 24% sure` under the mark; empty when Jev was
- * not asked this turn: a named tier, a go-ahead, or the engine's nudge.
+ * `Jev 57%`: how sure Jev was of the tier. Empty when Jev was not asked this
+ * turn: a named tier, a go-ahead, or the engine's nudge.
  */
 function sureOf(d: Decision, kind?: Attempt["kind"]): string {
   if (kind === "continue" || kind === "nudge") return "";
   if (d.forced && d.confidence === 0) return "";
-  return `Jev ${d.confidence < LOW_CONFIDENCE ? "only " : ""}${pct(d.confidence)} sure`;
+  return `Jev ${pct(d.confidence)}`;
+}
+
+/** `opus-5-5` for `claude-opus-5-5-20260901`: the id without its prefix and date. */
+function shortModel(model: string): string {
+  // A usage record without a model id must not throw inside turn.step.
+  if (typeof model !== "string" || model === "") return "unknown model";
+  return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
 
 function attemptLine(attempt: Attempt): string {
@@ -520,27 +525,28 @@ function kOf(n: number): string {
 }
 
 /**
- * `answered by claude-fable-5-1 ✓`: the model the API says answered, and
- * whether it is the one the router asked for. A dated id
- * (`claude-opus-5-20260901`) still confirms `claude-opus-5`. A different
- * model is the one case worth looking at, and is spelled out.
+ * `fable-5-1 ✓`: the model the API says answered, and whether it is the one
+ * the router asked for (a dated id still counts). A different model is the
+ * one case worth looking at: `sonnet-5 ⚠ asked opus-5-5`.
  */
 function answeredBy(attempt: Attempt): string {
   const usage = attempt.usage!;
-  if (!("decision" in attempt)) return `answered by ${usage.model}`;
+  const got = shortModel(usage.model);
+  if (!("decision" in attempt)) return got;
   const asked = attempt.decision.model;
-  const matches = usage.model === asked || usage.model.startsWith(`${asked}-`);
-  return matches
-    ? `answered by ${usage.model} ✓`
-    : `answered by ${usage.model} — asked for ${asked}`;
+  const matches =
+    usage.model === asked ||
+    usage.model.startsWith(`${asked}-`) ||
+    baseModel(asked) === usage.model;
+  return matches ? `${got} ✓` : `${got} ⚠ asked ${shortModel(asked)}`;
 }
 
-/** `$0.50 · 47k in, 49% cached · 0k out`. */
+/** `$0.50 · 47k in (49% cached) · 0k out`. */
 function costPhrase(usage: Usage, cost: number | undefined): string {
   const parts = [];
   if (cost !== undefined) parts.push(usd(cost));
   parts.push(
-    `${kOf(carriedOf(usage))} in, ${Math.round(cacheRatio(usage) * 100)}% cached`,
+    `${kOf(carriedOf(usage))} in (${Math.round(cacheRatio(usage) * 100)}% cached)`,
     `${kOf(usage.output_tokens)} out`,
   );
   return parts.join(" · ");
@@ -553,7 +559,7 @@ function costPhrase(usage: Usage, cost: number | undefined): string {
  */
 function usageLine(attempt: Attempt): string | null {
   if (!attempt.usage) return null;
-  return `          ${answeredBy(attempt)} · ${costPhrase(attempt.usage, attempt.cost)}`;
+  return `          → ${answeredBy(attempt)} · ${costPhrase(attempt.usage, attempt.cost)}`;
 }
 
 /**
@@ -563,10 +569,15 @@ function usageLine(attempt: Attempt): string | null {
  * woke the loop — and a block under each read as one reply changing model
  * three times. So the turns are gathered and written once, at the end.
  *
+ * Two lines as a rule: what answered and what it cost, then why it did not
+ * run as Jev asked, when it did not.
+ *
+ *   fable-5-1 ✓ xhigh · Jev 97% · $0.14 · 130k in (91% cached) · 2k out
+ *   kept fable: haiku costs $4.41 vs $0.13
+ *
  * Fenced, because markdown collapses leading whitespace and joins
- * consecutive lines into one paragraph: unfenced, the rule and the rows
- * would render as a single run-on. A fence keeps the alignment and reads as
- * data, not prose.
+ * consecutive lines into one paragraph: unfenced, the rows would render as
+ * a single run-on.
  */
 export function replySummary(turns: readonly Attempt[]): string | null {
   const main = turns.filter((t) => t.kind !== "agent");
@@ -575,55 +586,41 @@ export function replySummary(turns: readonly Attempt[]): string | null {
   if (main.length === 0 || priced.length === 0) return null;
 
   const rows: string[] = [];
+  const head: string[] = [];
 
-  // Model: what answered.
+  // What answered.
   if (main.length === 1) {
     const only = main[0]!;
     if ("decision" in only) {
       const d = only.decision;
-      const who = only.usage ? answeredBy(only) : `${d.model}`;
-      const how = [
-        d.forced ? "as you asked" : sureOf(d, only.kind),
-        `${only.ms}ms`,
-      ]
-        .filter((s) => s !== "")
-        .join(", ");
-      rows.push(`Model  ${who} at ${d.effort} effort · ${how}`);
-    } else {
-      rows.push(
-        `Model  ${only.usage ? answeredBy(only) : "the session model"} · not routed: ${only.skipped}`,
+      head.push(
+        `${only.usage ? answeredBy(only) : shortModel(d.model)} ${d.effort}`,
       );
+      const how = d.forced ? "your pick" : sureOf(d, only.kind);
+      if (how !== "") head.push(how);
+    } else {
+      head.push(only.usage ? answeredBy(only) : "session model");
+      head.push(`not routed: ${only.skipped}`);
     }
   } else {
     const legs = main.map((t) =>
       "decision" in t
-        ? `${t.decision.tier}·${t.decision.effort}${t.usage ? (answeredBy(t).endsWith("✓") ? " ✓" : " !") : ""}`
-        : "session model",
+        ? `${t.decision.tier}${t.usage && !answeredBy(t).endsWith("✓") ? " ⚠" : ""}`
+        : "session",
     );
     const woken = main.filter((t) => t.kind === "notify").length;
     const nudged = main.filter((t) => t.kind === "nudge").length;
     const because = [
-      ...(woken > 0 ? [`${woken} woken by finished tasks`] : []),
-      ...(nudged > 0 ? [`${nudged} nudged by the engine`] : []),
+      ...(woken > 0 ? [`${woken} woken by tasks`] : []),
+      ...(nudged > 0 ? [`${nudged} nudged`] : []),
     ];
-    rows.push(
-      `Model  ${main.length} turns: ${legs.join(", ")}` +
+    head.push(
+      `${main.length} turns: ${legs.join(", ")}` +
         (because.length > 0 ? ` (${because.join(", ")})` : ""),
     );
   }
 
-  // Agents: what they ran on and cost.
-  if (agents.length > 0) {
-    const legs = agents.map((a) => {
-      const name = a.agent?.type ?? "agent";
-      const on =
-        "decision" in a ? a.decision.tier : `its own model`;
-      return `${name} on ${on}${a.cost !== undefined ? ` (${usd(a.cost)})` : ""}`;
-    });
-    rows.push(`Agents ${legs.join(", ")}`);
-  }
-
-  // Cost: the whole reply.
+  // The whole reply's cost.
   const sum = priced.reduce(
     (acc, t) => {
       const u = t.usage!;
@@ -639,26 +636,31 @@ export function replySummary(turns: readonly Attempt[]): string | null {
   );
   const carried = sum.input + sum.read + sum.write;
   const cached = carried === 0 ? 0 : Math.round((100 * sum.read) / carried);
-  rows.push(
-    `Cost   ${sum.unpriced ? "" : `${usd(sum.cost)} · `}${kOf(carried)} in, ${cached}% cached · ${kOf(sum.output)} out`,
-  );
+  if (!sum.unpriced) head.push(usd(sum.cost));
+  head.push(`${kOf(carried)} in (${cached}% cached)`, `${kOf(sum.output)} out`);
+  rows.push(head.join(" · "));
 
-  // Notes: anything that did not run exactly as Jev asked.
-  const notes: string[] = [];
+  // What its agents ran on and cost.
+  if (agents.length > 0) {
+    const legs = agents.map((a) => {
+      const name = a.agent?.type ?? "agent";
+      const on = "decision" in a ? a.decision.tier : "own model";
+      return `${name} ${on}${a.cost !== undefined ? ` ${usd(a.cost)}` : ""}`;
+    });
+    rows.push(`agents: ${legs.join(", ")}`);
+  }
+
+  // Why a turn did not run exactly as Jev asked.
   main.forEach((t, i) => {
-    const why = reasonsOf(t).filter((r) => r !== "as you asked");
+    const why = reasonsOf(t).filter((r) => r !== "your pick");
     const origin =
       t.kind === "continue" || t.kind === "nudge" ? originOf(t) : null;
     const all = [...why, ...(origin ? [origin] : [])];
     if (all.length === 0) return;
-    notes.push(`${main.length > 1 ? `turn ${i + 1}: ` : ""}${all.join("; ")}`);
+    rows.push(`${main.length > 1 ? `turn ${i + 1}: ` : ""}${all.join("; ")}`);
   });
-  for (const note of notes) rows.push(`Note   ${note}`);
 
-  // Count code points: the separators and check marks are multi-byte, and a
-  // rule measured in UTF-16 units would overshoot the text it sits above.
-  const width = Math.max(...rows.map((r) => [...r].length));
-  return ["```", "─".repeat(width), ...rows, "```"].join("\n");
+  return ["```", ...rows, "```"].join("\n");
 }
 
 /** `medium for all`, or `medium (opus: xhigh, fable: xhigh)`. */
@@ -799,18 +801,18 @@ export function toggleReply(enabled: boolean): string {
  * and dimmer text. Neither a render hook nor `$.ui.log` drew anything in the
  * desktop app, so this is the styling that is actually available.
  *
- *   > ✳️ fable · xhigh effort · Jev 57% sure · 324ms
- *   > ✳️ fable · low effort · stayed on fable: haiku would cost $1.02 vs $0.02 · 352ms
- *   > ⚠️ not routed · typesafe said HTTP 401 · the session model answers
+ *   > ✳️ fable · xhigh · Jev 57% · 324ms
+ *   > ✳️ fable · low · kept fable: haiku costs $1.02 vs $0.020 · 352ms
+ *   > ⚠️ not routed: typesafe said HTTP 401
  */
 export function liveLine(attempt: Attempt): string {
   if ("skipped" in attempt) {
-    return `> ⚠️ not routed · ${attempt.skipped} · the session model answers`;
+    return `> ⚠️ not routed: ${attempt.skipped}`;
   }
   const d = attempt.decision;
   const parts = [
     d.tier,
-    `${d.effort} effort`,
+    d.effort,
     ...(d.held === undefined ? [sureOf(d, attempt.kind)] : []),
     ...reasonsOf(attempt),
     ...(originOf(attempt) ? [originOf(attempt)!] : []),
