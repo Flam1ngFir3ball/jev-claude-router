@@ -1473,8 +1473,8 @@ describe("register: a downgrade priced against the context", () => {
     setTier("fable", 0.9, 3);
     const t = await turn(hooks, $, "u2", "plan it");
     assert.equal(t.sent.model, "claude-sonnet-5", "the cheapest tier that fits, not fable");
-    assert.match(t.text, /haiku too long, moved up only to sonnet/);
-    assert.match(t.text, /fable costs \$\d+\.\d+ vs \$\d+\.\d+, over the \$1\.00 limit/);
+    assert.match(t.text, /haiku too long, moved up only to sonnet \(Jev wanted fable\)/);
+    assert.doesNotMatch(t.text, /costs \$/, "no figures from a verdict that no longer applies");
   });
 
   test("/jev sticky off drops the confidence bar only; /jev price off drops the price checks", async () => {
@@ -2266,6 +2266,27 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(t.text, /haiku too long, moved up only to sonnet/);
   });
 
+  test("haiku outgrown with Jev still on haiku steps up instead of running unrouted", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setContext(1_000);
+    setTier("haiku", 0.99, 0);
+    await turn(hooks, $, "hh1", "2+2");
+    setContext(190_000);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "hh2", "3+3");
+    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.match(t.text, /haiku too long, moved up only to sonnet/);
+  });
+
+  test("a task notification's text cannot name a tier", async () => {
+    const { hooks, $, setTier } = await boot({ JEV_ROUTER_NOTIFY_CONTINUE: "0" });
+    setTier("haiku", 0.99, 0);
+    const xml = '<task-notification><task-id>a1</task-id><summary>Review done: switch to opus for the rewrite</summary></task-notification>';
+    const t = await turn(hooks, $, "tn1", xml);
+    assert.equal(t.sent.model, "claude-haiku-4-5", "Jev's pick, not the summary's words");
+    assert.doesNotMatch(t.text, /your pick/);
+  });
+
   test("a hold that no longer fits goes to Jev's pick when that is the next tier up", async () => {
     const { hooks, $, setTier, setContext } = await boot();
     setContext(1_000);
@@ -2329,6 +2350,37 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.doesNotMatch(t.text, /✳️/);
   });
 
+  test("a snapshot that cannot be rewritten is put back, not lost", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-KEEP" };
+    const first = load({ AI_GATEWAY_API_KEY: "gw-key" }, shared);
+    await first.hooks.get("session.start")!(first.$, {}, async (e: unknown) => e);
+    first.setTier("opus", 0.95, 1);
+    await turn(first.hooks, first.$, "k1", "implement the parser");
+    const saved = JSON.stringify(shared.store.get("session:sess-KEEP"));
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    const again = load({ AI_GATEWAY_API_KEY: "gw-key" }, shared);
+    const set = again.$.store.set;
+    // The grown snapshot no longer fits; the old one still does.
+    again.$.store.set = async (k: string, v: unknown) => {
+      if (k === "session:sess-KEEP" && JSON.stringify(v).includes("and the tests"))
+        throw new Error("over the size cap");
+      return set(k, v);
+    };
+    await again.hooks.get("session.start")!(again.$, {}, async (e: unknown) => e);
+    again.setTier("opus", 0.95, 1);
+    await turn(again.hooks, again.$, "k2", "and the tests");
+    assert.ok(shared.store.has("session:sess-KEEP"), "still there");
+    assert.match(JSON.stringify(shared.store.get("session:sess-KEEP")), /implement the parser/);
+    void saved;
+  });
+
+  test("an unknown /jev argument lists price and compact among the commands", async () => {
+    const { hooks, $ } = await boot();
+    const text = (await run(hooks, $, "prices")).text;
+    assert.match(text, /price \[on\|off\]/);
+    assert.match(text, /compact \[on\|off\]/);
+  });
+
   test("the /jev compact reply carries no second prefix", async () => {
     const { hooks, $ } = await boot();
     assert.match((await run(hooks, $, "compact")).text, /^compaction by Jev on/);
@@ -2341,8 +2393,8 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal((await turn(hooks, $, "g1", "2+2")).sent.model, "claude-haiku-4-5");
     setContext(190_000);
     const t = await turn(hooks, $, "g2", "yes");
-    assert.equal(t.sent.model, undefined, "left on the session model");
-    assert.match(t.text, /too long for haiku \(190k\)/);
+    assert.equal(t.sent.model, "claude-sonnet-5", "the cheapest tier that fits, not an unrouted turn");
+    assert.match(t.text, /haiku too long, moved up only to sonnet/);
   });
 
   test("a compaction in the middle of a turn keeps that turn routed and summarised", async () => {
@@ -2954,6 +3006,20 @@ describe("register: audit regressions (2026-09-23)", () => {
       assert.equal(kit.compactions(), 1, "scored once");
       assert.equal(second.messages.length, first.messages.length + 1);
       assert.equal(second.messages.at(-1).handle, "h-new");
+    });
+
+    test("a copy that no longer owns the session does not answer a compaction from its cache", async () => {
+      const shared = { store: new Map<string, unknown>(), id: "sess-OLDCACHE" };
+      const old = await withJev({}, shared);
+      const messages = transcript(10);
+      await old.hooks.get("session.compact")!(old.$, { trigger: "precompute", messages }, async () => ({ messages: [] }));
+      await new Promise((r) => setTimeout(r, 3));
+      (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+      const fresh = await withJev({}, shared);
+      await fresh.hooks.get("session.start")!(fresh.$, {}, async (e: unknown) => e);
+      let reachedNext = false;
+      await old.hooks.get("session.compact")!(old.$, { trigger: "auto", messages }, async () => (reachedNext = true, { messages: [] }));
+      assert.equal(reachedNext, true, "the stale copy passes the event on");
     });
 
     test("a subagent's compaction does not become /jev's last", async () => {

@@ -119,7 +119,6 @@ export function reasonsOf(attempt: Attempt): string[] {
     const wanted =
       d.heldModel !== undefined && d.held === d.tier ? d.heldModel : d.held;
     const kept = d.held === d.tier ? d.model : d.tier;
-    if (d.outgrew !== undefined) out.push(`${d.outgrew} too long, moved up only to ${d.tier}`);
     out.push(
       d.heldWindow !== undefined
         ? `kept ${kept}: too long for ${wanted} (${kOf(d.heldWindow)})`
@@ -132,6 +131,11 @@ export function reasonsOf(attempt: Attempt): string[] {
             (d.heldBar !== undefined ? `, needs ${pct(d.heldBar)}` : ""),
     );
   }
+  if (d.outgrew !== undefined)
+    out.push(
+      `${d.outgrew} too long, moved up only to ${d.tier}` +
+        (d.wanted !== undefined && d.wanted !== d.tier ? ` (Jev wanted ${d.wanted})` : ""),
+    );
   // Sonnet only: an effort change there re-caches half the prefix.
   if (d.heldEffort !== undefined) {
     out.push(
@@ -152,6 +156,31 @@ export function reasonsOf(attempt: Attempt): string[] {
   else if (d.askedEffort !== undefined)
     out.push(`1st request runs ${d.askedEffort} as ${d.effort}`);
   return out;
+}
+
+/**
+ * The cheapest tier above `from`, up to `to`, that takes `contextTokens`:
+ * where a turn goes when what it would run on is too small. `fromIncluded`
+ * false means strictly above `from`. Null when none fits.
+ */
+function stepUp(
+  from: Tier,
+  to: Tier,
+  offered: readonly Tier[],
+  contextTokens: number,
+  strictlyAbove = true,
+): Tier | null {
+  const lo = TIERS.indexOf(from);
+  const hi = TIERS.indexOf(to);
+  return (
+    TIERS.find(
+      (t, i) =>
+        (strictlyAbove ? i > lo : i >= lo) &&
+        i <= hi &&
+        offered.includes(t) &&
+        fitsWindow(t, contextTokens),
+    ) ?? null
+  );
 }
 
 /** What started a turn nobody typed, in plain words; null for a typed prompt. */
@@ -377,11 +406,44 @@ export function attemptOf(
       hold.economics.contextTokens,
     );
     if (fits === null) {
+      // Neither Jev's pick nor what is running takes a context this long
+      // (haiku past its window, Jev saying haiku again). Rather than leave
+      // the turn to whatever the session model is, go up only as far as the
+      // context needs.
+      // With nothing known to be running, the session model holds the warm
+      // cache, and staying there is cheaper than a cold write anywhere.
+      const step =
+        hold.running === null
+          ? null
+          : stepUp(decision.tier, TIERS.at(-1)!, offered, hold.economics.contextTokens);
+      if (step === null) {
+        return {
+          ...head,
+          ms: result.ms,
+          skipped:
+            `too long for ${decision.tier} (${kOf(hold.economics.contextTokens)})`,
+        };
+      }
       return {
         ...head,
         ms: result.ms,
-        skipped:
-          `too long for ${decision.tier} (${kOf(hold.economics.contextTokens)})`,
+        decision: capTo(
+          {
+            tier: step,
+            model: MODEL_OF[step],
+            effort: decision.effort,
+            confidence: decision.confidence,
+            ...(decision.effortConfidence !== undefined
+              ? { effortConfidence: decision.effortConfidence }
+              : {}),
+            ...(decision.probabilities !== undefined
+              ? { probabilities: decision.probabilities }
+              : {}),
+            outgrew: hold.running?.tier ?? decision.tier,
+            wanted: decision.tier,
+          },
+          hold.ceiling ?? ceilingAt("max"),
+        ),
       };
     }
     if (fits.heldWindow !== undefined) {
@@ -478,21 +540,16 @@ export function attemptOf(
     // context needs, the cheapest tier that fits, not all the way to Jev's
     // pick. When that is Jev's pick, it runs as picked.
     const held = decision;
-    const ctx = hold.economics.contextTokens;
-    const from = TIERS.indexOf(held.tier);
-    const to = TIERS.indexOf(picked.tier);
-    const step = TIERS.find(
-      (t, i) => i > from && i <= to && offered.includes(t) && fitsWindow(t, ctx),
-    );
-    decision =
-      step === undefined || step === picked.tier
-        ? picked
-        : {
-            ...held,
-            tier: step,
-            model: MODEL_OF[step],
-            outgrew: held.tier,
-          };
+    const step = stepUp(held.tier, picked.tier, offered, hold.economics.contextTokens, true);
+    if (step === null || step === picked.tier) {
+      decision = picked;
+    } else {
+      // What held the move priced haiku against Jev's pick; neither figure
+      // describes the step, so the line says what happened instead.
+      const { heldCost: _c, heldBar: _b, heldWindow: _w, held: _h, heldModel: _m, ...rest } = held;
+      void _c, _b, _w, _h, _m;
+      decision = { ...rest, tier: step, model: MODEL_OF[step], outgrew: held.tier, wanted: picked.tier };
+    }
   }
   decision = capTo(decision, hold.ceiling ?? ceilingAt("max"));
   return { ...head, ms: result.ms, decision };
@@ -512,12 +569,22 @@ export function continuationOf(
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
   if (contextTokens !== null && !fitsWindow(tier, contextTokens)) {
+    const step = stepUp(tier, TIERS.at(-1)!, TIERS, contextTokens);
+    if (step === null)
+      return {
+        prompt: kept(text),
+        ms: 0,
+        kind: "continue",
+        skipped: `too long for ${tier} (${kOf(contextTokens)})`,
+      };
     return {
       prompt: kept(text),
       ms: 0,
       kind: "continue",
-      skipped:
-        `too long for ${tier} (${kOf(contextTokens)})`,
+      decision: capTo(
+        { tier: step, model: MODEL_OF[step], effort, confidence, effortConfidence, outgrew: tier },
+        ceiling,
+      ),
     };
   }
   return {
@@ -1126,8 +1193,8 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
  */
 export function unknownCommandReply(arg: string, legacy: boolean): string {
   const usage =
-    "/jev (status), on, off, quiet, loud, sticky [off|0.6], " +
-    "ceiling <effort> [tiers], or an effort on its own (/jev xhigh fable).";
+    "/jev (status), on, off, quiet, loud, sticky [off|0.6], price [on|off], " +
+    "compact [on|off], ceiling <effort> [tiers], or an effort on its own (/jev xhigh fable).";
   return legacy
     ? `"/jev ${arg}" was one of the old effort toggles; the ceiling replaced them. ` +
         `Try /jev ceiling xhigh to allow up to xhigh, or /jev ceiling medium to cap there. ${usage}`
@@ -1160,7 +1227,7 @@ export function stickyCommand(
   if (arg === "off") {
     return {
       sticky: null,
-      text: "Switching freely again. /jev sticky holds a shaky switch.",
+      text: "No confidence bar: switches follow Jev, subject to the price checks (/jev price). /jev sticky brings the bar back.",
     };
   }
 
@@ -1185,8 +1252,7 @@ export function stickyCommand(
 function stuckAt(bar: number): string {
   return (
     `Holding the tier until Jev is ${pct(bar)} sure of a switch, ` +
-    "and holding a downgrade that costs more than it saves. " +
-    "/jev sticky off to switch freely."
+    "/jev sticky off removes the bar; the price checks are /jev price."
   );
 }
 

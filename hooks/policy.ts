@@ -56,6 +56,8 @@ export type Decision = {
    * when the move went only as far up as it had to (not to Jev's pick).
    */
   outgrew?: Tier;
+  /** Jev's pick, when the turn moved up only part of the way to it. */
+  wanted?: Tier;
   /**
    * The context this turn carries, when that is what held it: the tier Jev
    * named cannot take a prompt this long at all. Absent otherwise.
@@ -533,6 +535,7 @@ function normalizeQuotes(text: string): string {
 export function ownWords(text: string): string {
   return text
     .replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/g, " ")
+    .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, " ")
     .replace(/```[\s\S]*?(?:```|$)/g, " ")
     .replace(/`[^`\n]*`/g, " ")
     .replace(/^[ \t]*>.*$/gm, " ");

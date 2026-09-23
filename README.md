@@ -115,7 +115,7 @@ When a check changed Jev's pick, the reason is written in plain words:
 | `kept fable: haiku costs $4.41 vs $0.13` | Moving down would have cost more than staying, cache included. |
 | `kept opus: fable costs $5.03 vs $0.08, over the $1.00 limit` | Moving up would have cost more than the upgrade limit over staying. |
 | `kept fable: too long for haiku (310k)` | The conversation does not fit haiku's window. |
-| `haiku too long, moved up only to sonnet` | The running tier outgrew its window; the turn went to the cheapest tier that fits. |
+| `haiku too long, moved up only to sonnet (Jev wanted fable)` | The running tier outgrew its window; the turn went to the cheapest tier that fits. |
 | `capped from xhigh` | Jev asked for more effort than the ceiling allows. |
 | `your pick` | You named the tier in your prompt. |
 | `1st request runs medium as high` | Fable runs `medium` as `high` on a conversation's first request, so that is what is sent. |
@@ -202,9 +202,9 @@ allowed.
 skips Jev, runs at medium effort and shows `your pick`. Plain mentions are
 not routes: "search for opus docs" and "I'm using opus for comparison" are
 ordinary prompts. A negation cancels the next route ("don't use haiku, use
-opus" goes to opus). Pasted content, code and quoted lines are not read for
-this, so a pasted document that says "use opus" as an example does not
-route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier excluded with
+opus" goes to opus). Pasted content, code, quoted lines and background-task
+notifications are not read for this, so a pasted document that says "use
+opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier excluded with
 `JEV_ROUTER_EXCLUDE` cannot be named back in.
 
 **Go-aheads.** Jev scores a bare "yes" as trivial, which is right about the
@@ -225,9 +225,11 @@ A turn is never sent to a tier whose context window it does not fit. Haiku
 This applies whatever Jev said, and even to a tier you named: the turn stays
 on the tier already running.
 
-When the running tier is the one that no longer fits (haiku past 184k) and
-Jev's pick is held back by the checks below, the turn moves up only as far
-as it must, to the cheapest tier that fits.
+When the running tier is the one that no longer fits (haiku past 184k), the
+turn moves up only as far as it must, to the cheapest tier that fits. That
+holds whether Jev picked haiku again, picked a higher tier the checks below
+held back, or the turn was a go-ahead. With nothing known to be running, the
+session model keeps the turn, since its cache is the warm one.
 
 ### 3. The confidence bar
 

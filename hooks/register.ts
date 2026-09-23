@@ -310,6 +310,7 @@ async function loadSnapshot(
 async function saveSnapshot(
   $: {
     store: {
+      get: (key: string) => Promise<unknown>;
       set: (key: string, value: unknown) => Promise<void>;
       keys: () => Promise<string[]>;
       delete: (key: string) => Promise<void>;
@@ -328,7 +329,16 @@ async function saveSnapshot(
       // Keys are kept in the order they were first written, and the oldest
       // are dropped; moving this session to the end makes that the order
       // of last use, so a long-lived session in use is never the one dropped.
+      // The old snapshot is put back if the new one cannot be written.
+      const previous = await $.store.get(key);
       await $.store.delete(key);
+      try {
+        await $.store.set(key, pack(state));
+      } catch (error) {
+        if (previous !== undefined) await $.store.set(key, previous).catch(() => undefined);
+        throw error;
+      }
+      return;
     }
     await $.store.set(key, pack(state));
   } catch {
@@ -875,7 +885,11 @@ export function register(on: On) {
       prunedCache.handles.every((h, i) => h === handles[i])
         ? prunedCache
         : null;
-    if (enabled && settings.compactOn && !instructed && transcript.length > 0 && cached !== null) {
+    const mine =
+      !inert &&
+      !superseded() &&
+      !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)));
+    if (enabled && settings.compactOn && !instructed && transcript.length > 0 && cached !== null && mine) {
       const tail = transcript.slice(cached.handles.length);
       pruned = {
         messages: [...(cached.messages as unknown as typeof e.messages), ...tail],
@@ -891,9 +905,7 @@ export function register(on: On) {
       settings.compactOn &&
       !instructed &&
       transcript.length > 0 &&
-      !inert &&
-      !superseded() &&
-      !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+      mine
     ) {
       const result = await pruneTranscript({
         messages: transcript,
@@ -1107,9 +1119,11 @@ export function register(on: On) {
     // round trip ahead of Jev on every turn.
     const notification = notificationOf(e.text) !== null;
     const nudge = isEngineNudge(e.text) || e.text.trim() === "";
-    const forced = settings.allowOverride
-      ? parseOverride(e.text, offered)
-      : null;
+    // A task's notification is the engine's words, not the person's.
+    const forced =
+      settings.allowOverride && !notification
+        ? parseOverride(e.text, offered)
+        : null;
     const softNotify =
       settings.notifyContinue && notification && continueFrom !== null;
     const asking =

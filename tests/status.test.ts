@@ -653,7 +653,8 @@ describe("the sticky subcommand", () => {
   test("off turns it off", () => {
     const r = stickyCommand("off", 0.6);
     assert.equal(r.sticky, null);
-    assert.match(r.text, /freely/);
+    assert.match(r.text, /No confidence bar/);
+    assert.match(r.text, /price checks/, "says the price checks still apply");
   });
 
   test("a number sets the bar and turns it on", () => {
