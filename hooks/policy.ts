@@ -437,12 +437,24 @@ export function capXhigh(
 }
 
 /**
- * Reads `JEV_ROUTER_XHIGH_OFF`: empty → none; `1`/`all`/`true`/`yes`/`on` →
- * every tier; otherwise a comma list of tier names.
+ * Reads `JEV_ROUTER_XHIGH_OFF`. Default (unset/empty) blocks every tier so
+ * effort caps at `high`: xhigh thinking is the expensive rung, and sessions
+ * should opt into it. `0`/`false`/`off`/`no`/`none` clears the block;
+ * `1`/`all`/`true`/`yes`/`on` blocks every tier; otherwise a comma list of
+ * tier names.
  */
 export function xhighOffOf(raw: string | undefined): Set<Tier> {
   const flag = (raw ?? "").trim().toLowerCase();
-  if (!flag) return new Set();
+  if (!flag) return new Set(TIERS);
+  if (
+    flag === "0" ||
+    flag === "false" ||
+    flag === "off" ||
+    flag === "no" ||
+    flag === "none"
+  ) {
+    return new Set();
+  }
   if (
     flag === "1" ||
     flag === "all" ||

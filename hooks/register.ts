@@ -14,6 +14,7 @@ import {
   parseOverride,
   stickyOf,
   thresholdOf,
+  TIERS,
   xhighOffOf,
   type Decision,
   type Tier,
@@ -171,10 +172,11 @@ export function register(on: On) {
   /** True once sticky has been seeded from env or set by `/jev sticky`. */
   let stickyReady = false;
   /**
-   * Tiers for which xhigh (and max) effort is blocked. Seeded from
-   * `JEV_ROUTER_XHIGH_OFF`; `/jev xhigh` overrides from then on.
+   * Tiers for which xhigh (and max) effort is blocked. Defaults to every
+   * tier (cap at high) until seeded; `JEV_ROUTER_XHIGH_OFF` and `/jev xhigh`
+   * override from then on.
    */
-  let xhighOff = new Set<Tier>();
+  let xhighOff = new Set<Tier>(TIERS);
   let xhighReady = false;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;

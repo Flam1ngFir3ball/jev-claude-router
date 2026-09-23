@@ -705,7 +705,7 @@ describe("the xhigh subcommand", () => {
   });
 
   test("the status report says which tiers are capped", () => {
-    assert.match(statusReport(base), /xhigh\s+on/);
+    assert.match(statusReport(base), /xhigh\s+on \(JEV_ROUTER_XHIGH_OFF=0\)/);
     assert.match(
       statusReport({ ...base, xhighOff: ["opus", "fable"] }),
       /xhigh\s+off for opus, fable/,

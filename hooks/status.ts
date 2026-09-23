@@ -569,7 +569,7 @@ function stuckAt(bar: number): string {
 }
 
 function xhighStatusLine(off: readonly Tier[]): string {
-  if (off.length === 0) return "on (JEV_ROUTER_XHIGH_OFF=1)";
+  if (off.length === 0) return "on (JEV_ROUTER_XHIGH_OFF=0)";
   if (off.length === TIERS.length) return "off for all · capped at high";
   return `off for ${off.join(", ")} · capped at high`;
 }

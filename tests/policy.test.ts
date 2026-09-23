@@ -527,9 +527,13 @@ describe("xhigh cap", () => {
     assert.equal(capXhigh(at("opus", "low"), new Set(TIERS)).cappedEffort, undefined);
   });
 
-  test("the env reads all-off and a tier list", () => {
-    assert.deepEqual([...xhighOffOf(undefined)], []);
-    assert.deepEqual([...xhighOffOf("")].sort(), []);
+  test("the env defaults to all-off; 0 turns it back on", () => {
+    assert.deepEqual([...xhighOffOf(undefined)].sort(), [...TIERS].sort());
+    assert.deepEqual([...xhighOffOf("")].sort(), [...TIERS].sort());
+    assert.deepEqual([...xhighOffOf("0")], []);
+    assert.deepEqual([...xhighOffOf("false")], []);
+    assert.deepEqual([...xhighOffOf("off")], []);
+    assert.deepEqual([...xhighOffOf("none")], []);
     assert.deepEqual([...xhighOffOf("1")].sort(), [...TIERS].sort());
     assert.deepEqual([...xhighOffOf("all")].sort(), [...TIERS].sort());
     assert.deepEqual([...xhighOffOf("opus,fable")].sort(), ["fable", "opus"]);
