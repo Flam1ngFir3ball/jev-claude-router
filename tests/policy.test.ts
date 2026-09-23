@@ -35,6 +35,8 @@ import {
   withCeiling,
   type Decision,
   type Effort,
+  upgradeMaxOf,
+  UPGRADE_MAX_USD,
 } from "../hooks/policy.ts";
 import { switchVerdict } from "../hooks/pricing.ts";
 
@@ -760,5 +762,17 @@ describe("the bar an upgrade must clear", () => {
     assert.equal(upgradeBar(0.75, UPGRADE_CONTEXT_TOKENS), UPGRADE_CONFIDENCE);
     assert.equal(upgradeBar(0.6, 250_000), 0.9);
     assert.equal(upgradeBar(0.95, 250_000), 0.95);
+  });
+});
+
+describe("upgradeMaxOf", () => {
+  test("dollars, off, or the default", () => {
+    assert.equal(upgradeMaxOf(undefined), UPGRADE_MAX_USD);
+    assert.equal(upgradeMaxOf("2.5"), 2.5);
+    assert.equal(upgradeMaxOf("$3"), 3);
+    assert.equal(upgradeMaxOf("0"), 0);
+    assert.equal(upgradeMaxOf("off"), null);
+    assert.equal(upgradeMaxOf("junk"), UPGRADE_MAX_USD);
+    assert.equal(upgradeMaxOf("-1"), UPGRADE_MAX_USD);
   });
 });

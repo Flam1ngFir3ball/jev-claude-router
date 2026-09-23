@@ -30,7 +30,7 @@ reply        > ✳️ fable · medium · Jev 97% · capped from xhigh · 641ms
 | --- | --- |
 | Per-turn routing | Jev picks a tier and an effort for every prompt, and each model request in that turn is rewritten to match. |
 | Confidence bar | A switch to a different tier needs 75% confidence from Jev. An upgrade once the context is past 100k needs 90%. |
-| Price check on downgrades | A move to a cheaper tier is priced against staying put, cache included. It only happens if it saves money. |
+| Price checks | A move to a cheaper tier only happens if it saves money, cache included. A move to a dearer tier is held when rewriting the cache would cost more than $1 over staying. |
 | Context-window guard | A turn never goes to a tier whose window it does not fit. |
 | Effort ceiling | Caps the effort each tier may be asked for. The default is `medium` on every tier. |
 | Go-aheads and named tiers | "yes" continues on the last turn's tier without asking Jev; "use opus" routes straight to opus. |
@@ -98,6 +98,7 @@ Anything that changed Jev's pick is written in plain words:
 | --- | --- |
 | `kept fable: Jev 61% on haiku, needs 75%` | Jev wanted haiku but was not sure enough to switch. |
 | `kept fable: haiku costs $4.41 vs $0.13` | The downgrade would have cost more than staying, cache included. |
+| `kept opus: fable costs $5.03 vs $0.08, over the $1.00 limit` | The upgrade would have cost more than the limit over staying. |
 | `kept fable: too long for haiku (310k)` | The context does not fit haiku's window. |
 | `capped from xhigh` | Jev asked for more effort than the ceiling allows. |
 | `your pick` | The prompt named the tier. |
@@ -154,7 +155,7 @@ jev-router:
   surface   desktop
   provider  typesafe · TYPESAFE_API_KEY is set · jev-latest
   budget    1500ms
-  sticky    on, switch needs 75% (90% up past 100k), and a downgrade has to pay
+  sticky    on, switch needs 75% (90% up past 100k), a downgrade has to pay, an upgrade may cost $1.00 over staying
   ceiling   medium (fable: xhigh)
   session   claude-opus-5, running on fable
   cache     1h writes · 201k context · fable→haiku pays below 3k
@@ -201,7 +202,7 @@ session model if nothing is running yet.
 The prompt cache is per model. Switching tiers writes the whole context to
 the new model's cache, and switching back writes it again. At a few hundred
 thousand tokens of context that costs dollars, often more than the switch
-saves. So a switch has to clear two checks:
+saves. So a switch has to clear three checks:
 
 - **Confidence.** A turn that picks a different tier from the one running
   moves only if Jev's confidence is at least 75%. An upgrade once the context
@@ -209,8 +210,13 @@ saves. So a switch has to clear two checks:
   cache (`UPGRADE_CONTEXT_TOKENS` and `UPGRADE_CONFIDENCE` in `policy.ts`).
 - **Price, for a downgrade.** The turn is priced twice: on the running tier
   with its cache warm, and on the cheaper tier cold plus the write to come
-  back. It moves only if going is cheaper. An upgrade is not priced: whether
-  a task needs a stronger model is Jev's call.
+  back. It moves only if going is cheaper.
+- **Price, for an upgrade.** Going writes the whole context to the dearer
+  tier's cache and pays its output price; staying reads the warm cache. The
+  move is held when going costs more than `JEV_ROUTER_UPGRADE_MAX` over
+  staying ($1 by default). With a typical turn that allows an upgrade up to
+  about 48k of context from opus to fable, 126k from sonnet to opus, and
+  254k from haiku to sonnet. A tier named in the prompt is not held.
 
 A held turn runs on the tier already warm and says why. The effort Jev asked
 for still applies on Opus, Haiku and Fable, since effort is sent per request
@@ -307,6 +313,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev. Capped at 8000. |
 | `JEV_ROUTER_STICKY` | on | `0` switches freely. |
 | `JEV_ROUTER_STICKY_CONFIDENCE` | `0.75` | The confidence bar. |
+| `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying, or `off` for no limit. |
 | `JEV_ROUTER_CEILING` | `medium` | Effort ceiling: `xhigh` for all tiers, or per tier, e.g. `fable:xhigh,opus:high`. |
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
 | `JEV_ROUTER_EXCLUDE` | | Tiers never offered to Jev, e.g. `fable,haiku`. |

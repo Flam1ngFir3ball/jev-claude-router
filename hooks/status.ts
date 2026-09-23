@@ -35,6 +35,7 @@ import {
   breakEvenTokens,
   isDowngrade,
   PRICE,
+  upgradeVerdict,
   priceOfModel,
   switchVerdict,
   usageCost,
@@ -120,7 +121,10 @@ export function reasonsOf(attempt: Attempt): string[] {
       d.heldWindow !== undefined
         ? `kept ${kept}: too long for ${wanted} (${kOf(d.heldWindow)})`
         : d.heldCost !== undefined
-          ? `kept ${kept}: ${wanted} costs ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
+          ? `kept ${kept}: ${wanted} costs ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}` +
+            (d.heldCost.limit !== undefined
+              ? `, over the ${usd(d.heldCost.limit)} limit`
+              : "")
           : `kept ${kept}: Jev ${pct(d.confidence)} on ${wanted}` +
             (d.heldBar !== undefined ? `, needs ${pct(d.heldBar)}` : ""),
     );
@@ -225,6 +229,8 @@ export type Status = {
   timeoutMs: number;
   /** The confidence a switch must clear, or null when stickiness is off. */
   sticky: number | null;
+  /** The most an upgrade may cost over staying, or null for no limit. */
+  upgradeMax?: number | null;
   /** The most effort each tier may be asked for. */
   ceiling: Ceiling;
   /** Which prompt cache the session writes; the price of a switch depends on it. */
@@ -268,6 +274,8 @@ type Hold = {
   forced?: Tier | null;
   ceiling?: Ceiling;
   economics?: Economics;
+  /** The most an upgrade may cost over staying; null or absent for no limit. */
+  upgradeMax?: number | null;
 };
 
 /** A typical turn's output when the session has not produced one yet. */
@@ -347,17 +355,33 @@ export function attemptOf(
       running !== null &&
       running.tier === decision.tier &&
       running.model !== decision.model;
+    const fromPrice =
+      running !== null ? (priceOfModel(running.model) ?? PRICE[running.tier]) : null;
+    const upgrade =
+      running !== null && !downgrade && !lateral && running.tier !== decision.tier;
     const verdict =
-      (downgrade || lateral) && running !== null && hold.economics !== undefined
-        ? switchVerdict(
-            running.tier,
-            decision.tier,
-            hold.economics.contextTokens,
-            hold.economics.outputTokens,
-            hold.economics.ttl,
-            priceOfModel(running.model) ?? PRICE[running.tier],
-          )
-        : null;
+      running === null || fromPrice === null || hold.economics === undefined
+        ? null
+        : downgrade || lateral
+          ? switchVerdict(
+              running.tier,
+              decision.tier,
+              hold.economics.contextTokens,
+              hold.economics.outputTokens,
+              hold.economics.ttl,
+              fromPrice,
+            )
+          : upgrade && hold.upgradeMax != null
+            ? upgradeVerdict(
+                running.tier,
+                decision.tier,
+                hold.economics.contextTokens,
+                hold.economics.outputTokens,
+                hold.upgradeMax,
+                hold.economics.ttl,
+                fromPrice,
+              )
+            : null;
     // An upgrade writes the whole context to the dearer tier; past 100k it
     // has to be surer than the bar.
     const bar = lateral
@@ -740,7 +764,10 @@ export function statusReport(status: Status): string {
         ? "off (JEV_ROUTER_STICKY=0)"
         : `on, switch needs ${pct(status.sticky)} ` +
           `(${pct(upgradeBar(status.sticky, UPGRADE_CONTEXT_TOKENS))} up past ` +
-          `${kOf(UPGRADE_CONTEXT_TOKENS)}), and a downgrade has to pay`
+          `${kOf(UPGRADE_CONTEXT_TOKENS)}), a downgrade has to pay` +
+          (status.upgradeMax != null
+            ? `, an upgrade may cost ${usd(status.upgradeMax)} over staying`
+            : "")
     }`,
   );
   lines.push(`  ceiling   ${ceilingLine(status.ceiling)}`);

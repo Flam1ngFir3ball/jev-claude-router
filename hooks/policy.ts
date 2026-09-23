@@ -50,7 +50,7 @@ export type Decision = {
    * The two prices a held downgrade was decided between, when it was the
    * cost of the switch and not Jev's doubt that held it. Absent otherwise.
    */
-  heldCost?: { stay: number; go: number };
+  heldCost?: { stay: number; go: number; limit?: number };
   /**
    * The context this turn carries, when that is what held it: the tier Jev
    * named cannot take a prompt this long at all. Absent otherwise.
@@ -362,7 +362,13 @@ export function stickyDecision(
     heldModel: fresh.model,
     ...(shaky && !unprofitable ? { heldBar: threshold } : {}),
     ...(unprofitable
-      ? { heldCost: { stay: verdict.stay, go: verdict.go } }
+      ? {
+          heldCost: {
+            stay: verdict.stay,
+            go: verdict.go,
+            ...(verdict.limit !== undefined ? { limit: verdict.limit } : {}),
+          },
+        }
       : {}),
   };
 }
@@ -749,6 +755,27 @@ export function asAsked(decision: Decision): Decision {
  */
 export const UPGRADE_CONTEXT_TOKENS = 100_000;
 export const UPGRADE_CONFIDENCE = 0.9;
+
+/**
+ * The most an upgrade may cost this turn over staying, in dollars. Writing a
+ * large context to a dearer tier's cache is the one cost a confident Jev
+ * does not see: opus to fable at 250k is about $5 before any output. At $1
+ * and a typical turn, an upgrade goes through up to about 48k of context
+ * from opus to fable, 126k from sonnet to opus, 254k from haiku to sonnet.
+ */
+export const UPGRADE_MAX_USD = 1;
+
+/**
+ * `JEV_ROUTER_UPGRADE_MAX`: dollars an upgrade may cost over staying, or
+ * `off` for no limit (the confidence bar still applies). Anything else is
+ * the default.
+ */
+export function upgradeMaxOf(raw: string | undefined): number | null {
+  const v = (raw ?? "").trim().toLowerCase().replace(/^\$/, "");
+  if (v === "off" || v === "none") return null;
+  const n = Number(v);
+  return v !== "" && Number.isFinite(n) && n >= 0 ? n : UPGRADE_MAX_USD;
+}
 
 /** The bar an upgrade must clear, given the context it would write. */
 export function upgradeBar(bar: number, contextTokens: number): number {

@@ -628,7 +628,11 @@ describe("a held turn", () => {
     assert.match(statusReport(base), /sticky\s+off/);
     assert.match(
       statusReport({ ...base, sticky: 0.75 }),
-      /sticky\s+on, switch needs 75% \(90% up past 100k\), and a downgrade has to pay/,
+      /sticky\s+on, switch needs 75% \(90% up past 100k\), a downgrade has to pay$/m,
+    );
+    assert.match(
+      statusReport({ ...base, sticky: 0.75, upgradeMax: 1 }),
+      /a downgrade has to pay, an upgrade may cost \$1\.00 over staying/,
     );
   });
 });

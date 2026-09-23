@@ -166,6 +166,11 @@ export type SwitchVerdict = {
   go: number;
   /** True when going costs at least as much as staying. */
   hold: boolean;
+  /**
+   * For an upgrade: the most the move may cost over staying. Absent for a
+   * downgrade, which has to pay for itself.
+   */
+  limit?: number;
 };
 
 export function switchVerdict(
@@ -188,6 +193,30 @@ export function switchVerdict(
   const go =
     ctx * write(PRICE[to]) + out * PRICE[to].output + ctx * write(fromPrice);
   return { stay, go, hold: go >= stay };
+}
+
+/**
+ * What moving up from `from` to `to` costs this turn, against staying. Going
+ * writes the whole context to the dearer tier's cache and pays its output
+ * price; staying reads the warm cache. The way back is not counted: it may
+ * never happen, and if it does, the downgrade is priced then. The move is
+ * held when it costs more than `limit` over staying.
+ */
+export function upgradeVerdict(
+  from: Tier,
+  to: Tier,
+  contextTokens: number,
+  outputTokens: number,
+  limit: number,
+  ttl: Ttl = "1h",
+  fromPrice: Price = PRICE[from],
+): SwitchVerdict {
+  const write = (p: Price) => (ttl === "1h" ? p.write1h : p.write5m);
+  const ctx = contextTokens / 1e6;
+  const out = outputTokens / 1e6;
+  const stay = ctx * fromPrice.read + out * fromPrice.output;
+  const go = ctx * write(PRICE[to]) + out * PRICE[to].output;
+  return { stay, go, hold: go - stay > limit, limit };
 }
 
 /**

@@ -1701,7 +1701,7 @@ describe("register: a conversation's first request", () => {
 
   test("a resumed session reports its context, so its first routed turn is not a first request", async () => {
     const { hooks, $, setTier, setContext } = await started();
-    setContext(50_000);
+    setContext(20_000);
     setTier("fable", 0.9, 1);
     const t = await turn(hooks, $, "f4");
     assert.equal(t.sent.effort, "medium");
@@ -2485,6 +2485,41 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(saved, /implement it/);
   });
 
+  test("an upgrade that would cost more than the limit over staying is held, and says so", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setTier("opus", 0.95, 2);
+    await turn(hooks, $, "u1", "implement it");
+    setContext(250_000);
+    setTier("fable", 0.97, 3);
+    const t = await turn(hooks, $, "u2", "now plan the migration");
+    assert.equal(t.sent.model, "claude-opus-5-5", "kept on the warm tier");
+    assert.match(t.text, /kept opus: fable costs \$5\.\d+ vs \$0\.\d+, over the \$1\.00 limit/);
+  });
+
+  test("an upgrade under the limit goes through; a small context is cheap to move", async () => {
+    const { hooks, $, setTier, setContext } = await boot();
+    setTier("opus", 0.95, 2);
+    await turn(hooks, $, "c1", "implement it");
+    setContext(20_000);
+    setTier("fable", 0.97, 3);
+    assert.equal((await turn(hooks, $, "c2", "now plan the migration")).sent.model, "claude-fable-5-1");
+  });
+
+  test("the upgrade limit is set by JEV_ROUTER_UPGRADE_MAX, and a named tier ignores it", async () => {
+    const raised = await boot({ JEV_ROUTER_UPGRADE_MAX: "10" });
+    raised.setTier("opus", 0.95, 2);
+    await turn(raised.hooks, raised.$, "r1", "implement it");
+    raised.setContext(250_000);
+    raised.setTier("fable", 0.97, 3);
+    assert.equal((await turn(raised.hooks, raised.$, "r2", "now plan the migration")).sent.model, "claude-fable-5-1");
+
+    const named = await boot();
+    named.setTier("opus", 0.95, 2);
+    await turn(named.hooks, named.$, "n1", "implement it");
+    named.setContext(250_000);
+    assert.equal((await turn(named.hooks, named.$, "n2", "use fable to plan the migration")).sent.model, "claude-fable-5-1");
+  });
+
   test("a prompt repeated by the same copy is routed each time", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
@@ -2649,7 +2684,7 @@ describe("register: audit regressions (2026-09-23)", () => {
   });
 
   test("a held turn names the bar it did not clear", async () => {
-    const { hooks, $, setTier, setContext } = await boot();
+    const { hooks, $, setTier, setContext } = await boot({ JEV_ROUTER_UPGRADE_MAX: "off" });
     setTier("opus", 0.95, 2);
     await turn(hooks, $, "b1", "implement it");
     setContext(150_000);

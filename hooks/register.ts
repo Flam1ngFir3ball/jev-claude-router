@@ -17,6 +17,7 @@ import {
   isContinuation,
   isEngineNudge,
   notifyContinueOf,
+  upgradeMaxOf,
   offeredTiers,
   overrideAllowedOf,
   parseOverride,
@@ -134,6 +135,7 @@ type Settings = {
   ttl: Ttl;
   allowOverride: boolean;
   notifyContinue: boolean;
+  upgradeMax: number | null;
 };
 
 /**
@@ -174,6 +176,7 @@ async function seedSettings(
     notifyContinue: notifyContinueOf(
       await $.env.get("JEV_ROUTER_NOTIFY_CONTINUE"),
     ),
+    upgradeMax: upgradeMaxOf(await $.env.get("JEV_ROUTER_UPGRADE_MAX")),
   };
 }
 
@@ -833,6 +836,7 @@ export function register(on: On) {
         provider: settings.provider,
         timeoutMs: settings.timeoutMs,
         sticky: settings.sticky,
+        upgradeMax: settings.upgradeMax,
         ceiling: settings.ceiling,
         ttl: settings.ttl,
         contextTokens,
@@ -970,6 +974,7 @@ export function register(on: On) {
           running,
           forced,
           ceiling,
+          upgradeMax: settings.upgradeMax,
           ...(economics !== undefined ? { economics } : {}),
         },
       );
