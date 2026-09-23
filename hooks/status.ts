@@ -69,17 +69,19 @@ export type AgentTag = {
 };
 
 /**
- * The tag for a turn held on its previous tier (`held:haiku`), or on its
- * previous effort while staying on Sonnet (`held-effort:low`), or forced to
- * a tier the prompt named (`forced`). Each names what Jev wanted and did not
- * get, so a run of them is visible in /jev.
+ * The tags for a turn that did not run exactly as Jev asked: held on its
+ * previous tier (`held:haiku`), held on its previous Sonnet effort
+ * (`held-effort:low`), and/or forced to a tier the prompt named (`forced`).
+ * Stacked when more than one applies, so /jev does not hide an outcome.
  */
 export function heldMark(attempt: Attempt): string | null {
   if (!("decision" in attempt)) return null;
   const { held, heldEffort, forced } = attempt.decision;
-  if (held !== undefined) return `held:${held}`;
-  if (heldEffort !== undefined) return `held-effort:${heldEffort}`;
-  return forced ? "forced" : null;
+  const tags: string[] = [];
+  if (held !== undefined) tags.push(`held:${held}`);
+  if (heldEffort !== undefined) tags.push(`held-effort:${heldEffort}`);
+  if (forced) tags.push("forced");
+  return tags.length > 0 ? tags.join(" · ") : null;
 }
 
 /** The short tag for a turn nobody typed: `notify`, `agent:Explore`, `agent`, `continue`. */
@@ -201,7 +203,10 @@ export function attemptOf(
   if (hold.sticky !== null && !decision.forced) {
     decision = stickyDecision(decision, hold.running, hold.sticky);
   }
+  // A forced turn named its tier; Jev's effort still applies (README). The
+  // Sonnet effort gate is a stickiness rule and does not get a vote here.
   if (
+    !decision.forced &&
     hold.sticky !== null &&
     hold.running !== null &&
     holdsSonnetEffort(decision, hold.running, hold.sticky)
@@ -227,6 +232,21 @@ export function continuationOf(text: string, running: Decision): Attempt {
     ms: 0,
     kind: "continue",
     decision: { tier, model, effort, confidence, effortConfidence },
+  };
+}
+
+/**
+ * A bare go-ahead when there is nothing safe to continue (first turn, or the
+ * previous turn was unrouted / routing was off). Jev must not be asked: it
+ * grades these as trivial at ~1.00 and would clear any sticky bar. The turn
+ * stays on the session model.
+ */
+export function continuationSkipped(text: string): Attempt {
+  return {
+    prompt: text,
+    ms: 0,
+    kind: "continue",
+    skipped: "go-ahead with nothing to continue; left on session model",
   };
 }
 

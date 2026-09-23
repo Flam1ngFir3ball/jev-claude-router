@@ -214,6 +214,9 @@ export function stickyDecision(
     model: previous.model,
     effort: fresh.effort,
     confidence: fresh.confidence,
+    // Sonnet effort gating reads this next; dropping it made every held
+    // Sonnet turn look like effort confidence 0 and always hold effort.
+    effortConfidence: fresh.effortConfidence,
     held: fresh.tier,
   };
 }
@@ -224,34 +227,119 @@ export function stickyDecision(
  * "y" 0.98, "go ahead" 0.79, measured 2026-09-22), which is right about the
  * text and wrong about the work: the work is whatever the last turn proposed,
  * on whatever tier it ran. Stickiness cannot catch this, since its bar is a
- * confidence and these clear any bar. Trailing punctuation is tolerated;
- * anything longer is a real prompt and goes to Jev.
+ * confidence and these clear any bar. Trailing punctuation (`.`, `!`, `?`,
+ * `,`) is tolerated; anything longer is a real prompt and goes to Jev.
  */
 const CONTINUATION =
-  /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!]*$/i;
+  /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!,?]*$/i;
 
 export function isContinuation(text: string): boolean {
-  return CONTINUATION.test(text.trim());
+  return CONTINUATION.test(normalizeQuotes(text).trim());
 }
 
 /**
- * A tier named in the prompt: "use opus", "with fable, do more research",
- * "switch to haiku", "run this on sonnet". Only verbs that actually mean
- * "run on" are accepted; the first cut also took bare "on" and "for", which
- * turned "search for opus docs" and "notes on haiku" into routes. A model id
- * ("use claude-opus-5-5") names its tier too. Returns the tier, or null when
- * none is named or the named one is not offered: an exclusion is a standing
- * decision, and a prompt does not overrule the environment.
+ * A tier named in the prompt: "use opus", "go with fable", "switch to haiku",
+ * "run this on sonnet", "do it using opus". Only verbs that actually mean
+ * "run on" are accepted; bare "on"/"for"/"with"/"using" are not (they turned
+ * "happy with opus" and "I'm using opus for comparison" into routes). A bare
+ * tier glued to another word ("sonnet-level") is not a name either. Negations
+ * skip only the first run-on *or* bare `using <tier>` after them, so
+ * "stop using haiku and use opus" still forces opus. A model id names its
+ * tier too. Returns the tier, or null when none is named or not offered.
  */
 const OVERRIDE =
-  /\b(?:use|using|switch(?:ing)? to|route to|run (?:it |this )?on|go with|with)\s+(?:claude-)?(haiku|sonnet|opus|fable)\b/i;
+  /\b(?:use|do (?:it |this )?using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+
+/**
+ * Bare `using <tier>` is not an override, but it can absorb a negation so a
+ * later affirmative is not wrongly skipped ("stop using haiku and use opus").
+ */
+const USING_SINK =
+  /\busing\s+(?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+
+/** Bare `<tier>` after `avoid`/`stop` only ("avoid haiku and use opus"). */
+const BARE_TIER_SINK =
+  /\b(?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+
+/**
+ * Negation starters. Bare `\bnot` is omitted: "why not use opus" is
+ * affirmative. `never mind` is omitted (`never(?!\s+mind)`). Spaced
+ * `do/can/must/may not` and common `*n't` forms (curly apostrophes
+ * normalized first) are included.
+ */
+const OVERRIDE_NEGATION_AT =
+  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|couldn'?t|can(?:'?t|not|\s+not)|never(?!\s+mind)|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
+
+/**
+ * Words allowed between a negation and its target. Anything else (you, what,
+ * doing, and, …) means the negation is discourse/rhetorical, not "don't use".
+ */
+const NEGATION_BRIDGE =
+  /^(?:\s+(?:want|to|try|ever|really|please|just|even|still|actually|also))*\s*$/i;
+
+/** Fold typographic apostrophes so iOS/macOS quotes match the ASCII forms. */
+function normalizeQuotes(text: string): string {
+  return text.replace(/[\u2018\u2019\u02BC]/g, "'");
+}
 
 export function parseOverride(
   text: string,
   offered: readonly Tier[] = TIERS,
 ): Tier | null {
-  const named = OVERRIDE.exec(text)?.[1]?.toLowerCase() as Tier | undefined;
-  return named !== undefined && offered.includes(named) ? named : null;
+  const normalized = normalizeQuotes(text);
+  const matches = [...normalized.matchAll(OVERRIDE)];
+  let named: Tier | null = null;
+  for (const match of matches) {
+    const at = match.index ?? 0;
+    if (overrideNegated(normalized, at, matches)) continue;
+    const tier = match[1]?.toLowerCase() as Tier | undefined;
+    if (tier !== undefined && offered.includes(tier)) named = tier;
+  }
+  return named;
+}
+
+/** True when the gap is only light bridge words and no clause break. */
+function proximityOk(gap: string): boolean {
+  if (/[.!?,;:\u2014\u2013\u2026]/.test(gap)) return false;
+  return NEGATION_BRIDGE.test(gap);
+}
+
+/**
+ * True when this match is the first attached run-on (or sink) after a
+ * negation. Discourse ("Stop what you're doing and use opus") and tags
+ * ("why don't you use opus") do not bind.
+ */
+function overrideNegated(
+  text: string,
+  matchAt: number,
+  matches: RegExpMatchArray[],
+): boolean {
+  for (const neg of text.matchAll(OVERRIDE_NEGATION_AT)) {
+    const negAt = neg.index ?? -1;
+    if (negAt < 0 || negAt > matchAt) continue;
+    const negEnd = negAt + neg[0].length;
+    const negWord = neg[0].toLowerCase().replace(/\s+/g, " ");
+    const sinks = [
+      ...matches.map((m) => m.index ?? -1),
+      ...[...text.matchAll(USING_SINK)].map((m) => m.index ?? -1),
+    ];
+    if (negWord === "avoid" || negWord === "stop") {
+      sinks.push(
+        ...[...text.matchAll(BARE_TIER_SINK)].map((m) => m.index ?? -1),
+      );
+    }
+    const ordered = [...new Set(sinks.filter((i) => i >= negEnd))].sort(
+      (a, b) => a - b,
+    );
+    for (const sink of ordered) {
+      if (!proximityOk(text.slice(negEnd, sink))) break;
+      // This negation binds its first attached sink only; keep scanning later
+      // negations when that sink is someone else ("don't use haiku never use opus").
+      if (sink === matchAt) return true;
+      break;
+    }
+  }
+  return false;
 }
 
 /** A decision forced to a named tier; Jev's effort is kept, its tier is not. */

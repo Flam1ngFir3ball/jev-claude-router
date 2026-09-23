@@ -23,6 +23,7 @@ import {
   announceReply,
   attemptOf,
   continuationOf,
+  continuationSkipped,
   HISTORY_LIMIT,
   liveLine,
   FOOTER_SEPARATOR,
@@ -133,8 +134,16 @@ export function register(on: On) {
    * from then on, so retuning does not mean restarting the session.
    */
   let sticky: number | null = null;
+  /** True once sticky has been seeded from env or set by `/jev sticky`. */
+  let stickyReady = false;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
+  /**
+   * What a bare go-ahead continues. Cleared on an unrouted turn: that turn
+   * ran on the session model, so re-applying the older routed decision would
+   * be wrong. Stickiness still holds to `running` (last routed).
+   */
+  let continueFrom: Decision | null = null;
   let enabled = true;
   let announce = true;
   let surface: string | null = null;
@@ -153,12 +162,58 @@ export function register(on: On) {
     }
   };
 
+  /**
+   * Drop idle turn rows, but never an in-flight one still in `pending` or
+   * `decisions` — those still need the route line and usage fold-in. If every
+   * entry is protected, the map is allowed to grow past the limit.
+   */
+  const trimByTurn = () => {
+    let scanned = 0;
+    while (byTurn.size > CACHE_LIMIT && scanned < byTurn.size) {
+      const oldest = byTurn.keys().next();
+      if (oldest.done) break;
+      const key = oldest.value;
+      if (pending.has(key) || decisions.has(key)) {
+        touch(byTurn, key, byTurn.get(key)!);
+        scanned++;
+        continue;
+      }
+      byTurn.delete(key);
+      scanned = 0;
+    }
+  };
+
+  /** Move a live entry to the end so FIFO trim drops idle keys first. */
+  const touch = <V>(map: Map<string, V>, key: string, value: V) => {
+    map.delete(key);
+    map.set(key, value);
+  };
+
   const trimSet = (set: Set<string>) => {
     while (set.size > CACHE_LIMIT) {
       const oldest = set.values().next();
       if (oldest.done) break;
       set.delete(oldest.value);
     }
+  };
+
+  const clearRouting = () => {
+    decisions.clear();
+    byTurn.clear();
+    pending.clear();
+    // spawned is kept: turn.step already ignores it while off, and clearing
+    // it made /jev on mid-agent invent "not routed at spawn" and drop effort.
+    latest = null;
+    continueFrom = null;
+    running = null;
+  };
+
+  const seedSticky = async ($: Engine) => {
+    if (stickyReady) return;
+    sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
+      ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
+      : null;
+    stickyReady = true;
   };
 
   const record = (attempt: Attempt) => {
@@ -172,9 +227,7 @@ export function register(on: On) {
       description: "Jev routing: status, or `on` / `off`.",
     });
     surface = await $.session.surface();
-    sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
-      ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
-      : null;
+    await seedSticky($);
     return next(e);
   });
 
@@ -183,7 +236,7 @@ export function register(on: On) {
 
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
-      if (!enabled) latest = null;
+      if (!enabled) clearRouting();
       return { text: toggleReply(enabled) };
     }
 
@@ -196,11 +249,15 @@ export function register(on: On) {
     // for, and refusing it would teach nothing.
     const sub = arg.replace(/^-+/, "");
     if (sub === "sticky" || sub.startsWith("sticky ")) {
+      await seedSticky($);
       const result = stickyCommand(sub.slice("sticky".length), sticky);
       sticky = result.sticky;
+      stickyReady = true;
       return { text: result.text };
     }
 
+    await seedSticky($);
+    if (surface === null) surface = await $.session.surface();
     const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
     const provider = providerOf({
       TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
@@ -211,7 +268,7 @@ export function register(on: On) {
     return {
       text: statusReport({
         enabled,
-        surface: surface ?? (await $.session.surface()),
+        surface,
         provider,
         timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
         sticky,
@@ -226,6 +283,9 @@ export function register(on: On) {
   on("turn.start", async ($, e, next) => {
     if (!enabled) return next(e);
 
+    await seedSticky($);
+    if (surface === null) surface = await $.session.surface();
+
     const offered = offeredTiers(
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
     );
@@ -233,21 +293,24 @@ export function register(on: On) {
     // A bare go-ahead continues the previous turn's work on the previous
     // turn's decision, without a round trip: Jev is confidently wrong about
     // these (it grades the text, which is trivial, not the task, which is
-    // whatever was just proposed). Nothing to continue on the first turn.
-    const attempt =
-      isContinuation(e.text) && running !== null
-        ? continuationOf(e.text, running)
-        : attemptOf(e.text, await classify($, e.text, offered), offered, {
-            sticky,
-            running,
-            forced: parseOverride(e.text, offered),
-          });
+    // whatever was just proposed). When there is nothing to continue (first
+    // turn, or the previous turn left the session model), still do not ask
+    // Jev — that would clear sticky with a ~1.00 haiku pick.
+    const attempt = isContinuation(e.text)
+      ? continueFrom !== null
+        ? continuationOf(e.text, continueFrom)
+        : continuationSkipped(e.text)
+      : attemptOf(e.text, await classify($, e.text, offered), offered, {
+          sticky,
+          running,
+          forced: parseOverride(e.text, offered),
+        });
 
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
     record(attempt);
     byTurn.set(e.turnId, attempt);
-    trim(byTurn);
+    trimByTurn();
 
     // The line goes into the reply's own text, in turn.step below. Render
     // hooks and $.ui.log both drew nothing in the desktop app; the model's
@@ -264,6 +327,11 @@ export function register(on: On) {
       // What the next turn holds to is the tier actually running, which on a
       // held turn is the previous one, not the one Jev named.
       running = attempt.decision;
+      continueFrom = attempt.decision;
+    } else {
+      // Unrouted: the session model answered. A following go-ahead must not
+      // re-apply the last routed tier as if that were the previous turn.
+      continueFrom = null;
     }
 
     return next(e);
@@ -280,6 +348,13 @@ export function register(on: On) {
   // sees its past replies open with the line; that is the price of a marker
   // that reaches a surface which draws neither render sites nor ui.log.
   on("turn.step", async function* ($, e, next) {
+    // Routing off is authoritative for every step, including subagents whose
+    // spawn decision was cached before /jev off.
+    if (!enabled) {
+      for await (const chunk of next(e)) yield chunk;
+      return;
+    }
+
     // A subagent's loop gets no turn.start (probed live: its steps arrive
     // with agentId set and nothing in byTurn), so its turn is first seen
     // here. Its decision was made at agent.spawn, keyed by the id the spawn
@@ -289,13 +364,20 @@ export function register(on: On) {
     // none; it is recorded, though, or /jev would show one prompt and hide
     // the four requests it caused.
     let attempt = byTurn.get(e.turnId);
-    if (attempt === undefined && e.agentId !== undefined) {
+    if (attempt !== undefined) {
+      touch(byTurn, e.turnId, attempt);
+    } else if (e.agentId !== undefined) {
       // A spawn the router saw was recorded then; this only links the turn
       // to it, so a resumed agent's later turns add their usage to the same
       // row rather than opening one each. Recording it again here listed
       // every routed subagent twice.
       attempt = spawned.get(e.agentId);
-      if (attempt === undefined) {
+      if (attempt !== undefined) {
+        // Touch keeps the row warm; spawned itself is never trimmed — dropping
+        // an in-flight agent silently reverts its later steps to the session
+        // model and invents a "not routed at spawn" history row.
+        touch(spawned, e.agentId, attempt);
+      } else {
         // A fork, or a spawn from before the router loaded: nothing was
         // decided for it, and it runs on whatever the engine resolved.
         const agent = await agentTagOf($, e.agentId);
@@ -309,11 +391,14 @@ export function register(on: On) {
         record(attempt);
       }
       byTurn.set(e.turnId, attempt);
-      trim(byTurn);
+      trimByTurn();
     }
-    const decision =
-      decisions.get(e.turnId) ??
-      (attempt && "decision" in attempt ? attempt.decision : undefined);
+    let decision = decisions.get(e.turnId);
+    if (decision !== undefined) {
+      touch(decisions, e.turnId, decision);
+    } else if (attempt && "decision" in attempt) {
+      decision = attempt.decision;
+    }
     const step = decision
       ? next({ ...e, model: decision.model, effort: decision.effort })
       : next(e);
@@ -400,8 +485,9 @@ export function register(on: On) {
       "decision" in attempt ? { ...e, model: attempt.decision.model } : e,
     );
     if (started.agentId !== undefined) {
+      // Never trimmed: FIFO eviction here silently dropped effort routing for
+      // resumed agents and invented "not routed at spawn" history rows.
       spawned.set(started.agentId, attempt);
-      trim(spawned);
     }
     return started;
   });

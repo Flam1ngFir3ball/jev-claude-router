@@ -714,6 +714,44 @@ describe("register: the sticky subcommand", () => {
     return sent;
   }
 
+  test("/jev sticky before the first turn is not overwritten by a late env seed", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_STICKY: "1",
+      JEV_ROUTER_STICKY_CONFIDENCE: "0.9",
+    });
+    // No session.start — sticky must still honour the command.
+    await run(hooks, $, "sticky 0.3");
+    assert.match((await run(hooks, $, "")).text, /switch needs 30%/);
+    setTier("opus", 0.9);
+    await turn(hooks, $, "seed1");
+    assert.match(
+      (await run(hooks, $, "")).text,
+      /switch needs 30%/,
+      "env seed must not clobber the command",
+    );
+    setTier("haiku", 0.4);
+    assert.equal(
+      (await turn(hooks, $, "seed2")).model,
+      "claude-haiku-4-5",
+      "0.4 clears the 0.3 bar",
+    );
+  });
+
+  test("/jev sticky off before the first turn stays off when env asked for sticky", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_STICKY: "1",
+      JEV_ROUTER_STICKY_CONFIDENCE: "0.9",
+    });
+    await run(hooks, $, "sticky off");
+    setTier("opus", 0.9);
+    await turn(hooks, $, "off1");
+    setTier("haiku", 0.4);
+    assert.equal((await turn(hooks, $, "off2")).model, "claude-haiku-4-5");
+    assert.match((await run(hooks, $, "")).text, /sticky\s+off/);
+  });
+
   test("/jev sticky turns it on for the session, with no env var set", async () => {
     const { hooks, $, setTier } = load();
     await turn(hooks, $, "h1");
@@ -856,6 +894,17 @@ describe("register: a tier named in the prompt", () => {
     assert.equal(t.sent.model, "claude-opus-5-5", "Jev’s pick stands");
     assert.doesNotMatch(t.text, /forced/);
   });
+
+  test("a forced Sonnet turn is not effort-held, and the line says forced", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("sonnet", 0.9, 1, 0.9);
+    await turn(hooks, $, "fs1", "small edit");
+    setTier("sonnet", 0.9, 3, 0.2);
+    const t = await turn(hooks, $, "fs2", "use sonnet for this");
+    assert.equal(t.sent.effort, "xhigh", "Jev’s effort still applies");
+    assert.match(t.text, /forced/);
+    assert.doesNotMatch(t.text, /held-effort/);
+  });
 });
 
 describe("register: a bare go-ahead", () => {
@@ -923,12 +972,14 @@ describe("register: a bare go-ahead", () => {
     assert.match(go.text, /continue/);
   });
 
-  test("on the first turn there is nothing to continue, so Jev is asked", async () => {
+  test("on the first turn there is nothing to continue, so the session model stays", async () => {
     const { hooks, $, setTier, fetches } = await started();
     setTier("haiku", 1, 0);
     const t = await turn(hooks, $, "g6", "yes");
-    assert.equal(fetches(), 1);
-    assert.equal(t.sent.model, "claude-haiku-4-5");
+    assert.equal(fetches(), 0, "Jev is not asked; it would clear sticky");
+    assert.equal(t.sent.model, undefined, "left on the session model");
+    assert.match(t.text, /unrouted/);
+    assert.match(t.text, /nothing to continue/);
   });
 
   test("becomes what the next turn holds to", async () => {
@@ -939,6 +990,37 @@ describe("register: a bare go-ahead", () => {
     setTier("haiku", 0.4);
     const t = await turn(hooks, $, "g9", "and the tests");
     assert.equal(t.sent.model, "claude-fable-5-1", "held to fable, via the go-ahead");
+  });
+
+  test("after an unrouted turn, a go-ahead stays on the session model without asking Jev", async () => {
+    const { hooks, $, setTier, fail, fetches } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "u1", "plan it");
+    fail();
+    await turn(hooks, $, "u2", "timeout turn");
+    const asked = fetches();
+    setTier("haiku", 1, 0);
+    const go = await turn(hooks, $, "u3", "yes");
+    assert.equal(fetches(), asked, "Jev is not asked");
+    assert.equal(go.sent.model, undefined, "session model, not a stale fable or a haiku flip");
+    assert.match(go.text, /nothing to continue/);
+  });
+
+  test("after /jev off then on, a go-ahead does not replay the pre-off route", async () => {
+    const { hooks, $, setTier, fetches } = await started();
+    const run = (args: string) =>
+      hooks.get('command.run:{"command":"jev"}')!($, { args });
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "o1", "plan it");
+    await run("off");
+    await turn(hooks, $, "o2", "session turn while off");
+    await run("on");
+    const asked = fetches();
+    setTier("haiku", 1, 0);
+    const go = await turn(hooks, $, "o3", "yes");
+    assert.equal(fetches(), asked);
+    assert.equal(go.sent.model, undefined);
+    assert.match(go.text, /nothing to continue/);
   });
 });
 
@@ -1152,5 +1234,76 @@ describe("register: a spawned subagent", () => {
     const { passed } = await spawnAndStep(kit, spawnOf());
     assert.equal(passed?.model, undefined);
     assert.equal(kit.fetches(), 0);
+  });
+
+  test("routing off stops steps of a spawn made while on", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98, 1);
+    await kit.hooks.get("agent.spawn")!(
+      kit.$,
+      spawnOf(),
+      async (e: { model?: string }) => ({
+        model: e.model ?? "claude-fable-5-1",
+        agentId: "agent-1",
+      }),
+    );
+    await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "off" });
+    let sent: { model?: string; effort?: string } = {};
+    await collect(
+      kit.hooks.get("turn.step")!(
+        kit.$,
+        {
+          turnId: "sub-after-off",
+          index: 0,
+          agentId: "agent-1",
+          model: "claude-fable-5-1",
+          effort: "high",
+        },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    assert.equal(sent.model, "claude-fable-5-1", "cached spawn decision is not applied");
+    assert.equal(sent.effort, "high");
+  });
+
+  test("routing on again mid-agent keeps the spawn decision", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98, 1);
+    await kit.hooks.get("agent.spawn")!(
+      kit.$,
+      spawnOf(),
+      async (e: { model?: string }) => ({
+        model: e.model ?? "claude-fable-5-1",
+        agentId: "agent-1",
+      }),
+    );
+    const run = (args: string) =>
+      kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args });
+    await run("off");
+    await run("on");
+    let sent: { model?: string; effort?: string } = {};
+    await collect(
+      kit.hooks.get("turn.step")!(
+        kit.$,
+        {
+          turnId: "sub-after-on",
+          index: 0,
+          agentId: "agent-1",
+          model: "claude-fable-5-1",
+          effort: "high",
+        },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    assert.equal(sent.model, "claude-haiku-4-5");
+    assert.equal(sent.effort, "medium");
+    const status = await run("");
+    assert.doesNotMatch(status.text, /not routed at spawn/);
   });
 });

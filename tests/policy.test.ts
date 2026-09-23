@@ -146,6 +146,21 @@ describe("sticky routing", () => {
     );
   });
 
+  test("a held switch keeps Jev’s effort confidence for Sonnet gating", () => {
+    const fresh = {
+      ...at("haiku", "high", 0.4),
+      effortConfidence: 0.95,
+    };
+    const d = stickyDecision(fresh, at("sonnet", "low"), 0.75);
+    assert.equal(d.tier, "sonnet");
+    assert.equal(d.effortConfidence, 0.95);
+    assert.equal(
+      holdsSonnetEffort(d, at("sonnet", "low"), 0.75),
+      false,
+      "high effort confidence must still clear the bar after a tier hold",
+    );
+  });
+
   test("a confident switch goes through", () => {
     const d = stickyDecision(at("haiku", "low", 0.8), at("fable"), 0.75);
     assert.equal(d.tier, "haiku");
@@ -193,6 +208,11 @@ describe("a bare go-ahead", () => {
       "k",
       "go ahead",
       "Go ahead.",
+      "go ahead,",
+      "yes,",
+      "ok,",
+      "sure,",
+      "yes?",
       "continue",
       "proceed",
       "do it",
@@ -226,7 +246,7 @@ describe("a bare go-ahead", () => {
 describe("a tier named in the prompt", () => {
   test("is read from the verbs that mean 'run on'", () => {
     assert.equal(parseOverride("use opus for this"), "opus");
-    assert.equal(parseOverride("with fable, do more research"), "fable");
+    assert.equal(parseOverride("go with fable, do more research"), "fable");
     assert.equal(parseOverride("switch to haiku"), "haiku");
     assert.equal(parseOverride("run this on sonnet"), "sonnet");
     assert.equal(parseOverride("do it using opus"), "opus");
@@ -240,11 +260,10 @@ describe("a tier named in the prompt", () => {
 
   test("case does not matter", () => {
     assert.equal(parseOverride("USE OPUS"), "opus");
-    assert.equal(parseOverride("With Fable"), "fable");
+    assert.equal(parseOverride("Go With Fable"), "fable");
   });
 
   test("the tier names as ordinary words are left alone", () => {
-    // Each of these routed under the first cut, which took bare "on" / "for".
     for (const text of [
       "search for opus docs",
       "notes on haiku poetry",
@@ -252,9 +271,89 @@ describe("a tier named in the prompt", () => {
       "what is the fable about",
       "the opus tier is expensive",
       "for haiku, what is the price",
+      "I'm happy with opus so far",
+      "compatible with haiku",
+      "deal with fable later",
+      "I'm using opus for comparison",
+      "use sonnet-level thinking",
+      "when using sonnet-level caching",
     ]) {
       assert.equal(parseOverride(text), null, text);
     }
+  });
+
+  test("negations are skipped and the last affirmative match wins", () => {
+    assert.equal(parseOverride("don't use haiku, use opus"), "opus");
+    assert.equal(parseOverride("Dont use haiku, use opus"), "opus");
+    assert.equal(parseOverride("never use fable for this"), null);
+    assert.equal(parseOverride("do not use sonnet"), null);
+    assert.equal(parseOverride("not using opus today"), null);
+    assert.equal(parseOverride("I don't want to use haiku"), null);
+    assert.equal(parseOverride("do not try to use opus"), null);
+    assert.equal(parseOverride("never ever use fable"), null);
+    assert.equal(parseOverride("I won't use haiku"), null);
+    assert.equal(parseOverride("can't use sonnet for this"), null);
+    assert.equal(parseOverride("avoid using opus"), null);
+    assert.equal(parseOverride("stop using haiku"), null);
+    assert.equal(parseOverride("please don't use haiku"), null);
+    assert.equal(parseOverride("why not use opus"), "opus");
+    assert.equal(parseOverride("don't use haiku use opus"), "opus");
+    assert.equal(parseOverride("don't use haiku and use opus"), "opus");
+    assert.equal(parseOverride("won't use haiku then use opus"), "opus");
+    assert.equal(parseOverride("doesn't use opus"), null);
+    assert.equal(parseOverride("didn't use opus"), null);
+    assert.equal(parseOverride("shouldn't use opus"), null);
+    assert.equal(parseOverride("wouldn't use opus"), null);
+    assert.equal(parseOverride("mustn't use opus"), null);
+    assert.equal(parseOverride("can not use opus"), null);
+    assert.equal(parseOverride("couldn't use opus"), null);
+    assert.equal(parseOverride("must not use opus"), null);
+    assert.equal(parseOverride("may not use fable"), null);
+    assert.equal(parseOverride("stop using haiku and use opus"), "opus");
+    assert.equal(parseOverride("avoid using haiku, use opus"), "opus");
+    assert.equal(
+      parseOverride("please stop using haiku and switch to opus"),
+      "opus",
+    );
+    assert.equal(parseOverride("I don’t want to use haiku"), null); // U+2019
+    assert.equal(isContinuation("let’s do it"), true); // U+2019
+    assert.equal(parseOverride("Stop what you are doing and use opus"), "opus");
+    assert.equal(parseOverride("Never mind. Use opus."), "opus");
+    assert.equal(
+      parseOverride("don't forget to write tests. Also use opus."),
+      "opus",
+    );
+    assert.equal(
+      parseOverride("I can't believe it works. Switch to haiku."),
+      "haiku",
+    );
+    assert.equal(
+      parseOverride("You may not want this, but use opus"),
+      "opus",
+    );
+    assert.equal(parseOverride("use haiku. Never mind, use opus"), "opus");
+    assert.equal(
+      parseOverride("Stop what you're doing and use opus"),
+      "opus",
+    );
+    assert.equal(
+      parseOverride("please stop what you're doing and use opus"),
+      "opus",
+    );
+    assert.equal(parseOverride("don't — use opus"), "opus");
+    assert.equal(parseOverride("don't… use opus"), "opus");
+    assert.equal(parseOverride("avoid haiku — use opus"), "opus");
+    assert.equal(parseOverride("avoid haiku and use opus"), "opus");
+    assert.equal(parseOverride("Stop and use opus"), "opus");
+    assert.equal(parseOverride("why don't you use opus"), "opus");
+    assert.equal(parseOverride("can't you use opus?"), "opus");
+    assert.equal(parseOverride("won't you use opus"), "opus");
+    assert.equal(parseOverride("don't use haiku never use opus"), null);
+    assert.equal(parseOverride("don't use haiku. never use opus"), null);
+    assert.equal(
+      parseOverride("never use haiku, use opus, don't use sonnet"),
+      "opus",
+    );
   });
 
   test("a tier the environment excluded cannot be named back in", () => {

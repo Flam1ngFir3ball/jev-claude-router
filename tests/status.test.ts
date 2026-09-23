@@ -4,6 +4,7 @@ import { describe, test } from "node:test";
 import {
   announceReply,
   attemptOf,
+  heldMark,
   stickyCommand,
   liveLine,
   REPLY_SEPARATOR,
@@ -223,6 +224,55 @@ describe("attemptOf", () => {
       ),
       /named no tier we offered/,
     );
+  });
+
+  test("a forced Sonnet turn keeps Jev’s effort even when sticky would hold it", () => {
+    const attempt = attemptOf(
+      "use sonnet for this",
+      {
+        ok: true,
+        ms: 10,
+        answers: {
+          tier: { type: "choice", choice: "sonnet", confidence: 0.9 },
+          effort: { type: "score", score: 3, confidence: 0.2 },
+        },
+      },
+      offered,
+      {
+        sticky: 0.75,
+        running: {
+          tier: "sonnet",
+          model: "claude-sonnet-5",
+          effort: "low",
+          confidence: 0.9,
+          effortConfidence: 0.9,
+        },
+        forced: "sonnet",
+      },
+    );
+    assert.equal("decision" in attempt && attempt.decision.effort, "xhigh");
+    assert.equal("decision" in attempt && attempt.decision.forced, true);
+    assert.equal(
+      "decision" in attempt && attempt.decision.heldEffort,
+      undefined,
+    );
+  });
+
+  test("heldMark stacks every outcome that applied", () => {
+    const stacked = heldMark({
+      prompt: "x",
+      ms: 1,
+      decision: {
+        tier: "sonnet",
+        model: "claude-sonnet-5",
+        effort: "low",
+        confidence: 0.4,
+        held: "haiku",
+        heldEffort: "xhigh",
+        forced: true,
+      },
+    });
+    assert.equal(stacked, "held:haiku · held-effort:xhigh · forced");
   });
 });
 

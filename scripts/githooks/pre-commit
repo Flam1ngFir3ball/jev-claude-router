@@ -7,8 +7,8 @@
 [ -n "$SKIP_PLUGIN_VALIDATE" ] && exit 0
 cd "$(git rev-parse --show-toplevel)" || exit 1
 if ! command -v claude >/dev/null 2>&1; then
-  echo "pre-commit: claude CLI not found; skipping plugin validate" >&2
-  exit 0
+  echo "pre-commit: claude CLI not found; install it, or SKIP_PLUGIN_VALIDATE=1 to skip." >&2
+  exit 1
 fi
 claude plugin validate . >/dev/null 2>&1 || {
   echo "pre-commit: 'claude plugin validate .' failed; the hooks module would not load. Run it to see why." >&2

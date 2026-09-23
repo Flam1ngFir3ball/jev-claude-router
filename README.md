@@ -16,7 +16,7 @@ Context    you type a prompt
 turn.start    ask Jev  →  tier: fable   effort: 3
               ↓
 turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
-              first text chunk ← 'jev → fable·xhigh  0.97 · 641ms\n\n' + text
+              first text chunk ← '> ✳️ `fable` · xhigh · 97% · 641ms\n\n---\n\n' + text
               ↓
 /jev          the full history, with reasons for anything unrouted
 ```
@@ -27,7 +27,7 @@ turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
 | --- | --- | --- |
 | `haiku` | Trivial. A lookup, a rename, a yes or no. | `claude-haiku-4-5` |
 | `sonnet` | Straightforward and minor, no real decision to make. | `claude-sonnet-5` |
-| `opus` | Plain implementation carrying some complexity. | `claude-opus-5` |
+| `opus` | Plain implementation carrying some complexity. | `claude-opus-5-5` |
 | `fable` | Planning, brainstorming, architecture, systematic debugging. | `claude-fable-5-1` |
 
 The policy lives in `TIER_CRITERIA` in `hooks/policy.ts`. Those strings are
@@ -106,7 +106,7 @@ jev-router
    653ms  fable·xhigh 0.61  [notify] Agent "Review library-sync cluster" com…
           answered claude-fable-5-1 ✓  cache 98%  45k in  1k out
      0ms  unrouted — [agent:general-purpose] Review library-sync cluster
-          answered claude-opus-5  cache 82%  22k in  0k out
+          answered claude-opus-5-5  cache 82%  22k in  0k out
    641ms  fable·xhigh 0.97  help me plan the architecture
           answered claude-fable-5-1 ✓  cache 91%  130k in  2k out
    402ms  haiku·medium 0.75  rename the variable foo to bar
@@ -141,7 +141,7 @@ The `answered` line under each turn is the API's own report, taken from the
 `usage` on each step's `stop` chunk: which model actually answered, and what
 the turn's requests carried. The route line above it is what the mod asked
 for; this is what it got. `✓` means they agree (a dated id such as
-`claude-opus-5-20260901` still counts); `≠ claude-opus-5` means something else
+`claude-opus-5-5-20260901` still counts); `≠ claude-opus-5-5` means something else
 answered, which is the one case worth looking into. There is no need to proxy
 traffic or force a bogus model id to check the rewrite lands.
 
@@ -187,7 +187,7 @@ api  claude-fable-5-1 ✓ · cache 90% · 130k in · 1k out
 `api` is read off the `usage` on the step's stop chunk, so `✓` is the API's
 own confirmation that the model rewrite landed — no proxy, no bogus model id.
 A dated id such as `claude-fable-5-1-20260901` still counts as a match; a real
-mismatch reads `claude-opus-5 ≠ claude-fable-5-1`.
+mismatch reads `claude-opus-5-5 ≠ claude-fable-5-1`.
 
 `cache` is the share of the turn's input read from the prompt cache. The cache
 is per model, so the turn after a switch runs cold:
@@ -294,7 +294,12 @@ same bar; the footer says `held-effort:xhigh` for what Jev wanted.
 
 What the next turn holds to is the tier actually running, not the one Jev
 named. Three shaky haiku calls in a row will not creep the session onto haiku
-one turn at a time. An unrouted turn changes nothing, since nothing ran.
+one turn at a time. An unrouted turn leaves the sticky hold alone (nothing
+routed to hold to), but clears what a bare go-ahead would continue: that turn
+ran on the session model, so "yes" must not re-apply the older routed tier.
+A go-ahead with nothing to continue stays on the session model and does not
+ask Jev (which would clear sticky with a near-certain haiku pick). `/jev off`
+clears both the sticky hold and the continue target for the same reason.
 
 The bar starts at 0.75, which is a starting point rather than a measured
 optimum. Retune it in place with `/jev sticky 0.6` and watch the next few
@@ -317,11 +322,15 @@ and the like, trailing punctuation aside) runs on the previous turn's tier and
 effort without asking Jev, tagged `continue`. Anything longer is a prompt.
 
 **A tier you named.** "use opus for this" scores opus at 0.43, under the bar,
-so stickiness refused it. A tier named with a run-on verb (`use`, `using`,
-`switch to`, `route to`, `run this on`, `go with`, `with`) is taken as read,
+so stickiness refused it. A tier named with a run-on verb (`use`, `do it using`,
+`switch to`, `route to`, `run this on`, `go with`) is taken as read,
 needs no answer from Jev, and is tagged `forced`. Jev's effort still applies.
-Bare "on" and "for" are not verbs here: "search for opus docs" is a search.
-A tier the environment excluded cannot be named back in.
+Bare "on", "for", "with", and "using" are not verbs here: "search for opus
+docs" is a search, "happy with opus" and "I'm using opus for comparison" are
+not routes. Negations skip only the first run-on after them, so a later
+affirmative still wins ("don't use haiku use opus" → opus). "why not use
+opus" is an affirmative ask. A tier the environment excluded cannot be named
+back in.
 
 ## Subagents
 
@@ -383,18 +392,18 @@ as it would without the mod:
 The only cost of a failure is the latency spent waiting, capped at the timeout.
 
 Low confidence is not a failure. The pick is used and the line marks it, so
-`jev → opus·high?` means Jev was under 50% sure of the tier.
+`> ✳️ \`opus\` · high · 40%?` means Jev was under 50% sure of the tier.
 
 An unrouted turn announces itself too, with the reason:
 
 ```
-jev → unrouted (gateway said HTTP 403 (customer_verification_required))
+> ⚠️ `unrouted` · gateway said HTTP 403 (customer_verification_required)
 ```
 
 ## Layout
 
 ```
-hooks/register.ts   the five hooks, the per-turn cache, the turn history
+hooks/register.ts   the six hooks, the per-turn cache, the turn history
 hooks/jev.ts        the request shape, timeout, named failures
 hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
 hooks/policy.ts     the tiers, the criteria, answers → model and effort
