@@ -185,11 +185,14 @@ export function switchVerdict(
    * $0.20 of the opus tier's `claude-opus-5-5`.
    */
   fromPrice: Price = PRICE[from],
+  /** The running model's cache has expired: staying writes it too. */
+  fromCold = false,
 ): SwitchVerdict {
   const write = (p: Price) => (ttl === "1h" ? p.write1h : p.write5m);
   const ctx = contextTokens / 1e6;
   const out = outputTokens / 1e6;
-  const stay = ctx * fromPrice.read + out * fromPrice.output;
+  const stay =
+    ctx * (fromCold ? write(fromPrice) : fromPrice.read) + out * fromPrice.output;
   const go =
     ctx * write(PRICE[to]) + out * PRICE[to].output + ctx * write(fromPrice);
   return { stay, go, hold: go >= stay };
@@ -210,11 +213,14 @@ export function upgradeVerdict(
   limit: number,
   ttl: Ttl = "1h",
   fromPrice: Price = PRICE[from],
+  /** The running model's cache has expired: staying writes it too. */
+  fromCold = false,
 ): SwitchVerdict {
   const write = (p: Price) => (ttl === "1h" ? p.write1h : p.write5m);
   const ctx = contextTokens / 1e6;
   const out = outputTokens / 1e6;
-  const stay = ctx * fromPrice.read + out * fromPrice.output;
+  const stay =
+    ctx * (fromCold ? write(fromPrice) : fromPrice.read) + out * fromPrice.output;
   const go = ctx * write(PRICE[to]) + out * PRICE[to].output;
   return { stay, go, hold: go - stay > limit, limit };
 }

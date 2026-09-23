@@ -1038,3 +1038,20 @@ describe("ImitationFilter: the same result however the text is split", () => {
     assert.deepEqual(b.map((c) => [c.index, c.text]), [[0, "> "], [1, "next"]]);
   });
 });
+
+describe("ImitationFilter: every summary shape the plugin writes", () => {
+  test("a copied multi-turn or unrouted summary is dropped too", () => {
+    for (const head of [
+      "3 turns: fable, opus, fable (2 woken by tasks) · $28.10 · 7.4M in (99% cached) · 61k out",
+      "opus-5-5 · not routed: timed out after 1500ms · $3.84 · 5.3M in (94% cached) · 14k out",
+    ]) {
+      const text = `Done.\n\n\`\`\`\n${head}\n\`\`\``;
+      assert.equal(withoutImitations(text), "Done.");
+      const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+      let out = "";
+      for (let i = 0; i < text.length; i += 4) for (const c of f.push({ kind: "text", index: 0, text: text.slice(i, i + 4) })) out += c.text;
+      for (const c of f.end()) out += c.text;
+      assert.equal(out, "Done.");
+    }
+  });
+});

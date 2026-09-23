@@ -230,9 +230,13 @@ compaction or `/clear` empties the cache, so the next turn starts fresh.
 
 On `claude --resume`, after `/model`, or when routing is switched on
 mid-session, the first routed turn is priced against the model that is
-actually warm. A session on a model outside the ladder (for example
-`claude-opus-5`) is treated the same way: moving it to `claude-opus-5-5`
-means a cold cache, so the move is priced like a downgrade.
+actually warm. When the engine reports that a resumed session's cache has
+expired, staying is priced as a rewrite too, until the first response
+writes it again. A turn that runs unrouted (Jev timed out) runs on the
+session model, and that model is then what is warm. A session on a model
+outside the ladder (for example `claude-opus-5`) is treated the same way:
+moving it to `claude-opus-5-5` means a cold cache, so the move is priced
+like a downgrade.
 
 `npm run measure-switch-cost` prints what a switch costs at each context
 size.
@@ -336,13 +340,14 @@ Only one copy acts on each turn:
 - Across processes, the newest copy records itself as the session's owner in
   the store.
 - Each turn is claimed in the store by the newest copy for 60 seconds, keyed
-  by the prompt text. A copy that does not hold the claim passes the turn
-  through untouched: no Jev call, no model change, no line, no summary.
+  by the prompt text and the context size. A copy that does not hold the
+  claim passes the turn through untouched: no Jev call, no model change, no
+  line, no summary.
 - A copy never adds a line or summary that is already in the stream.
 
-Because the claim is keyed by the prompt text, two separate sessions that
-receive the identical prompt within the same minute will route only one of
-them. If the store cannot be read, every copy proceeds as usual.
+Two separate sessions that receive the identical prompt within the same
+minute while carrying exactly the same context size would route only one
+of them. If the store cannot be read, every copy proceeds as usual.
 
 ## When it does nothing
 

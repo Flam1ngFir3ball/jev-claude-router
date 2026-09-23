@@ -222,6 +222,36 @@ export function carriedOf(usage: Usage): number {
   );
 }
 
+/**
+ * A usage record with every count a number. The API omits the cache fields
+ * on some paths; summed unchecked they made NaN of the turn's cost, the
+ * session's `spent` and the context every price hold reads.
+ */
+export function normalUsage(usage: {
+  model?: unknown;
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
+  cache_creation_input_tokens?: unknown;
+}): Usage {
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    model: typeof usage.model === "string" ? usage.model : "",
+    input_tokens: n(usage.input_tokens),
+    output_tokens: n(usage.output_tokens),
+    cache_read_input_tokens: n(usage.cache_read_input_tokens),
+    cache_creation_input_tokens: n(usage.cache_creation_input_tokens),
+  };
+}
+
+/**
+ * How much of a prompt is kept in the history. Only its opening is shown,
+ * and a session of long pastes kept whole outran the store's size cap, so
+ * nothing saved.
+ */
+export const PROMPT_KEPT = 400;
+const kept = (text: string) => (text.length > PROMPT_KEPT ? text.slice(0, PROMPT_KEPT) : text);
+
 export type Status = {
   enabled: boolean;
   surface: string | null;
@@ -258,6 +288,8 @@ type Economics = {
   contextTokens: number;
   outputTokens: number;
   ttl: Ttl;
+  /** The running model's cache has expired (a resume after the TTL): staying is a write too. */
+  cold?: boolean;
 };
 
 /**
@@ -301,8 +333,8 @@ export function attemptOf(
   const summary = notificationOf(text);
   const head =
     summary === null
-      ? { prompt: text }
-      : { prompt: summary, kind: "notify" as const };
+      ? { prompt: kept(text) }
+      : { prompt: kept(summary), kind: "notify" as const };
   const forced = hold.forced ?? null;
 
   if (!result.ok && forced === null)
@@ -370,6 +402,7 @@ export function attemptOf(
               hold.economics.outputTokens,
               hold.economics.ttl,
               fromPrice,
+              hold.economics.cold === true,
             )
           : upgrade && hold.upgradeMax != null
             ? upgradeVerdict(
@@ -380,6 +413,7 @@ export function attemptOf(
                 hold.upgradeMax,
                 hold.economics.ttl,
                 fromPrice,
+                hold.economics.cold === true,
               )
             : null;
     // An upgrade writes the whole context to the dearer tier; past 100k it
@@ -397,6 +431,9 @@ export function attemptOf(
     !decision.forced &&
     hold.sticky !== null &&
     hold.running !== null &&
+    // A placeholder for what a session runs on carries no effort Jev
+    // chose; there is nothing to hold to.
+    hold.running.effortConfidence !== undefined &&
     holdsSonnetEffort(decision, hold.running, hold.sticky)
   ) {
     decision = {
@@ -435,7 +472,7 @@ export function continuationOf(
   const { tier, model, effort, confidence, effortConfidence } = running;
   if (contextTokens !== null && !fitsWindow(tier, contextTokens)) {
     return {
-      prompt: text,
+      prompt: kept(text),
       ms: 0,
       kind: "continue",
       skipped:
@@ -443,7 +480,7 @@ export function continuationOf(
     };
   }
   return {
-    prompt: text,
+    prompt: kept(text),
     ms: 0,
     kind: "continue",
     decision: capTo(
@@ -461,7 +498,7 @@ export function continuationOf(
  */
 export function continuationSkipped(text: string): Attempt {
   return {
-    prompt: text,
+    prompt: kept(text),
     ms: 0,
     kind: "continue",
     skipped: "nothing to continue",
@@ -482,7 +519,7 @@ export function spawnAttemptOf(
   agent: AgentTag,
   ceiling: Ceiling = ceilingAt("max"),
 ): Attempt {
-  const head = { prompt: description, kind: "agent" as const, agent };
+  const head = { prompt: kept(description), kind: "agent" as const, agent };
   if (!result.ok) return { ...head, ms: result.ms, skipped: result.reason };
   const fresh = decisionOf(result.answers, offered);
   if (!fresh) {
@@ -899,7 +936,7 @@ const IMITATED_LINE = /^> (?:✳️|⚠️) [^\n]*(?:\n+---(?:\n+|$)|\n+|$)/;
  * A summary the model wrote itself at the end of its text: a fence whose
  * first line has the summary's shape, and nothing after the fence.
  */
-const IMITATED_SUMMARY = /\n*```\n[^\n`]* ✓ [^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\s*$/;
+const IMITATED_SUMMARY = /\n*```\n[^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\s*$/;
 
 /**
  * The model's text without a route line or summary it wrote itself. Both
@@ -919,7 +956,7 @@ const LINE_OPENERS = ["> ✳️ ", "> ⚠️ "];
 const LINE_RULE = "\n---\n\n";
 
 /** A summary's first line, once the fence has opened. */
-const SUMMARY_HEAD = /^[^\n`]* ✓ [^\n`]*\(\d+% cached\)/;
+const SUMMARY_HEAD = /^[^\n`]*\(\d+% cached\)/;
 
 /**
  * `withoutImitations` for text that streams in pieces. The engine hands a

@@ -1945,11 +1945,12 @@ describe("register: a session that was already running", () => {
       async (e: unknown) => e,
     );
     setTier("haiku", 0.99, 0);
-    // Nothing seeded by the event; the turn itself seeds from the session
-    // model since the engine reports context, and that model's cache is
-    // assumed warm — the conservative side (a hold costs cents, a detour dollars).
+    // The session is still running on what the event names, with its cache
+    // cold: staying is priced as a write too. At 200k haiku does not fit
+    // anyway, so the turn stays on what is running.
     const t = await turn(hooks, $, "s3", "what is 2+2");
-    assert.equal(t.sent.model, "claude-opus-5-5");
+    assert.equal(t.sent.model, "claude-opus-5");
+    assert.match(t.text, /kept opus: too long for haiku \(200k\)/);
   });
 
   test("/jev on after a stretch off prices the first routed turn against the session model", async () => {
@@ -2543,6 +2544,102 @@ describe("register: audit regressions (2026-09-23)", () => {
     const t = await turn(hooks, $, "w3", "do one more audit");
     assert.equal(t.sent.model, "claude-opus-5-5", "opus is what is warm now");
     assert.match(t.text, /kept opus: fable costs \$\d+\.\d+ vs \$0\.\d+, over the \$1\.00 limit/);
+  });
+
+  test("two sessions typing the same short prompt in the same minute are both routed", async () => {
+    // The turn claim is keyed by text and context, so "yes" in one session
+    // does not take the other's "yes".
+    const store = new Map<string, unknown>();
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const a = load(env, { store, id: "sess-A" });
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 3));
+    const b = load(env, { store, id: "sess-B" });
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    a.setContext(40_000);
+    b.setContext(90_000);
+    a.setTier("opus", 0.95, 1);
+    b.setTier("opus", 0.95, 1);
+    const tb = await turn(b.hooks, b.$, "y1", "implement the parser");
+    const ta = await turn(a.hooks, a.$, "y2", "implement the parser");
+    assert.equal(tb.sent.model, "claude-opus-5-5");
+    assert.equal(ta.sent.model, "claude-opus-5-5", "the older session is not ceded");
+    assert.match(ta.text, /✳️/);
+  });
+
+  test("a Sonnet effort hold does not bind to a placeholder effort", async () => {
+    const { hooks, $, setTier, setContext, fail } = await boot({ JEV_ROUTER_CEILING: "xhigh" });
+    setContext(20_000);
+    setTier("sonnet", 0.95, 1, 0.9);
+    await turn(hooks, $, "se1", "add a flag");
+    fail();
+    await hooks.get("turn.start")!($, { text: "and another", turnId: "se2" }, async (e: unknown) => e);
+    await collect(
+      hooks.get("turn.step")!($, { turnId: "se2", index: 0, effort: "xhigh" }, (e: { model?: string }) =>
+        answeredBy(e.model ?? "claude-sonnet-5"),
+      ),
+    );
+    setTier("sonnet", 0.95, 2, 0.4);
+    const t = await turn(hooks, $, "se3", "and the tests");
+    assert.equal(t.sent.effort, "high", "Jev's effort, not a hold to a placeholder");
+    assert.doesNotMatch(t.text, /kept medium/);
+  });
+
+  test("a resume whose cache has expired prices nothing as warm, snapshot or not", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-EXP" };
+    const first = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await first.hooks.get("session.start")!(first.$, {}, async (e: unknown) => e);
+    first.setContext(20_000);
+    first.setTier("fable", 0.95, 3);
+    await turn(first.hooks, first.$, "x1", "plan it");
+    await first.hooks.get("session.end")!(first.$, {}, async (e: unknown) => e);
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    const again = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await again.hooks.get("session.start")!(again.$, {}, async (e: unknown) => e);
+    await again.hooks.get("classic.SessionStart")!(
+      again.$,
+      { source: "resume", model: "claude-fable-5-1", context_tokens: 20_000, prompt_cache_likely_expired: true },
+      async (e: unknown) => e,
+    );
+    again.setContext(20_000);
+    again.setTier("haiku", 0.99, 0);
+    const t = await turn(again.hooks, again.$, "x2", "2+2");
+    assert.equal(t.sent.model, "claude-haiku-4-5", "no warm cache to protect");
+    assert.doesNotMatch(t.text, /kept fable/);
+  });
+
+  test("a usage record missing its cache fields does not poison the numbers", async () => {
+    const { hooks, $, setTier } = await boot();
+    setTier("opus", 0.95, 1);
+    await hooks.get("turn.start")!($, { text: "implement it", turnId: "nan1" }, async (e: unknown) => e);
+    async function* thin(model: string) {
+      yield { kind: "text", index: 0, text: "reply", ref: 1 };
+      yield { kind: "stop", stopReason: "end_turn", usage: { model, input_tokens: 1000, output_tokens: 300 }, ref: 2 };
+      return { stopReason: "end_turn" };
+    }
+    const out = (await collect(hooks.get("turn.step")!($, { turnId: "nan1", index: 0 }, (e: { model: string }) => thin(e.model))))
+      .filter((c) => c.kind === "text")
+      .map((c) => c.text)
+      .join("");
+    assert.doesNotMatch(out, /NaN/);
+    assert.match(out, /\$0\.0\d+ · 1k in \(0% cached\)/);
+    assert.doesNotMatch((await run(hooks, $, "")).text, /NaN/);
+  });
+
+  test("a step whose turn.start this copy never saw still counts what it cost", async () => {
+    const { hooks, $ } = await boot();
+    await collect(hooks.get("turn.step")!($, { turnId: "orphan", index: 0 }, () => answeredBy("claude-opus-5-5")));
+    assert.match((await run(hooks, $, "")).text, /spent\s+\$0\.0\d+ this session/);
+  });
+
+  test("only the opening of a long prompt is kept, so a session of pastes still saves", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-LONG" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.95, 1);
+    await turn(kit.hooks, kit.$, "long1", "x".repeat(200_000));
+    assert.ok(JSON.stringify(shared.store.get("session:sess-LONG")).length < 20_000);
   });
 
   test("a prompt repeated by the same copy is routed each time", async () => {

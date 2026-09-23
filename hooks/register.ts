@@ -24,8 +24,10 @@ import {
   sessionDecision,
   stickyOf,
   thresholdOf,
+  EFFORTS,
   type Ceiling,
   type Decision,
+  type Effort,
   type Tier,
 } from "./policy.ts";
 import { baseModel, ttlOf, usageCost, type Ttl } from "./pricing.ts";
@@ -43,6 +45,7 @@ import {
   attemptOf,
   carriedOf,
   ceilingCommand,
+  normalUsage,
   continuationOf,
   continuationSkipped,
   HISTORY_LIMIT,
@@ -100,6 +103,17 @@ function textHash(text: string): string {
   return (h >>> 0).toString(36);
 }
 
+/**
+ * The claim key for a turn: its text and the context it carries. Copies of
+ * one conversation read the same engine, so they agree on both; two
+ * conversations that get the same short prompt ("yes", the engine's nudge)
+ * within a minute almost never carry the same context, so neither cedes
+ * to the other.
+ */
+function turnKey(text: string, contextTokens: number | null): string {
+  return `${textHash(text)}-${contextTokens ?? 0}`;
+}
+
 /** Store key prefix for which copy of the module owns a session. */
 const OWNER_PREFIX = "owner:";
 
@@ -111,9 +125,15 @@ const MID_TURN_SAVE_MS = 5_000;
  * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
  * Null for an id off the ladder or not a string.
  */
-function warmDecision(model: unknown): Decision | null {
+function warmDecision(model: unknown, effort: unknown): Decision | null {
   if (typeof model !== "string" || model === "") return null;
-  return sessionDecision(model.replace(/-\d{8}$/, ""));
+  const warm = sessionDecision(model.replace(/-\d{8}$/, ""));
+  if (warm === null) return null;
+  // The effort the step actually ran at, so a Sonnet effort hold does not
+  // bind to a placeholder; a numeric or absent effort leaves the default.
+  const name = typeof effort === "string" ? effort.trim().toLowerCase() : "";
+  const ran = (EFFORTS as readonly string[]).includes(name) ? (name as Effort) : null;
+  return ran === null ? warm : { ...warm, effort: ran };
 }
 
 /**
@@ -334,10 +354,11 @@ async function claimTurn(
     };
   },
   text: string,
+  contextTokens: number | null,
   birth: number,
 ): Promise<boolean> {
   try {
-    const at = `${TURN_PREFIX}${textHash(text)}`;
+    const at = `${TURN_PREFIX}${turnKey(text, contextTokens)}`;
     const now = Date.now();
     const held = (await $.store.get(at)) as { birth?: unknown; at?: unknown } | undefined;
     if (
@@ -362,11 +383,11 @@ async function claimTurn(
 /** Whether this copy still holds a turn it claimed. Never throws; true when unreadable. */
 async function holdsTurn(
   $: { store: { get: (key: string) => Promise<unknown> } },
-  text: string,
+  key: string,
   birth: number,
 ): Promise<boolean> {
   try {
-    const held = (await $.store.get(`${TURN_PREFIX}${textHash(text)}`)) as
+    const held = (await $.store.get(`${TURN_PREFIX}${key}`)) as
       | { birth?: unknown }
       | undefined;
     return typeof held?.birth !== "number" || held.birth === birth;
@@ -482,6 +503,8 @@ export function register(on: On) {
   const superseded = () => birth < (runtime.__jevRouterNewest ?? 0);
   /** True once a newer copy has claimed the session: this one stands aside. */
   let inert = false;
+  /** The engine said the resumed session's cache has expired, and no response has written it since. */
+  let cacheExpired = false;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
   /** Each claimed turn's text, to check the claim again before writing. */
@@ -722,10 +745,16 @@ export function register(on: On) {
       spent = 0;
       savedOnce = false;
     }
+    // The cache has expired: what is running is still known, and the next
+    // switch is priced with staying as a write too, snapshot or not.
+    if (
+      (e.source === "resume" || e.source === "fork") &&
+      e.prompt_cache_likely_expired === true
+    )
+      cacheExpired = true;
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&
-      !e.prompt_cache_likely_expired &&
       typeof e.context_tokens === "number" &&
       e.context_tokens > 0 &&
       typeof e.model === "string"
@@ -883,12 +912,13 @@ export function register(on: On) {
     if (superseded()) inert = true;
     else if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
     if (inert) return next(e);
-    if (!(await claimTurn($, e.text, birth))) {
+    const reported = await contextTokensOf($);
+    if (!(await claimTurn($, e.text, reported, birth))) {
       ceded.add(e.turnId);
       trimSet(ceded);
       return next(e);
     }
-    claimed.set(e.turnId, e.text);
+    claimed.set(e.turnId, turnKey(e.text, reported));
     if (claimed.size > 200) claimed.delete(claimed.keys().next().value as string);
     const { offered, ceiling } = settings;
 
@@ -899,6 +929,10 @@ export function register(on: On) {
     // An engine-started continuation carries no text at all (the d.ts says
     // so); it is the nudge's kind of turn, not a prompt to grade.
     const nudge = isEngineNudge(e.text) || e.text.trim() === "";
+    // A prompt typed while the last reply's agents still run starts a new
+    // reply anyway: the old one's summary is given up (its turns stay in
+    // /jev), rather than an agent that never finishes holding every later
+    // summary.
     if (!notification && !nudge) {
       reply = [];
       replyAgents = new Set();
@@ -924,7 +958,6 @@ export function register(on: On) {
       isContinuation(e.text) || nudge || softNotify || forced !== null
         ? null
         : classify($, e.text, offered, settings);
-    const reported = await contextTokensOf($);
     if (surface === null) surface = await surfaceOf($);
     let attempt: Attempt;
     if (isContinuation(e.text) || nudge || softNotify) {
@@ -971,6 +1004,7 @@ export function register(on: On) {
                 TYPICAL_OUTPUT_TOKENS,
               ),
               ttl: settings.ttl,
+              ...(cacheExpired ? { cold: true } : {}),
             }
           : undefined;
       attempt = attemptOf(
@@ -1054,9 +1088,9 @@ export function register(on: On) {
 
     // A turn a newer copy claimed is that copy's to route and announce.
     const holdsTurnOf = async (turnId: string) => {
-      const text = claimed.get(turnId);
-      if (text === undefined) return true;
-      if (await holdsTurn($, text, birth)) return true;
+      const key = claimed.get(turnId);
+      if (key === undefined) return true;
+      if (await holdsTurn($, key, birth)) return true;
       ceded.add(turnId);
       return false;
     };
@@ -1086,7 +1120,8 @@ export function register(on: On) {
     if (!enabled) {
       for await (const chunk of next(e)) {
         if (chunk.kind === "stop" && chunk.usage) {
-          spent += usageCost(chunk.usage.model, chunk.usage, settings.ttl) ?? 0;
+          const u = normalUsage(chunk.usage);
+          spent += usageCost(u.model, u, settings.ttl) ?? 0;
         }
         yield chunk;
       }
@@ -1215,22 +1250,30 @@ export function register(on: On) {
       }
 
       if (chunk.kind === "stop") {
-        if (attempt && chunk.usage) {
-          const before = attempt.cost ?? 0;
-          addUsage(attempt, chunk.usage, settings.ttl);
-          spent += (attempt.cost ?? 0) - before;
+        if (chunk.usage) {
+          const usage = normalUsage(chunk.usage);
+          if (attempt) {
+            const before = attempt.cost ?? 0;
+            addUsage(attempt, usage, settings.ttl);
+            spent += (attempt.cost ?? 0) - before;
+          } else {
+            // A step whose turn.start this copy never saw still cost money.
+            spent += usageCost(usage.model, usage, settings.ttl) ?? 0;
+          }
           // The main loop's last carried size and output price its next
           // switch; a subagent's are its own conversation.
           if (e.agentId === undefined) {
             lastUsage = {
-              context: carriedOf(chunk.usage),
-              output: chunk.usage.output_tokens,
+              context: carriedOf(usage),
+              output: usage.output_tokens,
             };
             // What answered is what is warm now. An unrouted turn (Jev
             // timed out) runs on the session model and rewrites the cache
             // there; holding to the tier routed before it would send the
             // next turn to a cold cache while calling it a stay.
-            const answered = warmDecision(chunk.usage.model);
+            // Whatever the resume said had expired, this response wrote.
+            cacheExpired = false;
+            const answered = warmDecision(usage.model, e.effort);
             if (
               answered !== null &&
               (running === null ||
