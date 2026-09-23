@@ -1,48 +1,45 @@
 # jev-router
 
-Picks the model for each turn with [Jev](https://docs.typesafe.ai), TypeSafe's
-decision model. Supports both TypeSafe's direct API and the Vercel AI Gateway.
+A Claude Code plugin that picks the model and effort for each turn with
+[Jev](https://docs.typesafe.ai), TypeSafe's decision model. It works with
+TypeSafe's direct API or the Vercel AI Gateway.
 
 [MIT licensed](LICENSE).
 
-You type a prompt. Before the turn runs, Jev is asked two questions at once:
-which tier should answer this, and how hard should it think. Every model
-request in that turn then goes to the model Jev named, and a line above the
-reply says which one.
+When you send a prompt, Jev is asked two questions at once: which tier should
+answer it, and how hard that model should think. Every model request in the
+turn then goes to that model at that effort, unless switching would cost more
+than it saves. A line at the top of the reply says what ran, and a summary
+underneath says what it cost.
 
 ```
-Context    you type a prompt
-              ↓
-turn.start    ask Jev  →  tier: fable   effort: 3
-              ↓
-turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
-              first text chunk ← '> ✳️ fable · xhigh · Jev 97% · 641ms\n\n---\n\n' + text
-              ↓
-/jev          the last five turns, with reasons for anything unrouted
+you type a prompt
+      ↓
+turn.start   ask Jev  →  tier: fable   effort: xhigh
+      ↓      apply the bar, the price check, the window guard, the ceiling
+turn.step    each request → model: claude-fable-5-1, effort: medium
+      ↓
+reply        > ✳️ fable · medium · Jev 97% · capped from xhigh · 641ms
+             …
+             fable-5-1 ✓ medium · Jev 97% · $0.14 · 130k in (91% cached) · 2k out
 ```
 
-## What it does
+## Features
 
-Each feature in one line, with the section that explains how it works.
-
-| Feature | What it does | Details |
-| --- | --- | --- |
-| Per-turn routing | Jev picks a tier and an effort for every prompt; each model request in that turn is rewritten to match. | *The ladder* |
-| The route line | Each reply opens with one line saying what ran and why: `> ✳️ opus · medium · Jev 94% · 353ms`. | *Knowing whether it is working* |
-| One summary per reply | Under each finished reply, one fenced block: the model that actually answered, its cost at list price, tokens in (and how much came from the cache), tokens out, and anything that did not run as Jev asked. A reply that woke up for background tasks gets one block for all of its turns, not one per turn. | *Knowing whether it is working* |
-| `/jev` status | Routing state, provider, bars, ceiling, the session's model and cache, what the session has spent, and the last five turns with reasons. | *Knowing whether it is working* |
-| Confidence bar | A tier switch needs 75% from Jev. An upgrade past 100k context needs 90%, because it rewrites the whole context to a pricier cache. | *Holding a shaky switch* |
-| Cost check on downgrades | A move to a cheaper tier is priced twice: staying warm, and going cold plus the write to come back. It only moves if going is cheaper. | *Holding a shaky switch* |
-| Context-window guard | A turn is never sent to a tier whose window it does not fit (haiku: 200k, less 16k headroom), even if you named that tier. | *Holding a shaky switch* |
-| Effort ceiling | The most effort each tier may be asked for. The default is `medium` everywhere; `/jev ceiling xhigh fable` raises one tier. A capped turn says `capped from xhigh`. | *Commands and switches* |
-| First-request effort | Fable 5.1 runs `medium` as `high` on a conversation's first request. The router sends `high` there and says so, rather than reporting an effort that did not run. | *Commands and switches* |
-| Go-aheads and named tiers | "yes" or "go ahead" carries on the last turn's tier without asking Jev. "use opus" skips Jev and uses opus. | *Two things stickiness cannot catch* |
-| Subagents | Each spawned agent is routed on its own task, with a 50% confidence floor, and appears in `/jev` and the summary. | *Subagents* |
-| Resume and model switches | On resume or `/model`, the next switch is priced against the model that is actually warm. After a compaction or `/clear`, the next turn starts fresh. | *Holding a shaky switch* |
-| Survives reloads | History, spend, the tier being held, the open reply and `/jev` settings are saved in the plugin store and restored after an update or reload. | *State, copies and what the model copies* |
-| One copy acts | However many copies of the module are loaded, only the newest routes a turn and writes its line and summary. | *State, copies and what the model copies* |
-| Copied markers removed | The model sees past lines and summaries in its own replies and sometimes writes its own, with made-up figures. Those are removed before the real ones go in. | *State, copies and what the model copies* |
-| Fails open | No key, a timeout, an error or an odd answer leaves the turn exactly as it would run without the plugin, and the line says why. | *When it does nothing* |
+| Feature | What it does |
+| --- | --- |
+| Per-turn routing | Jev picks a tier and an effort for every prompt, and each model request in that turn is rewritten to match. |
+| Confidence bar | A switch to a different tier needs 75% confidence from Jev. An upgrade once the context is past 100k needs 90%. |
+| Price check on downgrades | A move to a cheaper tier is priced against staying put, cache included. It only happens if it saves money. |
+| Context-window guard | A turn never goes to a tier whose window it does not fit. |
+| Effort ceiling | Caps the effort each tier may be asked for. The default is `medium` on every tier. |
+| Go-aheads and named tiers | "yes" continues on the last turn's tier without asking Jev; "use opus" routes straight to opus. |
+| Subagents | Each spawned agent is routed on its own task. |
+| Route line and summary | One line at the top of each reply, one cost summary under it. |
+| `/jev` | Status, settings and the recent turns, each with the reason for its route. |
+| Session state | Routing history, spend and settings survive a plugin reload. |
+| One copy acts | However many copies of the plugin are loaded, only one routes a turn and writes its line and summary. |
+| Fails open | Any failure leaves the turn exactly as it would run without the plugin, and the line says why. |
 
 ## The ladder
 
@@ -54,67 +51,102 @@ Each feature in one line, with the section that explains how it works.
 | `fable` | Planning, brainstorming, architecture, systematic debugging. | `claude-fable-5-1` |
 
 The policy lives in `TIER_CRITERIA` in `hooks/policy.ts`. Those strings are
-what Jev is told each tier is for, so editing them is how you change the
-router's behaviour. Nothing else needs to change.
+what Jev is told each tier is for. To change the router's behaviour, edit
+them; nothing else needs to change.
 
 ## Setup
 
-### Provider: TypeSafe direct or Vercel AI Gateway
+1. Get a key: a [TypeSafe API key](https://console.typesafe.ai/keys), or a
+   [Vercel AI Gateway](https://vercel.com/dashboard) key. A gateway key only
+   works on an account with a payment card on file; without one, every request
+   fails with `HTTP 403 customer_verification_required`.
+2. Add it to the `env` block of `~/.claude/settings.json`, and enable
+   function hooks:
 
-Get either a TypeSafe API key or an AI Gateway key and put it in the `env` block
-of `~/.claude/settings.json`. The router prefers TypeSafe direct when both keys
-are set:
+   ```json
+   {
+     "env": {
+       "TYPESAFE_API_KEY": "...",
+       "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
+     }
+   }
+   ```
 
-```json
-{
-  "env": {
-    "TYPESAFE_API_KEY": "...",
-    "AI_GATEWAY_API_KEY": "...",
-    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
-  }
-}
+   `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is required. Without it the plugin
+   loads and silently does nothing. If both keys are set, TypeSafe direct is
+   used; `JEV_ROUTER_PROVIDER=gateway` forces the gateway.
+3. Install the plugin. For one session, run
+   `claude --plugin-dir /path/to/jev-router`. To load it in every session,
+   place the folder at `~/.claude/skills/jev-router/`.
+4. Check it: `npm run check-jev` reports which provider is configured and
+   whether it is serving. Then run `/jev` in a session.
+
+## What you see
+
+### The route line
+
+The first line of each reply says what the turn ran on and why:
+
+```markdown
+> ✳️ opus · high · Jev 98% · 555ms
 ```
 
-**For TypeSafe direct:** Get a key from your [TypeSafe account](https://console.typesafe.ai/keys).
+The tier, the effort, Jev's confidence in the tier, and how long Jev took.
+Anything that changed Jev's pick is written in plain words:
 
-**For the Vercel AI Gateway:** Get a key from your [Vercel dashboard](https://vercel.com/dashboard) and note
-that the gateway **needs a card on the account**, not just a key. A valid key
-on an account with no payment method gets:
+| Line says | Meaning |
+| --- | --- |
+| `kept fable: Jev 61% on haiku, needs 75%` | Jev wanted haiku but was not sure enough to switch. |
+| `kept fable: haiku costs $4.41 vs $0.13` | The downgrade would have cost more than staying, cache included. |
+| `kept fable: too long for haiku (310k)` | The context does not fit haiku's window. |
+| `capped from xhigh` | Jev asked for more effort than the ceiling allows. |
+| `your pick` | The prompt named the tier. |
+| `1st request runs medium as high` | Fable runs `medium` as `high` on a conversation's first request, so the router sends `high` and says so. |
+| `> ⚠️ not routed: <reason>` | Routing failed; the turn ran on the session model. |
 
-```
-HTTP 403  customer_verification_required
-"AI Gateway requires a valid credit card on file to service requests."
-```
+The line is written into the reply's own text, as markdown, because that is
+the one channel every Claude Code surface draws (terminal, desktop, IDE).
 
-A personal-scope gateway key needs a card before it serves anything, even on free
-credits. A team-scope key reportedly does not.
+### The summary
 
-**Forcing a provider:** If both keys are set and you want to use the gateway,
-set `JEV_ROUTER_PROVIDER=gateway`. Similarly, `JEV_ROUTER_PROVIDER=typesafe`
-forces TypeSafe direct.
-
-`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is not optional. Without it the mod loads
-and silently does nothing, with no warning.
-
-Because the router fails open, setup issues show up as the mod doing nothing
-at all rather than as an error. Run `npm run check-jev` when nothing seems to
-route to see which provider is configured and whether it's serving.
-
-Then run Claude Code with the mod:
+Under each finished reply, one fenced block reports what the API says
+actually answered and what it cost:
 
 ```
-claude --plugin-dir /path/to/jev-router
+fable-5-1 ✓ xhigh · Jev 97% · $0.14 · 130k in (91% cached) · 2k out
 ```
 
-To keep it on permanently, move the folder to `~/.claude/skills/jev-router/`,
-where it loads on its own next session.
+- `✓` means the model that answered is the one the router asked for. A
+  mismatch shows `opus-5 ⚠ asked fable-5-1`.
+- Dollars are Anthropic's list price (`hooks/pricing.ts`), with cache writes
+  at the one-hour rate Claude Code uses.
+- `91% cached` is the share of input read from the prompt cache.
 
-## Knowing whether it is working
+A reply that launched background agents spans several turns. It gets one
+summary once every agent has finished, covering all of them:
 
-Four signals, in order of how much you can trust them.
+```
+3 turns: fable, opus, fable (2 woken by tasks) · $28.10 · 7.4M in (99% cached) · 61k out
+agents: Explore haiku $0.020, general-purpose opus $0.31
+turn 2: kept fable: haiku costs $4.41 vs $0.13
+```
 
-**`/jev`** prints the state and the last five turns. A command's output row draws on every
-surface, so this always works:
+Lines after the first appear only when something did not run as Jev asked.
+
+The model sees past lines and summaries in its own replies and can write
+look-alikes with invented figures. The plugin removes a route line at the
+start of the model's text and a summary at its end before writing the real
+ones. One quoted mid-reply is left alone.
+
+`/jev quiet` turns off the line and the summary without stopping routing;
+`/jev loud` turns them back on.
+
+In the terminal, the session-mode footer also shows the current route
+(`jev: opus, medium effort`). The app's own model picker does not change: it
+shows the session model, and the router rewrites individual requests, not
+the session.
+
+### `/jev`
 
 ```
 jev-router:
@@ -142,499 +174,252 @@ jev-router:
     12ms  not routed — gateway said HTTP 403 (customer_verification_required)
 ```
 
-Everything here is in words. `Jev 61%` is Jev's confidence in the tier;
-what follows it is why the turn did not
-run exactly as Jev asked: `kept fable: haiku costs $1.02 vs $0.020`
-is a downgrade the price held (see below), `kept fable: Jev 61% on haiku, needs 75%` one the bar held (it names the bar: 90% for
-a move up past 100k), `capped from xhigh` the ceiling,
-`your pick` a tier the prompt named, `1st request runs
-medium as high` an engine quirk (see *Commands and switches*).
+- `session` is the model the session runs on, and the tier that is currently
+  warm.
+- `cache` is the context being priced and the size below which the cheapest
+  downgrade still pays.
+- `spent` is the session's total at list price, routed turns or not.
+- Each turn shows the decision and its reason, then (`→`) what the API
+  reports actually answered.
+- Rows for turns you did not type are labelled: `[task finished]` for a
+  background agent waking the loop, `[continuing]` for the engine's own nudge
+  (no Jev call, nothing written in the reply), and `[type agent]` for a
+  subagent.
 
-Not every turn is you typing, and the history says which are not. A prompt
-that spawns background agents produces more turns than replies: each agent
-that finishes wakes the main loop with a `<task-notification>`, and the engine
-starts a fresh turn with that XML as its text. Those rows say `[task finished]`, with the notification's summary in place of the envelope.
-The engine's own nudge ("The user hasn't heard from you in a while") is a
-turn too; it continues the last decision without asking Jev, is listed as
-`[continuing]`, and writes nothing into the reply.
+## How a turn is routed
 
-The agents themselves are the `[type agent]` rows. A subagent's loop gets no
-`turn.start`; it is routed at `agent.spawn` instead, where its task is in
-hand as text (see *Subagents* below). The row shows the tier Jev picked, or
-why it was left alone (`Jev 22% on sonnet, needs 50%`,
-a timeout), with the model that answered it, so the requests one prompt
-really caused are all on the screen. Nothing is written into a subagent's
-reply: that text is a tool result its parent reads.
+### The window guard
 
-The `→` line is the API's own report, taken from the `usage` on each step's
-`stop` chunk: which model actually answered, and what the turn's requests
-carried. The route line is what the mod asked for; this is what it got. `✓`
-means they agree (a dated id such as `claude-opus-5-5-20260901` still
-counts); `opus-5 ⚠ asked fable-5-1` means
-something else answered, which is the one case worth looking into. There is
-no need to proxy traffic or force a bogus model id to check the rewrite
-lands.
+A turn is never sent to a tier whose context window it does not fit. Haiku
+4.5 takes 200k tokens and the other tiers take a million, less 16k headroom
+for the prompt and reply. This applies whatever Jev said and even when the
+prompt named the tier. The turn stays on the tier already running, or on the
+session model if nothing is running yet.
 
-The dollars are the turn at Anthropic's list price (`hooks/pricing.ts`,
-checked 2026-09-23, and checked live against the engine's own
-`total_cost_usd`: $0.497 against $0.4967), with cache writes billed at the
-one-hour rate Claude Code uses; `spent` in the header is the session's
-total, routed turns and not. `98% cached` is the share of the turn's input
-read from the prompt cache; the cache is per model, so the turn after a
-switch runs cold, and that is what the hold below is for.
+### The confidence bar and the price check
 
-**The first line of every reply.** The route is written into the reply's
-own text, as the first text chunk streams through `turn.step`:
+The prompt cache is per model. Switching tiers writes the whole context to
+the new model's cache, and switching back writes it again. At a few hundred
+thousand tokens of context that costs dollars, often more than the switch
+saves. So a switch has to clear two checks:
 
-```markdown
-> ✳️ opus · high · Jev 98% · 555ms
+- **Confidence.** A turn that picks a different tier from the one running
+  moves only if Jev's confidence is at least 75%. An upgrade once the context
+  is past 100k needs 90%, since it rewrites the whole context to a pricier
+  cache (`UPGRADE_CONTEXT_TOKENS` and `UPGRADE_CONFIDENCE` in `policy.ts`).
+- **Price, for a downgrade.** The turn is priced twice: on the running tier
+  with its cache warm, and on the cheaper tier cold plus the write to come
+  back. It moves only if going is cheaper. An upgrade is not priced: whether
+  a task needs a stronger model is Jev's call.
 
----
+A held turn runs on the tier already warm and says why. The effort Jev asked
+for still applies on Opus, Haiku and Fable, since effort is sent per request
+and does not touch the cache. On Sonnet, an effort change rewrites much of
+the cache, so the effort is held too unless Jev's effort confidence clears
+the same bar.
 
-Here is the implementation...
-```
+The hold follows the tier actually running, not the one Jev named, so a run
+of unsure picks cannot creep the session downward one turn at a time. A
+compaction or `/clear` empties the cache, so the next turn starts fresh.
 
-Markdown, because the line rides in the reply's text and that is what the
-transcript renders, so it is the only styling available. The blockquote sets
-it off from prose with a rail and dimmer text. The blank line before `---`
-is load-bearing: a rule on the line directly after text is a setext heading
-underline, and the route would render as a heading.
+On `claude --resume`, after `/model`, or when routing is switched on
+mid-session, the first routed turn is priced against the model that is
+actually warm. A session on a model outside the ladder (for example
+`claude-opus-5`) is treated the same way: moving it to `claude-opus-5-5`
+means a cold cache, so the move is priced like a downgrade.
 
-An unrouted turn opens with `> ⚠️ not routed: <why>`. A held or capped turn says so in the same words as `/jev`:
+`npm run measure-switch-cost` prints what a switch costs at each context
+size.
 
-```markdown
-> ✳️ fable · low · kept fable: haiku costs $1.02 vs $0.020 · 352ms
-```
+### The effort ceiling
 
-**The summary under every finished reply**, once, however many turns the
-reply spanned. The top line is what the router asked for, before the reply
-exists; the summary is what the API says it got, and it can only be written
-once the response is whole:
+Each tier has a maximum effort, `medium` by default. A turn Jev wanted
+higher runs at the ceiling, and the line says `capped from xhigh`. Raise it
+with `/jev ceiling`.
 
-```
-fable-5-1 ✓ xhigh · Jev 97% · $0.14 · 130k in (91% cached) · 2k out
-```
+Fable 5.1 runs `medium` as `high` on the first request of a conversation, so
+the router sends `high` there and says so (`FIRST_TURN_EFFORT` in
+`policy.ts`). Claude Code sends no effort to Sonnet 5, so its effort setting
+has no effect.
 
-A reply that spawned background work is several turns — the one you typed,
-then one per task that finished and woke the loop — and a block under each
-read as one reply changing model three times. So the summary waits until no
-background agent is still running, then covers the lot:
+### Go-aheads
 
-```
-3 turns: fable, opus, fable (2 woken by tasks) · $28.10 · 7.4M in (99% cached) · 61k out
-agents: Explore haiku $0.020, general-purpose opus $0.31
-turn 2: kept fable: haiku costs $4.41 vs $0.13
-```
+Jev scores a bare "yes" as trivial, which is right about the text and wrong
+about the work. A prompt that is only a go-ahead (`y`, `yes`, `ok`, `sure`,
+`go ahead`, `continue`, `do it`, `lgtm` and similar) continues on the previous
+turn's tier and effort without asking Jev. With nothing to continue, it stays
+on the session model.
 
-The lines after the first say what did not run exactly as Jev asked, in the
-same words as everywhere else; a turn that ran as asked adds nothing. A mid-turn compaction is not the end of a reply (it was
-taken for one once, and wrote a second summary under the same reply).
+### Naming a tier
 
-The summary is fenced because markdown collapses leading whitespace and
-joins consecutive lines: unfenced, its lines render as one run-on
-paragraph. `<details>` was tried first, for a fold; the desktop app
-renders it as raw tags.
+A tier named with a routing verb (`use opus`, `switch to fable`,
+`route to haiku`, `run this on sonnet`, `go with opus`) skips Jev, runs at
+medium effort, and shows `your pick`. Plain mentions are not routes:
+"search for opus docs" and "I'm using opus for comparison" are ordinary
+prompts. A negation cancels only the next route ("don't use haiku, use opus"
+routes to opus). Only the window guard overrides a named tier, and a tier
+excluded by `JEV_ROUTER_EXCLUDE` cannot be named.
+`JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off.
 
-It is emitted as a chunk the hook built rather than one the engine streamed,
-at **one past the last text block's index**, and only on a step whose stop
-reason ends the turn — a `tool_use` step is mid-reply. The index is
-load-bearing: a chunk yielded at an index the engine has already streamed is
-dropped silently. Probed live, a chunk at `lastTextIndex` never reached the
-transcript and one at `lastTextIndex + 1` did, so the summary opens a block
-of its own and the reply above it is untouched.
+### Subagents
 
-Note that `claude -p` shows only the *last* text block in its `result`, so the
-reply looks like it vanished when the summary lands. It has not:
-`--output-format stream-json --verbose` shows both blocks whole.
+Each spawned agent is routed on its own task at `agent.spawn`, unless the
+call named a model or is a fork. There is no hold to the parent's tier: a
+subagent starts with an empty context, so it has no cache to lose. Below
+50% confidence (`SUBAGENT_CONFIDENCE` in `policy.ts`) the agent is left on
+its default model. Agents appear in `/jev` and in the reply's summary. Nothing
+is written into a subagent's own reply, because its parent reads that text as
+a tool result.
 
-How the line and summary stay single, and how state survives a reload, is
-in *State, copies and what the model copies* below.
+## Commands
 
-`/jev quiet` drops both the line and the summary without turning routing
-off; `/jev loud` brings them back. Both ride in the reply's recorded text, so
-the model sees them on its own past replies; that is the standing cost of a
-marker on a surface that draws neither render sites nor `ui.log`.
+| Command | Effect |
+| --- | --- |
+| `/jev` | Status and recent turns. |
+| `/jev on`, `/jev off` | Turn routing on or off. |
+| `/jev quiet`, `/jev loud` | Hide or show the line and summary. Routing and history continue. |
+| `/jev sticky`, `/jev sticky 0.6`, `/jev sticky off` | Turn the confidence bar and price check on, set the bar, or switch freely. |
+| `/jev ceiling` | Show the effort ceiling. |
+| `/jev ceiling xhigh`, `/jev xhigh` | Raise every tier's ceiling. |
+| `/jev ceiling xhigh fable`, `/jev xhigh fable` | Raise one tier's ceiling. |
+| `/jev ceiling off` | Remove every cap (`max`). |
 
-The line is part of the recorded message, so the model sees its own past
-replies open with it. That is the cost of a marker that reaches the desktop
-app: two cleaner mechanisms were tried first and neither drew there. An
-`AssistantMessage` render rewrite was correct against the generated types
-and drew nothing; `$.ui.log`, documented as a dim transcript row, also drew
-nothing. That tab reports `$.session.surface()` as `unknown` and appears to
-be an SDK host that drops both. Reply text and command output are the two
-channels that reach it.
+Commands override the matching environment settings for the rest of the
+session.
 
-**The footer**, via `SessionMode`. Terminal only in practice, so treat its
-absence as meaning nothing.
+## Configuration
 
-The app's own model indicator will never change. It shows the *session*
-model, which this mod does not touch — the rewrite happens per request, in
-`turn.step`.
+All settings go in the `env` block of `~/.claude/settings.json`.
 
-## Commands and switches
-
-- `/jev` prints the status above. `/jev on` and `/jev off` set routing
-  explicitly rather than toggling blind.
-- `/jev quiet` and `/jev loud` control the line at the top of each reply.
-  Quiet still routes and still records, so `/jev` shows what you missed.
-- `JEV_ROUTER_PROVIDER=typesafe|gateway` forces a specific provider. If both
-  keys are set, the default is TypeSafe direct; use this to force the gateway.
-- `TYPESAFE_BASE_URL=https://api.typesafe.ai` overrides the TypeSafe endpoint
-  base (default). Only `api.typesafe.ai` / `*.typesafe.ai` are allowed unless
-  `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`.
-- `JEV_ROUTER_ALLOW_OVERRIDE=0` disables natural-language tier overrides
-  ("use opus"). On by default.
-- `JEV_ROUTER_NOTIFY_CONTINUE=1` soft-continues task-notification turns on the
-  previous route instead of re-asking Jev. Off by default.
-- `JEV_ROUTER_EXCLUDE=fable,haiku` drops those tiers from the question
-  entirely, so Jev is never offered them. Excluding all four is ignored.
-- `JEV_ROUTER_TIMEOUT_MS=2500` changes how long a turn waits for Jev before
-  giving up and running unrouted. The default is 1500ms. Ten live calls on
-  2026-09-20 ran 402ms to 839ms, so an earlier 800ms default was failing open
-  on the slowest of them.
-- `/jev sticky` makes a tier switch clear a confidence bar before the model
-  moves, and holds a downgrade that would cost more than it saves;
-  `/jev sticky 0.6` sets the bar, `/jev sticky off` switches freely.
-  `--sticky` works too. See below. **On by default** at 0.75.
-- `JEV_ROUTER_STICKY=0` turns sticky off for a session; `JEV_ROUTER_STICKY_CONFIDENCE=0.6`
-  sets the bar. The command overrides them from then on.
-- `JEV_ROUTER_CACHE_TTL=5m` prices switches against the five-minute cache.
-  The default is `1h`, which is what Claude Code writes (every one of 18,204
-  writes in a week of transcripts, checked 2026-09-23).
-- `/jev ceiling` shows the most effort each tier may be asked for;
-  `/jev ceiling xhigh` raises every tier to it, `/jev ceiling xhigh fable`
-  one tier, `/jev ceiling off` lifts every cap (which is `max`; the engine has
-  no rung above it). **The default is `medium` on every tier.** A turn Jev
-  wanted higher is cut to the ceiling and the route line says
-  `capped from xhigh` for what it wanted.
-- `/jev medium`, `/jev xhigh fable`: an effort on its own is shorthand for
-  `/jev ceiling`. The old toggles (`/jev xhigh on`) say what replaced them;
-  any other unknown argument says so rather than printing the status.
-- `JEV_ROUTER_CEILING=xhigh`, or `fable:xhigh,opus:high` for some tiers,
-  seeds the ceiling; the command overrides it from then on. Two engine facts,
-  measured 2026-09-23 on Claude Code 2.1.280 by the transcript's
-  `perTurnEffort`: on Fable 5.1 the **first turn** of a conversation runs
-  `medium` as `high` (five of five; honoured from the second turn on, three
-  of three), so the router sends `high` there and the route line says so,
-  while the turn after starts from the `medium` Jev asked for
-  (`FIRST_TURN_EFFORT` in policy.ts is the whole table); and the engine
-  sends **no effort at all to Sonnet 5** (`perTurnEffort` absent), so the
-  Sonnet effort hold below is a no-op on that build. Opus 5.5 honours all
-  five. Fable effort changes between turns are free: medium→low→medium wrote
-  638 and 286 tokens, not the messages block.
-- `JEV_ROUTER_JEV_MODEL=jev-1.13.0` pins the Jev version on the direct API.
-  The default `jev-latest` is an alias that moves when TypeSafe ships, and
-  the confidences the bar is tuned against can move with it. A passthrough
-  such as OpenRouter spells the same pin `jev-1.13`.
-
-## Holding a shaky switch, and a switch that costs more than it saves
-
-The prompt cache is per model. A session cached under fable is cold for
-haiku, so the turn that switches writes its whole context to haiku's cache,
-and the turn that comes back writes it all again to fable's, at $20 per
-million tokens. Over a week of this machine's transcripts (18,459 requests,
-checked 2026-09-23) the median context at a main-thread switch was 150k to
-330k tokens, and 31 of 38 returns from haiku to fable paid that re-write in
-full: a trivial question answered on haiku at 234k cost about $4.40 in cache
-writes to save $0.07 of output. A router that follows Jev's word at that
-size costs more than never routing at all — measured, not modelled: over 255
-routed turns the shipped policy came to $92 where staying put came to $8.
-
-Before either bar, one rule that nothing lifts: **the tier has to take the
-prompt at all.** Haiku 4.5's window is 200k tokens; the rest take a
-million. A turn carrying more than a tier's window (less 16k for the prompt
-and the reply) is not sent there, whatever Jev said, whatever the price,
-and even when the prompt named it — the API would refuse it with "Prompt is
-too long", and a week of transcripts holds three of those, each right after
-a turn at 358k–605k was routed to haiku. The turn stays on the tier already
-running (`kept fable: too long for haiku (310k)`),
-or, with nothing running, on the session model.
-
-So a switch has to clear two bars, and `/jev sticky off` lifts both:
-
-- **Jev's doubt.** A turn that names a different tier than the last one has
-  to clear the confidence bar (0.75) to move. An **upgrade past 100k
-  context** has to clear 90% (or the bar, if higher): it writes the whole
-  context to the dearer tier, five dollars for fable at 250k, and over a
-  week of transcripts 54 of 72 routed upgrades ran under 75% confidence and
-  7 more under 90%, every one past 100k, while prompts that are plainly
-  planning work measure 0.97 to 1.00 (`UPGRADE_CONTEXT_TOKENS`,
-  `UPGRADE_CONFIDENCE` in policy.ts). `use fable` is not an upgrade in this
-  sense and is never held.
-- **The price, for a downgrade.** The turn is priced twice, from the context
-  the engine reports it will carry and the last turn's output: on the running
-  tier with its cache warm, and on the cheaper tier cold with the return
-  write added. If going costs at least what staying does, it stays. An
-  upgrade is never priced: whether the task needs fable is Jev's call, not
-  the cache's.
-
-Held either way, the turn runs on the tier already loaded, and says so:
-
-```
-> ✳️ fable · low · kept fable: Jev 61% on haiku, needs 75% · 512ms
-> ✳️ fable · low · kept fable: haiku costs $4.41 vs $0.13 · 301ms
-```
-
-The first: Jev wanted haiku, was 61% sure, and the bar is 75%. The second:
-Jev was sure, and going ($4.41) cost more than staying ($0.13). The same
-words appear in the summary and in `/jev`, because a hold nobody can see is
-indistinguishable from a router that is not running; `/jev` also prints the
-context it is pricing against and where the cheapest downgrade stops paying
-(`fable→haiku pays below 3k`), so a hold is never a surprise.
-`npm run measure-switch-cost` prints the whole table.
-
-What this means in practice: on a fable- or opus-homed session, the main
-loop's tier is settled in its first few turns while the context is small and
-a switch is cheap, and after that the router's work is picking the **effort**
-on the tier already warm (a trivial question on fable at `low` is a few cents;
-the same question after a detour to haiku is dollars), moving **up** when a
-task needs it, and routing **subagents**, which start with an empty
-conversation and so have no cache to lose. A compaction empties the cache and
-the context both, so the hold is dropped and the next turn starts from Jev;
-so does `/clear`.
-
-A session the router did not route from the start is still running on
-something. On `claude --resume` the engine says what (`classic.SessionStart`:
-the model, the context, and whether the cache has likely expired), and the
-first routed turn is priced against that model's warm cache — `/jev on` after
-a stretch off, or a plugin loaded into a live session, seeds the same from
-`$.session.model()` when the engine reports context. A session on a model
-off the ladder (`claude-opus-5`, say) that Jev keeps on the same rung is a
-switch too, to `claude-opus-5-5` and a cold cache, and is priced like a
-downgrade: at 200k it stays, and the line says `kept claude-opus-5:
-claude-opus-5-5 would cost $3.63 vs $0.14`. `/model` mid-session moves what
-the next routed turn is priced against. `/jev` shows all of this on its
-`session` line.
-
-Only the model is held, on Opus and Haiku. There the effort Jev asked for is
-applied either way, since the engine sends it per request and it costs no
-cache: a held turn still thinks harder or less hard than the one before it.
-Sonnet is the exception, measured 2026-09-22: an effort change there rewrites
-everything after the system block, about half the prefix. So a turn that
-stays on Sonnet also holds its effort unless Jev's confidence in the effort
-score (a separate number from the tier's, and usually the shakier) clears the
-same bar; the line says `kept medium: Jev 49% on xhigh`.
-
-What the next turn holds to is the tier actually running, not the one Jev
-named. Three shaky haiku calls in a row will not creep the session onto haiku
-one turn at a time. An unrouted turn leaves the sticky hold alone (nothing
-routed to hold to), but clears what a bare go-ahead would continue: that turn
-ran on the session model, so "yes" must not re-apply the older routed tier.
-A go-ahead with nothing to continue stays on the session model and does not
-ask Jev (which would clear sticky with a near-certain haiku pick). `/jev off`
-clears both the sticky hold and the continue target for the same reason.
-
-The bar starts at 0.75, which is a starting point rather than a measured
-optimum. Retune it in place with `/jev sticky 0.6` and watch the next few
-turns; `npm run try-prompts` prints Jev's confidence across a set of prompts,
-which is the other input to picking a number. `/jev sticky` on its own keeps
-a bar you have already set, so turning it off and on again does not lose it.
-
-A session that wants sticky **off** can say so before it starts, with
-`JEV_ROUTER_STICKY=0` in the `env` block of settings.json. The command wins
-after that. Sticky is on by default at 0.75.
-
-## Two things stickiness cannot catch
-
-**A bare go-ahead.** Jev reads "yes", "ok", "go ahead" as trivial with
-near-total confidence (measured: "yes" 1.00, "y" 0.98), which clears any bar
-and drops a fable task to haiku. It is right about the text and wrong about
-the work, which is whatever the last turn proposed. So a prompt that is only
-a go-ahead (`y`, `yes`, `ok`, `sure`, `go ahead`, `continue`, `do it`, `lgtm`
-and the like, trailing punctuation aside) runs on the previous turn's tier and
-effort without asking Jev, tagged `continue`. Anything longer is a prompt.
-
-**A tier you named.** "use opus for this" used to score opus at 0.43 under
-the sticky bar, so stickiness refused it. A tier named with a run-on verb
-(`use`, `do it using`, `switch to`, `route to`, `run this on`, `go with`) is
-taken as read, **skips Jev entirely**, uses medium effort, and is tagged
-`forced`. Bare "on", "for", "with", and "using" are not verbs here: "search
-for opus docs" is a search, "happy with opus" and "I'm using opus for
-comparison" are not routes. Negations skip only the first run-on after them,
-so a later affirmative still wins ("don't use haiku use opus" → opus). "why
-not use opus" is an affirmative ask. A tier the environment excluded cannot
-be named back in. `JEV_ROUTER_ALLOW_OVERRIDE=0` disables this channel.
-
-## Subagents
-
-Each spawn is classified on its own prompt at `agent.spawn` and given the
-model Jev picks, unless the call named a model itself or is a fork (which
-inherits, and whose model the engine ignores). The subagent's own steps then
-carry that model and effort. There is no hold to the parent's tier: a
-subagent starts with an empty conversation, so there is no cache to keep
-warm; measured, a haiku loop under a fable parent cost $0.023 against about
-$0.34 inherited. What there is instead is a floor, `SUBAGENT_CONFIDENCE` in
-policy.ts (0.5, calibrated on subagent-style prompts: the specified ones
-scored 0.72 to 0.98, a vague audit 0.22). Under it the spawn is left alone
-and `/jev` says so.
-
-## State, copies and what the model copies
-
-**State survives a reload.** An update or `git pull` reloads the module
-mid-session. The history, `spent`, the tier being held, the open reply and
-the `/jev` settings (sticky bar, ceiling, quiet/loud, on/off) are saved in
-the engine's per-plugin store (`~/.claude/plugins/store/jev-router_*.json`)
-under `session:<id>`, and the first hook after the reload restores them.
-The twenty newest sessions are kept. Before this, a reload reset all of it,
-and the first switch afterwards was priced against the wrong model.
-`hooks/persist.ts` turns the state into plain JSON and back.
-
-**Only one copy acts.** More than one copy of the module can see the same
-turn:
-
-- A reload leaves the old module loaded next to the new one.
-- The desktop app has continued a conversation under a new session id
-  while a copy kept reading the old one.
-
-Each copy used to call Jev and write its own line, giving two or three
-lines under one prompt. Four checks now make sure one copy acts:
-
-| Check | How | What it covers |
+| Variable | Default | Effect |
 | --- | --- | --- |
-| Newest in the process | Each copy stamps a load time on `globalThis`; an older copy sees a newer stamp and stands aside. | Reloads in one process, even with no session id |
-| Owner of the session | The newest copy writes `owner:session:<id>` to the store; others with the same id stand aside. | Copies in different processes on the same session |
-| Claim on the turn | The newest copy writes `turn:<hash of the prompt>` to the store for 60 seconds. An older copy that claimed first is overridden and checks again before it writes. A copy that loses passes the turn through: no Jev call, no model change, no line, no summary. | Copies that read different session ids |
-| Output check | A copy that sees a real line or summary already in the stream does not add another. | Anything the other three miss |
+| `TYPESAFE_API_KEY` | | TypeSafe direct key. |
+| `AI_GATEWAY_API_KEY` | | Vercel AI Gateway key. |
+| `JEV_ROUTER_PROVIDER` | TypeSafe if its key is set | `typesafe` or `gateway`. |
+| `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | Only `*.typesafe.ai` unless `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`. |
+| `JEV_ROUTER_JEV_MODEL` | `jev-latest` | Pin a Jev version, e.g. `jev-1.13.0`, so confidences stay stable across TypeSafe releases. |
+| `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev. Capped at 8000. |
+| `JEV_ROUTER_STICKY` | on | `0` switches freely. |
+| `JEV_ROUTER_STICKY_CONFIDENCE` | `0.75` | The confidence bar. |
+| `JEV_ROUTER_CEILING` | `medium` | Effort ceiling: `xhigh` for all tiers, or per tier, e.g. `fable:xhigh,opus:high`. |
+| `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
+| `JEV_ROUTER_EXCLUDE` | | Tiers never offered to Jev, e.g. `fable,haiku`. |
+| `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
+| `JEV_ROUTER_NOTIFY_CONTINUE` | off | `1` continues task-notification turns on the previous route instead of asking Jev. |
 
-The cost of the turn claim: two genuinely separate sessions that get the
-exact same prompt within the same minute route only one of them. A store
-that cannot be read lets every copy through, as before.
+## Session state and multiple copies
 
-**Lines and summaries the model copies are removed.** The line and summary
-are part of the reply's recorded text, so the model sees them in its own
-past replies and sometimes writes one itself, with made-up figures. Seen
-2026-09-23: a reply ended with a footer claiming $0.21 and 450k in, above the
-real one, and it looked like a second copy of the plugin. The copy that holds the
-turn removes a route line at the very start of the model's text and a
-summary fence at its very end before adding its own. A line or summary
-quoted in the middle of a reply is left alone.
+The routing history, spend, the tier being held, the open reply and the
+`/jev` settings are saved in Claude Code's per-plugin store
+(`~/.claude/plugins/store/jev-router_*.json`) and restored after a plugin
+update or reload. The twenty most recent sessions are kept.
 
-To check which copies acted on a prompt, read the store. Each
-`session:<id>` records its prompts, so the same prompt under two ids means
-two copies. The `turn:` key shows which copy (`birth`) claimed the prompt.
+More than one copy of the plugin can be loaded at once, for example after a
+reload or when the app continues a conversation under a new session id.
+Only one copy acts on each turn:
 
-## Checking and tuning
+- Within one process, the most recently loaded copy acts and older copies
+  stand aside.
+- Across processes, the newest copy records itself as the session's owner in
+  the store.
+- Each turn is claimed in the store by the newest copy for 60 seconds, keyed
+  by the prompt text. A copy that does not hold the claim passes the turn
+  through untouched: no Jev call, no model change, no line, no summary.
+- A copy never adds a line or summary that is already in the stream.
 
-```
-npm run check-jev        # is the configured provider serving? (check-gateway is an alias)
-npm run try-prompts      # what tier does Jev give a spread of prompts?
-npm run try-prompts -- "your prompt"
-```
-
-`check-jev` detects which provider is configured and runs the appropriate
-diagnostic. For the gateway it checks credits; for TypeSafe direct it makes a
-live call. `try-prompts` is the tuning loop: edit `TIER_CRITERIA`, run it, and
-see whether the picks moved the way you wanted. Neither script ever prints the key.
-
-Measured on 2026-09-20 against the shipped criteria:
-
-```
-  ms  tier    effort  conf  prompt
- 839  haiku   low     1.00  what is 2+2
- 508  haiku   xhigh   0.86  what does this function return
- 402  haiku   medium  0.75  rename the variable foo to bar in utils.ts
- 482  sonnet  medium  0.66  add a --verbose flag to the CLI
- 426  opus    high    0.66  write a test for the pagination helper
- 555  opus    high    0.98  implement cursor pagination for the reports endpoint
- 483  opus    xhigh   0.97  refactor the auth module to use the new session interface
- 641  fable   xhigh   0.97  the e2e suite passes alone but fails with the others
- 734  fable   xhigh   1.00  help me plan the architecture for multi-tenant billing
- 479  fable   xhigh   1.00  should we use event sourcing here or is that overkill
-```
-
-Note row two. Tier and effort are separate questions, so they can disagree:
-an out-of-context question reads as trivial to route but hard to answer. The
-engine silently downgrades an effort the chosen model does not support, so
-this is harmless, but it is why a `haiku·xhigh` label is possible.
+Because the claim is keyed by the prompt text, two separate sessions that
+receive the identical prompt within the same minute will route only one of
+them. If the store cannot be read, every copy proceeds as usual.
 
 ## When it does nothing
 
-The router fails open at every step, and a turn it cannot decide runs exactly
-as it would without the mod:
+The router fails open. A turn it cannot decide runs exactly as it would
+without the plugin, and the line says why:
 
-- no `TYPESAFE_API_KEY` or `AI_GATEWAY_API_KEY`, no request is made at all
-- the provider takes longer than the timeout (1500ms by default)
-- the provider refuses the key, errors, or returns a body we cannot read
+- no API key is set (no request is made)
+- Jev takes longer than the timeout
+- the provider refuses the key, errors, or returns something unreadable
 - Jev names a tier that was not offered
 
-The only cost of a failure is the latency spent waiting, capped at the timeout
-(itself held under 8 seconds, since the wait counts against the hook's
-10-second budget). A very long prompt is cut to its first 12,000 characters
-before Jev sees it: the decision is made on how a request opens, and Jev's
-own guidance is that unrelated text lowers its accuracy.
+The only cost of a failure is the wait, capped at the timeout. Prompts are
+cut to their first 12,000 characters before Jev sees them.
 
-Low confidence is not a failure. The pick is used and the line marks it, so
-`> ✳️ opus · high · Jev 40%` means Jev was under 50% sure of the tier.
-
-An unrouted turn announces itself too, with the reason:
+Low confidence is not a failure: the pick is still subject to the bar, and the
+line shows the confidence.
 
 ```
 > ⚠️ not routed: gateway said HTTP 403 (customer_verification_required)
 ```
 
+## Tuning
+
+```
+npm run check-jev                     # is the configured provider serving?
+npm run try-prompts                   # Jev's tier, effort and confidence on sample prompts
+npm run try-prompts -- "your prompt"
+npm run measure-switch-cost           # what a switch costs at each context size
+```
+
+`try-prompts` is the tuning loop: edit `TIER_CRITERIA`, run it, and check
+the picks moved the way you wanted. No script prints a key.
+
+Sample output:
+
+```
+  ms  tier    effort  conf  prompt
+ 839  haiku   low     1.00  what is 2+2
+ 402  haiku   medium  0.75  rename the variable foo to bar in utils.ts
+ 482  sonnet  medium  0.66  add a --verbose flag to the CLI
+ 555  opus    high    0.98  implement cursor pagination for the reports endpoint
+ 641  fable   xhigh   0.97  the e2e suite passes alone but fails with the others
+ 734  fable   xhigh   1.00  help me plan the architecture for multi-tenant billing
+```
+
+Tier and effort are separate questions, so they can disagree: a short
+question about unfamiliar code can be trivial to route but hard to answer,
+which gives `haiku · xhigh`. The engine lowers an effort the model does not
+support.
+
 ## Layout
 
 ```
-hooks/register.ts   the ten hooks (session.start/end, classic.SessionStart,
-                    session.compact, classic.PostModelSwitch, command.run,
-                    turn.start, turn.step, agent.spawn, ui.render), the
-                    settings read once, the turn history, saving state and
-                    deciding which copy acts
-hooks/jev.ts        the request shape, timeout, named failures
-hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
-hooks/policy.ts     the tiers, the criteria, answers → model and effort,
-                    the ceiling, what a hold is
-hooks/pricing.ts    Anthropic's list prices; what a turn cost, what a switch
-                    would cost
-hooks/persist.ts    the session's state as data for $.store, and back
-hooks/label.ts      decision → SessionMode label
-hooks/status.ts     the per-turn line, the summary, what /jev prints, usage
-                    per turn, removing lines the model copies
+hooks/register.ts   the hooks, settings, turn history, saved state, which copy acts
+hooks/jev.ts        the Jev request, timeout and named failures
+hooks/provider.ts   which backend to use, with endpoints and keys resolved
+hooks/policy.ts     tiers, criteria, answers → model and effort, the ceiling, holds
+hooks/pricing.ts    Anthropic list prices; turn cost and switch cost
+hooks/persist.ts    session state to and from the plugin store
+hooks/label.ts      the session-mode footer label
+hooks/status.ts     the route line, the summary, /jev output, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks
-                    with a fake engine and asserts the stream transform
-scripts/            check-jev, try-prompts and measure-switch-cost, for
-                    setup and tuning
+                    against a fake engine
+scripts/            check-jev, try-prompts, measure-switch-cost
 ```
 
-`jev.ts` takes `fetch` and `sleep` as arguments rather than importing them, so
-the tests run with no engine and no network. `provider.ts` is pure: it takes
-environment variables and returns which provider to use, with all credentials
-and endpoints already resolved.
-
-## Working on it
+## Development
 
 ```
-npm run types    # once: fetches Anthropic's claude-code.d.ts into .claude/types (gitignored)
+npm run types    # once: fetch Claude Code's type definitions into .claude/types
 npm run check    # typecheck, tests, plugin validate
 git config core.hooksPath scripts/githooks   # once per clone: validate before every commit
 ```
 
-`plugin validate` is not optional. It does static analysis and prints every
-event the module hooks, everything it calls on `$`, and every environment
-variable it reads or writes, without executing anything. It also applies the
-engine's load-time rule that `$` may only be passed to a function declared at
-the top of the file: a closure inside `register` that takes `$` makes the
-whole module refuse to load, and it does so silently, so every turn runs
-unrouted while `tsc` and the tests pass (measured 2026-09-23; the only other
-trace is `hooks module ... failed to load` in `~/.claude/debug/`). The
-pre-commit hook exists for that. It also catches shape errors that are easy to
-get wrong, such as `turn.step` needing to be an `async function*` because it
-streams.
-
-There is no `claude plugin test` in Claude Code 2.1.280, so the engine-level
-test kit described in the upstream `mods/README.md` is not available yet.
+Always run `claude plugin validate`. It checks the engine's load-time rules
+without executing anything, and prints every event hooked, every `$` call
+and every environment variable read. One rule matters most: `$` may only be
+passed to functions declared at the top level of the module. Breaking it
+stops the module from loading, silently: every turn runs unrouted while
+`tsc` and the tests still pass. The pre-commit hook runs validate for this
+reason.
 
 ## Backends
 
-Both backends speak the same `choice` and `score` question types and the same
-`answers` response shape, so the request/response handling is identical.
+Both backends take the same `choice` and `score` questions and return the same
+`answers` shape.
 
-**TypeSafe direct** endpoint: `POST https://api.typesafe.ai/v1/systemone`.
-Bearer auth, body is `{ model: "jev-latest", state, questions }`. Probabilities
-and confidences come back rounded to four decimal places. Supports all three
-question types: `choice`, `score`, and `noul`.
-
-**Vercel AI Gateway** endpoint: `POST https://ai-gateway.vercel.sh/v1/evaluate`.
-Bearer auth, body is `{ model, state, questions }` (the gateway ignores the
-model field). Probabilities and confidences come back rounded to two decimal
-places. Only supports `choice` and `score` — the gateway rejects `noul` outright.
+| | TypeSafe direct | Vercel AI Gateway |
+| --- | --- | --- |
+| Endpoint | `POST https://api.typesafe.ai/v1/systemone` | `POST https://ai-gateway.vercel.sh/v1/evaluate` |
+| Body | `{ model, state, questions }` | `{ model, state, questions }` (model ignored) |
+| Precision | four decimal places | two decimal places |
+| Question types | `choice`, `score`, `noul` | `choice`, `score` |
