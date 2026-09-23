@@ -535,6 +535,12 @@ export function register(on: On) {
   let answered = false;
   /** The last compaction Jev was asked about, for /jev. */
   let lastCompaction: Compaction | null = null;
+  /**
+   * The last transcript Jev pruned and what it kept: the engine compacts
+   * ahead of time (`precompute`) and then for real over the same messages,
+   * and each dispatch would otherwise be another scoring.
+   */
+  let prunedCache: { key: string; messages: readonly unknown[] } | null = null;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
   /** Agents whose reply's summary has been written: their wake-up joins no other. */
@@ -825,7 +831,17 @@ export function register(on: On) {
     // leaves the engine's summary to run.
     let pruned: { messages: readonly typeof e.messages[number][] } | null = null;
     const transcript = Array.isArray(e.messages) ? e.messages : [];
+    // The same transcript, scored once: its length and the engine's handles.
+    const cacheKey = `${transcript.length}:${textHash(transcript.map((m) => m.handle ?? "").join(","))}`;
     if (
+      enabled &&
+      settings.compactOn &&
+      transcript.length > 0 &&
+      prunedCache !== null &&
+      prunedCache.key === cacheKey
+    ) {
+      pruned = { messages: prunedCache.messages as unknown as typeof e.messages };
+    } else if (
       enabled &&
       settings.compactOn &&
       transcript.length > 0 &&
@@ -844,8 +860,10 @@ export function register(on: On) {
       lastCompaction = result.compaction;
       // The library's message shape is the engine's, less the engine's own
       // `true | undefined` spelling of isError (rebuilt blocks carry false).
-      if (result.ok)
+      if (result.ok) {
         pruned = { messages: result.messages as unknown as typeof e.messages };
+        prunedCache = { key: cacheKey, messages: result.messages };
+      }
     }
     if (e.trigger !== "precompute" && e.agentId === undefined) {
       running = null;

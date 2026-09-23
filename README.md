@@ -317,9 +317,16 @@ The engine's own summary runs instead, and `/jev` says why, when:
   question type this uses (TypeSafe direct is required), or
 - Jev fails.
 
+What Jev sees is the conversation's text (each message cut to 500
+characters) and each tool call's input; tool results are described only by
+their size and whether they errored, never sent. The engine compacts ahead
+of time and then for real over the same transcript; that transcript is
+scored once.
+
 `/jev compact off` restores the engine's summary; `/jev compact on` brings
-Jev back. `JEV_ROUTER_COMPACT=0` starts a session with it off. The scoring
-is the MIT-licensed [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+Jev back. `JEV_ROUTER_COMPACT=0` starts a session with it off, and
+`/jev off` turns compaction off along with routing. The scoring is the
+MIT-licensed [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
 library, vendored under `hooks/compaction/`.
 
 ## Commands

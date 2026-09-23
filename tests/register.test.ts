@@ -2815,6 +2815,17 @@ describe("register: audit regressions (2026-09-23)", () => {
       assert.match((await run(seeded.hooks, seeded.$, "")).text, /compact\s+off/);
     });
 
+    test("a transcript the engine compacts ahead of time and then for real is scored once", async () => {
+      const kit = await withJev();
+      const messages = transcript(10);
+      const first = await kit.hooks.get("session.compact")!(kit.$, { trigger: "precompute", messages }, async () => ({ messages: [] }));
+      const second = await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages }, async () => ({ messages: [] }));
+      assert.equal(kit.compactions(), 1, "one Jev request for both dispatches");
+      assert.deepEqual(second.messages, first.messages);
+      await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: transcript(11) }, async () => ({ messages: [] }));
+      assert.equal(kit.compactions(), 2, "a different transcript is scored again");
+    });
+
     test("a compaction still forgets what was warm", async () => {
       const kit = await withJev();
       kit.setTier("fable", 0.95, 3);
