@@ -40,6 +40,13 @@ import {
 } from "./persist.ts";
 import { providerOf, type ProviderResult } from "./provider.ts";
 import {
+  compactOnOf,
+  compactTimeoutOf,
+  minReductionOf,
+  pruneTranscript,
+  type Compaction,
+} from "./compactor.ts";
+import {
   addUsage,
   announceReply,
   attemptOf,
@@ -168,6 +175,10 @@ type Settings = {
   allowOverride: boolean;
   notifyContinue: boolean;
   upgradeMax: number | null;
+  /** Compaction by Jev: on, how long it may take, how much it must remove. */
+  compactOn: boolean;
+  compactTimeoutMs: number;
+  compactMinReduction: number;
 };
 
 /**
@@ -209,6 +220,13 @@ async function seedSettings(
       await $.env.get("JEV_ROUTER_NOTIFY_CONTINUE"),
     ),
     upgradeMax: upgradeMaxOf(await $.env.get("JEV_ROUTER_UPGRADE_MAX")),
+    compactOn: compactOnOf(await $.env.get("JEV_ROUTER_COMPACT")),
+    compactTimeoutMs: compactTimeoutOf(
+      await $.env.get("JEV_ROUTER_COMPACT_TIMEOUT_MS"),
+    ),
+    compactMinReduction: minReductionOf(
+      await $.env.get("JEV_ROUTER_COMPACT_MIN_REDUCTION"),
+    ),
   };
 }
 
@@ -515,6 +533,8 @@ export function register(on: On) {
    * this. A `/clear` does: it is a new conversation.
    */
   let answered = false;
+  /** The last compaction Jev was asked about, for /jev. */
+  let lastCompaction: Compaction | null = null;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
   /** Agents whose reply's summary has been written: their wake-up joins no other. */
@@ -664,6 +684,8 @@ export function register(on: On) {
     answered,
     sticky: settings?.sticky ?? null,
     ceiling: settings?.ceiling ?? ceilingAt("medium"),
+    compactOn: settings?.compactOn ?? true,
+    compaction: lastCompaction,
   });
 
   /** Puts a restored snapshot back, over what the environment seeded. */
@@ -691,9 +713,11 @@ export function register(on: On) {
     enabled = s.enabled;
     announce = s.announce;
     answered = s.answered;
+    lastCompaction = s.compaction;
     if (settings !== null) {
       settings.sticky = s.sticky;
       settings.ceiling = s.ceiling;
+      settings.compactOn = s.compactOn;
     }
   };
 
@@ -788,13 +812,48 @@ export function register(on: On) {
   // mid-turn too, and the turn in flight keeps its route, its line and its
   // usage. A subagent compacting its own transcript is not the main loop's.
   on("session.compact", async ($, e, next) => {
+    settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(await loadSnapshot($, snapshotKey));
+      restoreOnKey = true;
+    }
+    // Jev prunes the transcript instead of the engine summarising it:
+    // every tool call is scored, stale ones go or are cut, and what stays
+    // is verbatim. One copy does it; anything short of a good result
+    // leaves the engine's summary to run.
+    let pruned: { messages: readonly typeof e.messages[number][] } | null = null;
+    const transcript = Array.isArray(e.messages) ? e.messages : [];
+    if (
+      enabled &&
+      settings.compactOn &&
+      transcript.length > 0 &&
+      !inert &&
+      !superseded() &&
+      !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+    ) {
+      const result = await pruneTranscript({
+        messages: transcript,
+        provider: settings.provider,
+        fetch: (url, init) => $.http.fetch(url, init),
+        sleep: (ms) => $.clock.sleep(ms),
+        timeoutMs: settings.compactTimeoutMs,
+        minReduction: settings.compactMinReduction,
+      });
+      lastCompaction = result.compaction;
+      // The library's message shape is the engine's, less the engine's own
+      // `true | undefined` spelling of isError (rebuilt blocks carry false).
+      if (result.ok)
+        pruned = { messages: result.messages as unknown as typeof e.messages };
+    }
     if (e.trigger !== "precompute" && e.agentId === undefined) {
       running = null;
       continueFrom = null;
       lastUsage = null;
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     }
-    return next(e);
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    return pruned ?? next(e);
   });
 
   // `/model` moved the main loop: what was running is not any more, and the
@@ -830,12 +889,30 @@ export function register(on: On) {
       return next(e);
     }
     const arg = e.args.trim().toLowerCase();
+    const sub = arg.replace(/^-+/, "");
 
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
       if (!enabled) clearRouting();
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: toggleReply(enabled) };
+    }
+
+    if (sub === "compact" || sub.startsWith("compact ")) {
+      const want = sub.slice("compact".length).trim();
+      if (want === "on" || want === "off") {
+        settings.compactOn = want === "on";
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      } else if (want !== "") {
+        return { text: unknownCommandReply(sub, false) };
+      }
+      return {
+        text:
+          `jev-router: compaction by Jev ${settings.compactOn ? "on" : "off"}` +
+          (settings.compactOn
+            ? ": at each compaction, Jev scores every tool call and the stale ones are dropped or cut; the conversation stays verbatim. /jev compact off restores the engine's summary."
+            : ": the engine's own summary runs. /jev compact on to prune with Jev instead."),
+      };
     }
 
     if (arg === "quiet" || arg === "loud") {
@@ -846,7 +923,6 @@ export function register(on: On) {
 
     // `--sticky` as well as `sticky`: the flag spelling is what people reach
     // for, and refusing it would teach nothing.
-    const sub = arg.replace(/^-+/, "");
     if (sub === "sticky" || sub.startsWith("sticky ")) {
       const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
       settings.sticky = result.sticky;
@@ -892,6 +968,8 @@ export function register(on: On) {
         sticky: settings.sticky,
         upgradeMax: settings.upgradeMax,
         ceiling: settings.ceiling,
+        compactOn: settings.compactOn,
+        compaction: lastCompaction,
         ttl: settings.ttl,
         contextTokens,
         sessionModel,

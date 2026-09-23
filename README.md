@@ -38,6 +38,7 @@ reply        > ✳️ fable · medium · Jev 97% · capped from xhigh · 641ms
 | Route line and summary | One line at the top of each reply, one cost summary under it. |
 | `/jev` | Status, settings and the recent turns, each with the reason for its route. |
 | First-request effort | Fable runs `medium` as `high` on a conversation's first request; the router sends `high` there and says so, and only there. |
+| Compaction by Jev | At each compaction, Jev scores every tool call and the stale ones are dropped or cut; the conversation itself stays verbatim instead of being summarised. On by default. |
 | Session state | Routing history, spend and settings survive a plugin reload. |
 | One copy acts | However many copies of the plugin are loaded, only one routes a turn and writes its line and summary. |
 | Fails open | Any failure leaves the turn exactly as it would run without the plugin, and the line says why. |
@@ -160,6 +161,7 @@ jev-router:
   budget    1500ms
   sticky    on, switch needs 75% (90% up past 100k), a downgrade has to pay, an upgrade may cost $1.00 over staying
   ceiling   medium (fable: xhigh)
+  compact   on, Jev prunes tool calls · last: kept 41/87 messages, 63% smaller (12 calls kept, 9 cut, 30 dropped) · 2.1s
   session   claude-opus-5, running on fable
   cache     1h writes · 201k context · fable→haiku pays below 3k
   tiers     haiku, sonnet, opus, fable
@@ -292,6 +294,34 @@ its default model. Agents appear in `/jev` and in the reply's summary. Nothing
 is written into a subagent's own reply, because its parent reads that text as
 a tool result.
 
+## Compaction by Jev
+
+When the context fills up, Claude Code compacts the conversation into a
+summary, and detail is lost. With the plugin, a compaction instead asks Jev
+about every tool call in the transcript, in one request: does this call
+still matter, and does its full output still need to be there verbatim?
+Calls that no longer matter are removed with their results; calls that
+matter but whose output does not are kept with the first 300 characters of
+the result and a note; everything else stays exactly as it was. The first
+message and the six most recent are never touched.
+
+```
+compact   on, Jev prunes tool calls · last: kept 41/87 messages, 63% smaller (12 calls kept, 9 cut, 30 dropped) · 2.1s
+```
+
+The engine's own summary runs instead, and `/jev` says why, when:
+
+- Jev removes less than 25% of the transcript (`JEV_ROUTER_COMPACT_MIN_REDUCTION`),
+- scoring takes longer than 8 seconds (`JEV_ROUTER_COMPACT_TIMEOUT_MS`),
+- the provider is the Vercel AI Gateway, which does not serve the yes/no
+  question type this uses (TypeSafe direct is required), or
+- Jev fails.
+
+`/jev compact off` restores the engine's summary; `/jev compact on` brings
+Jev back. `JEV_ROUTER_COMPACT=0` starts a session with it off. The scoring
+is the MIT-licensed [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+library, vendored under `hooks/compaction/`.
+
 ## Commands
 
 | Command | Effect |
@@ -304,6 +334,7 @@ a tool result.
 | `/jev ceiling xhigh`, `/jev xhigh` | Raise every tier's ceiling. |
 | `/jev ceiling xhigh fable`, `/jev xhigh fable` | Raise one tier's ceiling. |
 | `/jev ceiling off` | Remove every cap (`max`). |
+| `/jev compact`, `/jev compact on`, `/jev compact off` | Show, turn on, or turn off compaction by Jev. |
 
 Commands override the matching environment settings for the rest of the
 session.
@@ -327,6 +358,9 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
 | `JEV_ROUTER_EXCLUDE` | | Tiers never offered to Jev, e.g. `fable,haiku`. |
 | `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
+| `JEV_ROUTER_COMPACT` | on | `0` leaves compaction to the engine's summary. |
+| `JEV_ROUTER_COMPACT_TIMEOUT_MS` | `8000` | How long Jev may take to score a transcript before the engine's summary runs instead. Capped at 30000. |
+| `JEV_ROUTER_COMPACT_MIN_REDUCTION` | `0.25` | The share of the transcript Jev must remove for its result to stand; `40%` works too. |
 | `JEV_ROUTER_NOTIFY_CONTINUE` | on | `0` asks Jev about each task-notification turn instead of continuing the reply's route. |
 
 ## Session state and multiple copies
@@ -413,6 +447,8 @@ hooks/provider.ts   which backend to use, with endpoints and keys resolved
 hooks/policy.ts     tiers, criteria, answers → model and effort, the ceiling, holds
 hooks/pricing.ts    Anthropic list prices; turn cost and switch cost
 hooks/persist.ts    session state to and from the plugin store
+hooks/compactor.ts  compaction by Jev: the provider, the timeout, the fallback, /jev's line
+hooks/compaction/   the vendored fast-jev-compaction scoring (MIT)
 hooks/label.ts      the session-mode footer label
 hooks/status.ts     the route line, the summary, /jev output, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks

@@ -15,6 +15,7 @@
  * referred to by index.
  */
 
+import type { Compaction } from "./compactor.ts";
 import type { Ceiling, Decision } from "./policy.ts";
 import type { Attempt } from "./status.ts";
 
@@ -53,6 +54,10 @@ export type State = {
   answered: boolean;
   sticky: number | null;
   ceiling: Ceiling;
+  /** Compaction by Jev is on. */
+  compactOn: boolean;
+  /** The last compaction Jev was asked about, for /jev. */
+  compaction: Compaction | null;
 };
 
 type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
@@ -99,6 +104,8 @@ export function pack(state: State): Packed {
     answered: state.answered,
     sticky: state.sticky,
     ceiling: state.ceiling,
+    compactOn: state.compactOn,
+    compaction: state.compaction,
   };
 }
 
@@ -185,6 +192,8 @@ export function unpack(raw: unknown): State | null {
     answered: raw.answered !== false,
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
     ceiling: raw.ceiling as Ceiling,
+    compactOn: raw.compactOn !== false,
+    compaction: isRecord(raw.compaction) ? (raw.compaction as unknown as Compaction) : null,
   };
 }
 

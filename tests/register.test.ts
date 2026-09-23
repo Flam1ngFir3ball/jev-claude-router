@@ -2747,6 +2747,86 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.deepEqual(order.slice(0, 2), ["jev", "usage"]);
   });
 
+  describe("compaction by Jev", () => {
+    const transcript = (n: number) => {
+      const out: Record<string, unknown>[] = [{ role: "user", text: "audit the repo", toolUses: [], handle: "h0" }];
+      for (let i = 1; i <= n; i++) {
+        out.push({ role: "assistant", text: "", toolUses: [{ tool_use_id: `u${i}`, tool: "Read", input: {} }], handle: `a${i}` });
+        out.push({ role: "user", text: "", toolUses: [], toolResults: [{ tool_use_id: `u${i}`, text: "x".repeat(2000), isError: false }], handle: `r${i}` });
+      }
+      out.push({ role: "assistant", text: "Done.", toolUses: [], handle: "end" });
+      return out;
+    };
+    /** A harness whose Jev answers routing questions as usual and keeps only call t1 at a compaction. */
+    const withJev = async (env: Record<string, string | undefined> = {}, shared = { store: new Map<string, unknown>(), id: "sess-CMP" }) => {
+      const kit = load({ TYPESAFE_API_KEY: "ts-key", AI_GATEWAY_API_KEY: undefined, JEV_ROUTER_STICKY: "1", ...env }, shared);
+      const routing = kit.$.http.fetch;
+      let compactions = 0;
+      kit.$.http.fetch = async (url: string, init?: { body?: string }) => {
+        const body = JSON.parse(init?.body ?? "{}");
+        const names = Object.keys(body.questions ?? {});
+        if (!names.some((n) => n.startsWith("call_"))) return routing(url, init);
+        compactions++;
+        const answers: Record<string, { noul: number }> = {};
+        for (const n of names) answers[n] = { noul: n.endsWith("_t1") ? 0.9 : 0.1 };
+        return { ok: true, status: 200, headers: {}, text: JSON.stringify({ answers }) };
+      };
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      return { ...kit, shared, compactions: () => compactions };
+    };
+    const compactEvent = (n = 10) => ({ trigger: "auto", messages: transcript(n) });
+
+    test("a compaction returns Jev's pruned transcript instead of the engine's summary", async () => {
+      const kit = await withJev();
+      let fellThrough = false;
+      const out = await kit.hooks.get("session.compact")!(kit.$, compactEvent(), async (e: unknown) => (fellThrough = true, { messages: [] }));
+      assert.equal(fellThrough, false, "the engine's summary did not run");
+      assert.equal(kit.compactions(), 1, "one Jev request");
+      assert.ok(Array.isArray(out.messages) && out.messages.length < 22 && out.messages.length > 0);
+      assert.equal(out.messages[0].handle, "h0", "an untouched message keeps its handle");
+      assert.match((await run(kit.hooks, kit.$, "")).text, /compact\s+on, Jev prunes tool calls · last: kept \d+\/22 messages, \d+% smaller/);
+    });
+
+    test("too little to remove, or the gateway, leaves the engine's summary to run and /jev says why", async () => {
+      const kit = await withJev();
+      let fellThrough = false;
+      await kit.hooks.get("session.compact")!(kit.$, compactEvent(2), async () => (fellThrough = true, { messages: [] }));
+      assert.equal(fellThrough, true);
+      assert.match((await run(kit.hooks, kit.$, "")).text, /last: engine summary: only \d+% removed, needs 25%/);
+      const gw = await withJev({ TYPESAFE_API_KEY: undefined, AI_GATEWAY_API_KEY: "gw-key" }, { store: new Map(), id: "sess-GW" });
+      fellThrough = false;
+      await gw.hooks.get("session.compact")!(gw.$, compactEvent(), async () => (fellThrough = true, { messages: [] }));
+      assert.equal(fellThrough, true);
+      assert.match((await run(gw.hooks, gw.$, "")).text, /engine summary: the gateway/);
+    });
+
+    test("/jev compact off and on, kept across a reload; JEV_ROUTER_COMPACT=0 seeds off", async () => {
+      const kit = await withJev();
+      assert.match((await run(kit.hooks, kit.$, "compact off")).text, /compaction by Jev off/);
+      let fellThrough = false;
+      await kit.hooks.get("session.compact")!(kit.$, compactEvent(), async () => (fellThrough = true, { messages: [] }));
+      assert.equal(fellThrough, true);
+      assert.equal(kit.compactions(), 0, "Jev is not asked while off");
+      assert.match((await run(kit.hooks, kit.$, "")).text, /compact\s+off \(\/jev compact on\)/);
+      const again = await withJev({}, kit.shared);
+      assert.match((await run(again.hooks, again.$, "compact")).text, /compaction by Jev off/);
+      assert.match((await run(again.hooks, again.$, "compact on")).text, /compaction by Jev on/);
+      const seeded = await withJev({ JEV_ROUTER_COMPACT: "0" }, { store: new Map(), id: "sess-SEED" });
+      assert.match((await run(seeded.hooks, seeded.$, "")).text, /compact\s+off/);
+    });
+
+    test("a compaction still forgets what was warm", async () => {
+      const kit = await withJev();
+      kit.setTier("fable", 0.95, 3);
+      kit.setContext(20_000);
+      await turn(kit.hooks, kit.$, "cw1", "plan it");
+      await kit.hooks.get("session.compact")!(kit.$, compactEvent(), async () => ({ messages: [] }));
+      kit.setContext(null);
+      kit.setTier("haiku", 0.99, 0);
+      assert.equal((await turn(kit.hooks, kit.$, "cw2", "2+2")).sent.model, "claude-haiku-4-5", "no hold survives a compaction");
+    });
+  });
+
   test("a prompt repeated by the same copy is routed each time", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);

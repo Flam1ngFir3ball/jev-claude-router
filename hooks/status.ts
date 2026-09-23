@@ -45,6 +45,7 @@ import {
   type Ttl,
 } from "./pricing.ts";
 import type { ProviderResult } from "./provider.ts";
+import { compactionLine, type Compaction } from "./compactor.ts";
 
 /**
  * What the API said a turn cost, and which model it says answered. The
@@ -269,6 +270,9 @@ export type Status = {
   upgradeMax?: number | null;
   /** The most effort each tier may be asked for. */
   ceiling: Ceiling;
+  /** Compaction by Jev: on, and the last one; absent on older callers. */
+  compactOn?: boolean;
+  compaction?: Compaction | null;
   /** Which prompt cache the session writes; the price of a switch depends on it. */
   ttl: Ttl;
   /** The context size the next turn would carry, or null before the first reply. */
@@ -814,6 +818,14 @@ export function statusReport(status: Status): string {
     }`,
   );
   lines.push(`  ceiling   ${ceilingLine(status.ceiling)}`);
+  if (status.compactOn !== undefined)
+    lines.push(
+      `  compact   ${
+        status.compactOn
+          ? `on, Jev prunes tool calls${status.compaction ? ` · last: ${compactionLine(status.compaction)}` : ""}`
+          : "off (/jev compact on)"
+      }`,
+    );
   lines.push(`  session   ${sessionLine(status)}`);
   lines.push(`  cache     ${cacheLine(status)}`);
   lines.push(`  tiers     ${status.offered.join(", ")}`);
