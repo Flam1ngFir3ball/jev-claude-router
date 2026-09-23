@@ -576,7 +576,7 @@ describe("register: the route in the reply", () => {
     assert.match(out.text, /not routed — \[agent\] agent-unknown-xyz/);
   });
 
-  test("a main-loop step reads the agent list once, at its end, to know whether the reply is over", async () => {
+  test("a main-loop step with no agents of its own never touches the agent list", async () => {
     const { hooks, $, listCalls } = load();
     await hooks.get("turn.start")!(
       $,
@@ -588,7 +588,7 @@ describe("register: the route in the reply", () => {
         answeredBy("claude-opus-5-5"),
       ),
     );
-    assert.equal(listCalls(), 1);
+    assert.equal(listCalls(), 0);
   });
 });
 
@@ -1729,20 +1729,59 @@ describe("register: one summary per reply", () => {
     return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
   }
 
+  /** The main loop spawning a background agent the engine lists as agent-1. */
+  const spawn = (hooks: Map<string, Function>, $: unknown, over: Record<string, unknown> = {}) =>
+    hooks.get("agent.spawn")!(
+      $,
+      { prompt: "review it", description: "review it", subagentType: "general-purpose", fork: false, background: true, ...over },
+      async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "agent-1" }),
+    );
+
   test("a reply that spawned background work gets its summary when the work is done, once", async () => {
     const { hooks, $, setAgentStatus } = await started();
     setAgentStatus("running");
-    const first = await turn(hooks, $, "r1", "review everything");
-    assert.doesNotMatch(first, /Model  /, "an agent is still running, so the reply is not over");
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "r1" }, async (e: unknown) => e);
+    await spawn(hooks, $);
+    const first = (
+      await collect(
+        hooks.get("turn.step")!($, { turnId: "r1", index: 0 }, (e: { model: string }) => answeredBy(e.model)),
+      )
+    ).filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.doesNotMatch(first, /Model  /, "its agent is still running, so the reply is not over");
     setAgentStatus("completed");
     const woken = await turn(hooks, $, "r2", notice);
     assert.match(woken, /Model  2 turns: opus·medium ✓, opus·medium ✓ \(1 woken by finished tasks\)/);
+    assert.match(woken, /Agents general-purpose on opus/);
     assert.match(woken, /Cost   \$/);
     assert.equal(woken.match(/Model  /g)?.length, 1);
     // The summary was written; the next typed prompt starts a new reply.
     const next = await turn(hooks, $, "r3", "and now this");
     assert.match(next, /Model  answered by claude-opus-5-5 ✓/);
     assert.doesNotMatch(next, /2 turns/);
+  });
+
+  test("an agent from an earlier reply does not hold a later reply's summary", async () => {
+    const { hooks, $, setAgentStatus } = await started();
+    setAgentStatus("running");
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "e1" }, async (e: unknown) => e);
+    await spawn(hooks, $);
+    await collect(hooks.get("turn.step")!($, { turnId: "e1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    // Still running, and the person moves on.
+    const later = await turn(hooks, $, "e2", "unrelated quick question");
+    assert.match(later, /Model  answered by claude-opus-5-5 ✓/);
+  });
+
+  test("a spawn the router leaves alone still belongs to the reply", async () => {
+    const { hooks, $, setAgentStatus } = await started();
+    setAgentStatus("running");
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "f1" }, async (e: unknown) => e);
+    await spawn(hooks, $, { model: "haiku" });
+    const first = (
+      await collect(
+        hooks.get("turn.step")!($, { turnId: "f1", index: 0 }, (e: { model: string }) => answeredBy(e.model)),
+      )
+    ).filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.doesNotMatch(first, /Model  /);
   });
 
   test("a compaction mid-turn is not the end of the reply", async () => {
@@ -1795,7 +1834,9 @@ describe("register: one summary per reply", () => {
     const { hooks, $, setTier, setAgentStatus } = await started();
     setAgentStatus("running");
     setTier("fable", 0.9, 3);
-    await turn(hooks, $, "o1", "review everything");
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "o1" }, async (e: unknown) => e);
+    await spawn(hooks, $);
+    await collect(hooks.get("turn.step")!($, { turnId: "o1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
     await turn(hooks, $, "o2", "The user hasn't heard from you in a while — say what you're doing, then continue.");
     setAgentStatus("completed");
     const woken = await turn(hooks, $, "o3", notice);

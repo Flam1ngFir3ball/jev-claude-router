@@ -183,12 +183,18 @@ async function sessionModelOf($: {
   }
 }
 
-/** True while any background agent is still running: the reply is not over. */
-async function agentsRunning($: {
-  agent: { list: () => Promise<readonly { status: string }[]> };
-}): Promise<boolean> {
+/**
+ * True while any of `ids` is still running: the reply that spawned them is
+ * not over. Only the reply's own agents count — one from an earlier reply,
+ * or a long-lived one, must not hold every later summary hostage.
+ */
+async function agentsRunning(
+  $: { agent: { list: () => Promise<readonly { id: string; status: string }[]> } },
+  ids: ReadonlySet<string>,
+): Promise<boolean> {
+  if (ids.size === 0) return false;
   const rows = await $.agent.list().catch(() => []);
-  return rows.some((r) => r.status === "running");
+  return rows.some((r) => ids.has(r.id) && r.status === "running");
 }
 
 /**
@@ -249,6 +255,8 @@ export function register(on: On) {
    * reply changing model three times.
    */
   let reply: Attempt[] = [];
+  /** The agents the current reply spawned; its summary waits for them. */
+  let replyAgents = new Set<string>();
   let latest: Decision | null = null;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
@@ -462,7 +470,10 @@ export function register(on: On) {
     // and its summary folds into that reply's.
     const notification = notificationOf(e.text) !== null;
     const nudge = isEngineNudge(e.text);
-    if (!notification && !nudge) reply = [];
+    if (!notification && !nudge) {
+      reply = [];
+      replyAgents = new Set();
+    }
 
     // A bare go-ahead continues the previous turn's work on the previous
     // turn's decision, without a round trip: Jev is confidently wrong about
@@ -712,7 +723,7 @@ export function register(on: On) {
           attempt.kind !== "agent" &&
           attempt.kind !== "nudge" &&
           !MID_TURN.has(chunk.stopReason ?? "") &&
-          !(await agentsRunning($))
+          !(await agentsRunning($, replyAgents))
         ) {
           const summary = replySummary(reply);
           if (summary !== null) {
@@ -723,6 +734,7 @@ export function register(on: On) {
             };
             // Written once; what comes after is a new reply's worth.
             reply = [];
+            replyAgents = new Set();
           }
         }
       }
@@ -743,7 +755,13 @@ export function register(on: On) {
   // cost of a different model is its ~17k-token system prefix, which a
   // haiku loop pays back in its first tool call.
   on("agent.spawn", async ($, e, next) => {
-    if (!enabled || e.fork || e.model !== undefined) return next(e);
+    // A spawn the router leaves alone still belongs to the reply that made
+    // it, and the reply's summary waits for it like any other.
+    if (!enabled || e.fork || e.model !== undefined) {
+      const started = await next(e);
+      if (started.agentId !== undefined) replyAgents.add(started.agentId);
+      return started;
+    }
     settings = await seedSettings($, settings);
 
     const attempt = spawnAttemptOf(
@@ -763,6 +781,7 @@ export function register(on: On) {
       // dropped effort routing for resumed agents. Always keep the id we
       // just set — list() may not include it yet.
       const justStarted = started.agentId;
+      replyAgents.add(justStarted);
       spawned.set(justStarted, attempt);
       if (spawned.size > CACHE_LIMIT) {
         const live = new Set(
