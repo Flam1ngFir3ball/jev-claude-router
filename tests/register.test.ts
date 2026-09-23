@@ -2396,6 +2396,33 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(out, /✳️ opus/, "the newest copy's");
   });
 
+  test("a line and summary the model copied into its own text are dropped, leaving the real ones", async () => {
+    // Seen 2026-09-23: the model ended a reply with a footer of made-up
+    // figures above the real one, which read as a second copy of the plugin.
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-IMIT" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.95, 1);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "merge and push", turnId: "m1" }, async (e: unknown) => e);
+    async function* copying(model: string) {
+      yield {
+        kind: "text",
+        index: 0,
+        text: "> ✳️ opus · medium · Jev 12% · 999ms\n\n---\n\nMerged.\n\n```\nopus-5-5 ✓ medium · Jev 12% · $0.21 · 450k in (99% cached) · 3k out\n```",
+        ref: 1,
+      };
+      yield { kind: "stop", stopReason: "end_turn", usage: usage(model, 1000), ref: 2 };
+      return { stopReason: "end_turn" };
+    }
+    const out = (await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "m1", index: 0 }, (e: { model: string }) => copying(e.model))))
+      .filter((c) => c.kind === "text")
+      .map((c) => c.text)
+      .join("");
+    assert.equal(out.match(/✳️/g)?.length, 1, "one route line");
+    assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
+    assert.doesNotMatch(out, /\$0\.21|999ms|Jev 12%/, "the copied figures are gone");
+    assert.match(out, /Merged\./);
+  });
+
   test("a prompt repeated by the same copy is routed each time", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);

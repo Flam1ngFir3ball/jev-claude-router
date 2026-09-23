@@ -56,6 +56,7 @@ import {
   toggleReply,
   TYPICAL_OUTPUT_TOKENS,
   unknownCommandReply,
+  withoutImitations,
   type AgentTag,
   type Attempt,
 } from "./status.ts";
@@ -1127,11 +1128,25 @@ export function register(on: On) {
     // writes nothing a second time, whatever put two copies in the chain.
     let summarised = false;
 
-    for await (const chunk of step) {
+    for await (let chunk of step) {
       const at = (chunk as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
       if (chunk.kind === "text") {
         if (chunk.ref === undefined && SUMMARY.test(chunk.text)) summarised = true;
+        // What the model streamed carries a ref; a line or summary in it is
+        // one the model copied from its past replies, not one a copy wrote.
+        // Only the copy holding the turn does this: an older copy chained
+        // around it would take the holder's real line for a copy.
+        if (attempt && !inert && chunk.ref !== undefined) {
+          const own = withoutImitations(chunk.text);
+          if (
+            own !== chunk.text &&
+            !superseded() &&
+            (await holdsTurnOf(e.turnId)) &&
+            !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+          )
+            chunk = { ...chunk, text: own };
+        }
         if (attempt && pending.has(e.turnId)) {
           // The line is this turn's either way; a copy that lost the session
           // since the turn began leaves it to the owner, once, and a line an

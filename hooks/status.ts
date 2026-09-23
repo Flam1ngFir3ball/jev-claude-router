@@ -865,6 +865,26 @@ export const REPLY_SEPARATOR = "\n\n---\n\n";
  */
 export const FOOTER_SEPARATOR = "\n\n";
 
+/** A route line the model wrote itself at the start of its text, with the rule under it. */
+const IMITATED_LINE = /^> (?:✳️|⚠️) [^\n]*(?:\n+---(?:\n+|$)|\n+|$)/;
+
+/**
+ * A summary the model wrote itself at the end of its text: a fence whose
+ * first line has the summary's shape, and nothing after the fence.
+ */
+const IMITATED_SUMMARY = /\n*```\n[^\n`]* ✓ [^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\s*$/;
+
+/**
+ * The model's text without a route line or summary it wrote itself. Both
+ * are in its past replies, so it copies them: seen 2026-09-23, a footer with
+ * made-up figures ($0.21, 450k in) typed above the real one, which read as a
+ * second copy of the plugin. Only the ends of the text are touched, so a
+ * line or summary quoted in the middle of a reply stays.
+ */
+export function withoutImitations(text: string): string {
+  return text.replace(IMITATED_LINE, "").replace(IMITATED_SUMMARY, "");
+}
+
 /**
  * The reply to a `/jev` argument nothing reads. A removed toggle
  * (`/jev xhigh on`) is pointed at the ceiling that replaced it.

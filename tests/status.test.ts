@@ -23,6 +23,7 @@ import {
   cacheRatio,
   type Attempt,
   type Usage,
+  withoutImitations,
 } from "../hooks/status.ts";
 import {
   ceilingAt,
@@ -962,5 +963,30 @@ describe("dollars", () => {
   test("the report totals the session", () => {
     assert.match(statusReport({ ...base, spent: 12.345 }), /spent\s+\$12\.35 this session/);
     assert.doesNotMatch(statusReport(base), /spent/);
+  });
+});
+
+describe("withoutImitations", () => {
+  const footer = "\n\n```\nopus-5-5 ✓ medium · haiku costs $1.77 vs $0.057 · $0.21 · 450k in (99% cached) · 3k out\n```";
+  test("drops a summary the model typed at the end of its text", () => {
+    assert.equal(withoutImitations(`Merged and pushed.${footer}`), "Merged and pushed.");
+  });
+  test("drops a summary with notes under its first line", () => {
+    const withNotes = "Done.\n\n```\nopus-5-5 ✓ medium · Jev 32% · $0.14 · 351k in (99% cached) · 2k out\nkept opus: Jev 32% on fable, needs 90%\n```\n";
+    assert.equal(withoutImitations(withNotes), "Done.");
+  });
+  test("drops a route line the model typed at the start, with its rule", () => {
+    assert.equal(
+      withoutImitations("> ✳️ opus · medium · kept opus: Jev 32% on fable, needs 90% · 407ms\n\n---\n\nChecking the store."),
+      "Checking the store.",
+    );
+  });
+  test("leaves a line or summary quoted in the middle alone", () => {
+    const quoted = `The line reads:\n\n> ✳️ opus · medium · Jev 94% · 353ms\n\nand the summary:${footer}\n\nThat is expected.`;
+    assert.equal(withoutImitations(quoted), quoted);
+  });
+  test("leaves ordinary text and code blocks alone", () => {
+    const text = "Run this:\n\n```bash\nnpm test\n```";
+    assert.equal(withoutImitations(text), text);
   });
 });
