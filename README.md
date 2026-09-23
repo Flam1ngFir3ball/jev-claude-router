@@ -232,6 +232,15 @@ and restored by the first hook after the reload. Before, a reload reset
 all of it, and the first switch after one was priced against the wrong
 model.
 
+More than one loaded copy can see the same turn: a reload leaves the old
+module in place, and the desktop app has resumed a conversation under a new
+session id while a copy kept reading the old one. Each copy used to call
+Jev and write its own line, giving two or three lines per reply. Now the
+newest copy claims each turn in the store, keyed by the turn's text for
+60 seconds, and the others pass that turn through untouched. The cost:
+two separate sessions that get the exact same prompt within that minute
+route only one of them.
+
 `/jev quiet` drops both the line and the summary without turning routing
 off; `/jev loud` brings them back. Both ride in the reply's recorded text, so
 the model sees them on its own past replies; that is the standing cost of a
