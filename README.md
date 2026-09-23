@@ -403,7 +403,7 @@ An unrouted turn announces itself too, with the reason:
 ## Layout
 
 ```
-hooks/register.ts   the five hooks, the per-turn cache, the turn history
+hooks/register.ts   the six hooks, the per-turn cache, the turn history
 hooks/jev.ts        the request shape, timeout, named failures
 hooks/provider.ts   which backend (TypeSafe direct or gateway) to use
 hooks/policy.ts     the tiers, the criteria, answers → model and effort

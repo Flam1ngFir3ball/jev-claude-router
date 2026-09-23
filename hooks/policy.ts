@@ -234,7 +234,7 @@ const CONTINUATION =
   /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!,?]*$/i;
 
 export function isContinuation(text: string): boolean {
-  return CONTINUATION.test(text.trim());
+  return CONTINUATION.test(normalizeQuotes(text).trim());
 }
 
 /**
@@ -243,31 +243,43 @@ export function isContinuation(text: string): boolean {
  * "run on" are accepted; bare "on"/"for"/"with"/"using" are not (they turned
  * "happy with opus" and "I'm using opus for comparison" into routes). A bare
  * tier glued to another word ("sonnet-level") is not a name either. Negations
- * (`don't want to use`, `won't use`, `avoid using`) skip only the first run-on
- * after the negation, so "don't use haiku use opus" still forces opus. A model
- * id ("use claude-opus-5-5") names its tier too. Returns the tier, or null
- * when none is named or the named one is not offered.
+ * skip only the first run-on *or* bare `using <tier>` after them, so
+ * "stop using haiku and use opus" still forces opus. A model id names its
+ * tier too. Returns the tier, or null when none is named or not offered.
  */
 const OVERRIDE =
   /\b(?:use|do (?:it |this )?using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
 
 /**
- * Negation starters. Bare `\bnot` is omitted on purpose: "why not use opus"
- * is an affirmative ask. Spaced `do not` / `can not` are included; so are the
- * common `*n't` forms (`doesn't`, `shouldn't`, …).
+ * Bare `using <tier>` is not an override, but it can absorb a negation so a
+ * later affirmative is not wrongly skipped ("stop using haiku and use opus").
+ */
+const USING_SINK =
+  /\busing\s+(?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+
+/**
+ * Negation starters. Bare `\bnot` is omitted: "why not use opus" is
+ * affirmative. Spaced `do/can/must/may not` and common `*n't` forms
+ * (curly apostrophes normalized first) are included.
  */
 const OVERRIDE_NEGATION_AT =
-  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|can(?:'?t|not|\s+not)|never|avoid|stop|do\s+not)\b/gi;
+  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|couldn'?t|can(?:'?t|not|\s+not)|never|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
+
+/** Fold typographic apostrophes so iOS/macOS quotes match the ASCII forms. */
+function normalizeQuotes(text: string): string {
+  return text.replace(/[\u2018\u2019\u02BC]/g, "'");
+}
 
 export function parseOverride(
   text: string,
   offered: readonly Tier[] = TIERS,
 ): Tier | null {
-  const matches = [...text.matchAll(OVERRIDE)];
+  const normalized = normalizeQuotes(text);
+  const matches = [...normalized.matchAll(OVERRIDE)];
   let named: Tier | null = null;
   for (const match of matches) {
     const at = match.index ?? 0;
-    if (overrideNegated(text, at, matches)) continue;
+    if (overrideNegated(normalized, at, matches)) continue;
     const tier = match[1]?.toLowerCase() as Tier | undefined;
     if (tier !== undefined && offered.includes(tier)) named = tier;
   }
@@ -275,8 +287,8 @@ export function parseOverride(
 }
 
 /**
- * True when this match is the first run-on after a negation. A later
- * affirmative in the same sentence ("don't use haiku use opus") is not.
+ * True when this match is the first run-on (or bare `using <tier>`) after a
+ * negation. A later affirmative in the same sentence is not.
  */
 function overrideNegated(
   text: string,
@@ -289,12 +301,15 @@ function overrideNegated(
     lastNeg = neg.index ?? -1;
   }
   if (lastNeg < 0) return false;
-  for (const other of matches) {
-    const otherAt = other.index ?? 0;
-    if (otherAt < lastNeg) continue;
-    return otherAt === matchAt;
-  }
-  return false;
+
+  const sinks = [
+    ...matches.map((m) => m.index ?? -1),
+    ...[...text.matchAll(USING_SINK)].map((m) => m.index ?? -1),
+  ]
+    .filter((i) => i >= lastNeg)
+    .sort((a, b) => a - b);
+
+  return sinks[0] === matchAt;
 }
 
 /** A decision forced to a named tier; Jev's effort is kept, its tier is not. */
