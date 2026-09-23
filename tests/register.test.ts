@@ -934,12 +934,14 @@ describe("register: a bare go-ahead", () => {
     assert.match(go.text, /continue/);
   });
 
-  test("on the first turn there is nothing to continue, so Jev is asked", async () => {
+  test("on the first turn there is nothing to continue, so the session model stays", async () => {
     const { hooks, $, setTier, fetches } = await started();
     setTier("haiku", 1, 0);
     const t = await turn(hooks, $, "g6", "yes");
-    assert.equal(fetches(), 1);
-    assert.equal(t.sent.model, "claude-haiku-4-5");
+    assert.equal(fetches(), 0, "Jev is not asked; it would clear sticky");
+    assert.equal(t.sent.model, undefined, "left on the session model");
+    assert.match(t.text, /unrouted/);
+    assert.match(t.text, /nothing to continue/);
   });
 
   test("becomes what the next turn holds to", async () => {
@@ -952,7 +954,7 @@ describe("register: a bare go-ahead", () => {
     assert.equal(t.sent.model, "claude-fable-5-1", "held to fable, via the go-ahead");
   });
 
-  test("after an unrouted turn, a go-ahead asks Jev rather than replaying a stale route", async () => {
+  test("after an unrouted turn, a go-ahead stays on the session model without asking Jev", async () => {
     const { hooks, $, setTier, fail, fetches } = await started();
     setTier("fable", 0.9, 3);
     await turn(hooks, $, "u1", "plan it");
@@ -961,9 +963,26 @@ describe("register: a bare go-ahead", () => {
     const asked = fetches();
     setTier("haiku", 1, 0);
     const go = await turn(hooks, $, "u3", "yes");
-    assert.equal(fetches(), asked + 1, "Jev is asked; continueFrom was cleared");
-    assert.equal(go.sent.model, "claude-haiku-4-5");
-    assert.doesNotMatch(go.text, /continue/);
+    assert.equal(fetches(), asked, "Jev is not asked");
+    assert.equal(go.sent.model, undefined, "session model, not a stale fable or a haiku flip");
+    assert.match(go.text, /nothing to continue/);
+  });
+
+  test("after /jev off then on, a go-ahead does not replay the pre-off route", async () => {
+    const { hooks, $, setTier, fetches } = await started();
+    const run = (args: string) =>
+      hooks.get('command.run:{"command":"jev"}')!($, { args });
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "o1", "plan it");
+    await run("off");
+    await turn(hooks, $, "o2", "session turn while off");
+    await run("on");
+    const asked = fetches();
+    setTier("haiku", 1, 0);
+    const go = await turn(hooks, $, "o3", "yes");
+    assert.equal(fetches(), asked);
+    assert.equal(go.sent.model, undefined);
+    assert.match(go.text, /nothing to continue/);
   });
 });
 

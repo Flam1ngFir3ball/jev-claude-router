@@ -264,7 +264,6 @@ describe("a tier named in the prompt", () => {
   });
 
   test("the tier names as ordinary words are left alone", () => {
-    // Each of these routed under earlier cuts (bare on/for/with).
     for (const text of [
       "search for opus docs",
       "notes on haiku poetry",
@@ -275,6 +274,9 @@ describe("a tier named in the prompt", () => {
       "I'm happy with opus so far",
       "compatible with haiku",
       "deal with fable later",
+      "I'm using opus for comparison",
+      "use sonnet-level thinking",
+      "when using sonnet-level caching",
     ]) {
       assert.equal(parseOverride(text), null, text);
     }
@@ -286,6 +288,14 @@ describe("a tier named in the prompt", () => {
     assert.equal(parseOverride("never use fable for this"), null);
     assert.equal(parseOverride("do not use sonnet"), null);
     assert.equal(parseOverride("not using opus today"), null);
+    assert.equal(parseOverride("I don't want to use haiku"), null);
+    assert.equal(parseOverride("do not try to use opus"), null);
+    assert.equal(parseOverride("never ever use fable"), null);
+    assert.equal(parseOverride("I won't use haiku"), null);
+    assert.equal(parseOverride("can't use sonnet for this"), null);
+    assert.equal(parseOverride("avoid using opus"), null);
+    assert.equal(parseOverride("stop using haiku"), null);
+    assert.equal(parseOverride("please don't use haiku"), null);
   });
 
   test("a tier the environment excluded cannot be named back in", () => {

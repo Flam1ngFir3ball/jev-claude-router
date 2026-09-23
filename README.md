@@ -16,7 +16,7 @@ Context    you type a prompt
 turn.start    ask Jev  →  tier: fable   effort: 3
               ↓
 turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
-              first text chunk ← 'jev → fable·xhigh  0.97 · 641ms\n\n' + text
+              first text chunk ← '> ✳️ `fable` · xhigh · 97% · 641ms\n\n---\n\n' + text
               ↓
 /jev          the full history, with reasons for anything unrouted
 ```
@@ -297,6 +297,9 @@ named. Three shaky haiku calls in a row will not creep the session onto haiku
 one turn at a time. An unrouted turn leaves the sticky hold alone (nothing
 routed to hold to), but clears what a bare go-ahead would continue: that turn
 ran on the session model, so "yes" must not re-apply the older routed tier.
+A go-ahead with nothing to continue stays on the session model and does not
+ask Jev (which would clear sticky with a near-certain haiku pick). `/jev off`
+clears both the sticky hold and the continue target for the same reason.
 
 The bar starts at 0.75, which is a starting point rather than a measured
 optimum. Retune it in place with `/jev sticky 0.6` and watch the next few
@@ -319,13 +322,15 @@ and the like, trailing punctuation aside) runs on the previous turn's tier and
 effort without asking Jev, tagged `continue`. Anything longer is a prompt.
 
 **A tier you named.** "use opus for this" scores opus at 0.43, under the bar,
-so stickiness refused it. A tier named with a run-on verb (`use`, `using`,
+so stickiness refused it. A tier named with a run-on verb (`use`, `do it using`,
 `switch to`, `route to`, `run this on`, `go with`) is taken as read,
 needs no answer from Jev, and is tagged `forced`. Jev's effort still applies.
-Bare "on", "for", and "with" are not verbs here: "search for opus docs" is a
-search, "happy with opus" is not a route. Negations are skipped and the last
-affirmative match wins ("don't use haiku, use opus" → opus). A tier the
-environment excluded cannot be named back in.
+Bare "on", "for", "with", and "using" are not verbs here: "search for opus
+docs" is a search, "happy with opus" and "I'm using opus for comparison" are
+not routes. Negations a few words back are skipped (`don't want to use`,
+`won't use`, `avoid using`) and the last affirmative match wins
+("don't use haiku, use opus" → opus). A tier the environment excluded cannot
+be named back in.
 
 ## Subagents
 
@@ -387,12 +392,12 @@ as it would without the mod:
 The only cost of a failure is the latency spent waiting, capped at the timeout.
 
 Low confidence is not a failure. The pick is used and the line marks it, so
-`jev → opus·high?` means Jev was under 50% sure of the tier.
+`> ✳️ \`opus\` · high · 40%?` means Jev was under 50% sure of the tier.
 
 An unrouted turn announces itself too, with the reason:
 
 ```
-jev → unrouted (gateway said HTTP 403 (customer_verification_required))
+> ⚠️ `unrouted` · gateway said HTTP 403 (customer_verification_required)
 ```
 
 ## Layout

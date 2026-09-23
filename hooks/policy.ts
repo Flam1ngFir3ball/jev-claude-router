@@ -239,19 +239,24 @@ export function isContinuation(text: string): boolean {
 
 /**
  * A tier named in the prompt: "use opus", "go with fable", "switch to haiku",
- * "run this on sonnet". Only verbs that actually mean "run on" are accepted;
- * bare "on"/"for"/"with" are not (they turned "search for opus docs", "notes
- * on haiku", and "happy with opus" into routes). Negations are skipped, and
- * the last affirmative match wins, so "don't use haiku, use opus" is opus. A
- * model id ("use claude-opus-5-5") names its tier too. Returns the tier, or
- * null when none is named or the named one is not offered: an exclusion is a
- * standing decision, and a prompt does not overrule the environment.
+ * "run this on sonnet", "do it using opus". Only verbs that actually mean
+ * "run on" are accepted; bare "on"/"for"/"with"/"using" are not (they turned
+ * "happy with opus" and "I'm using opus for comparison" into routes). A bare
+ * tier glued to another word ("sonnet-level") is not a name either. Negations
+ * a few words back are skipped (`don't want to use`, `won't use`, `avoid
+ * using`), and the last affirmative match wins. A model id
+ * ("use claude-opus-5-5") names its tier too. Returns the tier, or null when
+ * none is named or the named one is not offered.
  */
 const OVERRIDE =
-  /\b(?:use|using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)\b/gi;
+  /\b(?:use|do (?:it |this )?using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
 
-/** Words immediately before a match that mean "do not run on". */
-const OVERRIDE_NEGATION = /(?:\bdo\s*n'?t|\bnever|\bnot)\s+$/i;
+/**
+ * Negation of a run-on verb, allowing a few words in between
+ * ("don't want to use", "never ever use", "can't use").
+ */
+const OVERRIDE_NEGATION =
+  /(?:\bdo\s*n'?t|\bwon'?t|\bcan(?:'?t|not)|\bnever|\bnot|\bavoid|\bstop)\s+(?:\w+\s+){0,5}$/i;
 
 export function parseOverride(
   text: string,

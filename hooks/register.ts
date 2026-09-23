@@ -23,6 +23,7 @@ import {
   announceReply,
   attemptOf,
   continuationOf,
+  continuationSkipped,
   HISTORY_LIMIT,
   liveLine,
   FOOTER_SEPARATOR,
@@ -159,6 +160,12 @@ export function register(on: On) {
     }
   };
 
+  /** Move a live entry to the end so FIFO trim drops idle keys first. */
+  const touch = <V>(map: Map<string, V>, key: string, value: V) => {
+    map.delete(key);
+    map.set(key, value);
+  };
+
   const trimSet = (set: Set<string>) => {
     while (set.size > CACHE_LIMIT) {
       const oldest = set.values().next();
@@ -189,7 +196,13 @@ export function register(on: On) {
 
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
-      if (!enabled) latest = null;
+      if (!enabled) {
+        latest = null;
+        // Intervening session-model turns must not be continued as if the
+        // pre-off routed decision were still the previous turn.
+        continueFrom = null;
+        running = null;
+      }
       return { text: toggleReply(enabled) };
     }
 
@@ -232,6 +245,15 @@ export function register(on: On) {
   on("turn.start", async ($, e, next) => {
     if (!enabled) return next(e);
 
+    // session.start normally seeds sticky and surface; if the host skipped it,
+    // do that once here so JEV_ROUTER_STICKY is not silently ignored.
+    if (surface === null) {
+      surface = await $.session.surface();
+      sticky = stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
+        ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
+        : null;
+    }
+
     const offered = offeredTiers(
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
     );
@@ -239,15 +261,18 @@ export function register(on: On) {
     // A bare go-ahead continues the previous turn's work on the previous
     // turn's decision, without a round trip: Jev is confidently wrong about
     // these (it grades the text, which is trivial, not the task, which is
-    // whatever was just proposed). Nothing to continue on the first turn.
-    const attempt =
-      isContinuation(e.text) && continueFrom !== null
+    // whatever was just proposed). When there is nothing to continue (first
+    // turn, or the previous turn left the session model), still do not ask
+    // Jev — that would clear sticky with a ~1.00 haiku pick.
+    const attempt = isContinuation(e.text)
+      ? continueFrom !== null
         ? continuationOf(e.text, continueFrom)
-        : attemptOf(e.text, await classify($, e.text, offered), offered, {
-            sticky,
-            running,
-            forced: parseOverride(e.text, offered),
-          });
+        : continuationSkipped(e.text)
+      : attemptOf(e.text, await classify($, e.text, offered), offered, {
+          sticky,
+          running,
+          forced: parseOverride(e.text, offered),
+        });
 
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
@@ -300,7 +325,9 @@ export function register(on: On) {
     // none; it is recorded, though, or /jev would show one prompt and hide
     // the four requests it caused.
     let attempt = byTurn.get(e.turnId);
-    if (attempt === undefined && e.agentId !== undefined) {
+    if (attempt !== undefined) {
+      touch(byTurn, e.turnId, attempt);
+    } else if (e.agentId !== undefined) {
       // A spawn the router saw was recorded then; this only links the turn
       // to it, so a resumed agent's later turns add their usage to the same
       // row rather than opening one each. Recording it again here listed
@@ -309,8 +336,7 @@ export function register(on: On) {
       if (attempt !== undefined) {
         // Touch for LRU: an active agent's decision must outlive a burst of
         // newer spawns, or its later steps miss the row and run unrouted.
-        spawned.delete(e.agentId);
-        spawned.set(e.agentId, attempt);
+        touch(spawned, e.agentId, attempt);
       } else {
         // A fork, or a spawn from before the router loaded: nothing was
         // decided for it, and it runs on whatever the engine resolved.
@@ -327,9 +353,12 @@ export function register(on: On) {
       byTurn.set(e.turnId, attempt);
       trim(byTurn);
     }
-    const decision =
-      decisions.get(e.turnId) ??
-      (attempt && "decision" in attempt ? attempt.decision : undefined);
+    let decision = decisions.get(e.turnId);
+    if (decision !== undefined) {
+      touch(decisions, e.turnId, decision);
+    } else if (attempt && "decision" in attempt) {
+      decision = attempt.decision;
+    }
     const step = decision
       ? next({ ...e, model: decision.model, effort: decision.effort })
       : next(e);

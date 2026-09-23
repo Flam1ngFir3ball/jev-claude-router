@@ -236,6 +236,21 @@ export function continuationOf(text: string, running: Decision): Attempt {
 }
 
 /**
+ * A bare go-ahead when there is nothing safe to continue (first turn, or the
+ * previous turn was unrouted / routing was off). Jev must not be asked: it
+ * grades these as trivial at ~1.00 and would clear any sticky bar. The turn
+ * stays on the session model.
+ */
+export function continuationSkipped(text: string): Attempt {
+  return {
+    prompt: text,
+    ms: 0,
+    kind: "continue",
+    skipped: "go-ahead with nothing to continue; left on session model",
+  };
+}
+
+/**
  * A spawned subagent's outcome from Jev's answer to its task. No stickiness
  * and no forcing: a subagent starts with an empty conversation, so there is
  * no cache to hold to, and the tier named in the person's prompt was for the
