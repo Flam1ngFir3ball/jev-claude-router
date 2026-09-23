@@ -238,7 +238,7 @@ export function register(on: On) {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "jev",
-      description: "Jev routing: status, or `on` / `off`.",
+      description: "Jev routing: status, on/off, sticky, xhigh.",
     });
     surface = await $.session.surface();
     await seedSticky($);
