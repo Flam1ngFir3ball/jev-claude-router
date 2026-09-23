@@ -257,6 +257,10 @@ const OVERRIDE =
 const USING_SINK =
   /\busing\s+(?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
 
+/** Bare `<tier>` after `avoid`/`stop` only ("avoid haiku and use opus"). */
+const BARE_TIER_SINK =
+  /\b(?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+
 /**
  * Negation starters. Bare `\bnot` is omitted: "why not use opus" is
  * affirmative. `never mind` is omitted (`never(?!\s+mind)`). Spaced
@@ -265,6 +269,13 @@ const USING_SINK =
  */
 const OVERRIDE_NEGATION_AT =
   /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|couldn'?t|can(?:'?t|not|\s+not)|never(?!\s+mind)|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
+
+/**
+ * Words allowed between a negation and its target. Anything else (you, what,
+ * doing, and, …) means the negation is discourse/rhetorical, not "don't use".
+ */
+const NEGATION_BRIDGE =
+  /^(?:\s+(?:want|to|try|ever|really|please|just|even|still|actually|also))*\s*$/i;
 
 /** Fold typographic apostrophes so iOS/macOS quotes match the ASCII forms. */
 function normalizeQuotes(text: string): string {
@@ -287,36 +298,40 @@ export function parseOverride(
   return named;
 }
 
-/** A few words, and no clause break, between a negation and its target. */
+/** True when the gap is only light bridge words and no clause break. */
 function proximityOk(gap: string): boolean {
-  if (/[.!?,;:]/.test(gap)) return false;
-  const words = gap.trim().split(/\s+/).filter(Boolean);
-  return words.length <= 4;
+  if (/[.!?,;:\u2014\u2013\u2026]/.test(gap)) return false;
+  return NEGATION_BRIDGE.test(gap);
 }
 
 /**
- * True when this match is the first nearby run-on (or bare `using <tier>`)
- * after a negation. Discourse uses ("Stop what you are doing and use opus",
- * "Never mind. Use opus.") do not poison a later force.
+ * True when this match is the first attached run-on (or sink) after a
+ * negation. Discourse ("Stop what you're doing and use opus") and tags
+ * ("why don't you use opus") do not bind.
  */
 function overrideNegated(
   text: string,
   matchAt: number,
   matches: RegExpMatchArray[],
 ): boolean {
-  const sinks = [
-    ...matches.map((m) => m.index ?? -1),
-    ...[...text.matchAll(USING_SINK)].map((m) => m.index ?? -1),
-  ]
-    .filter((i) => i >= 0)
-    .sort((a, b) => a - b);
-
   for (const neg of text.matchAll(OVERRIDE_NEGATION_AT)) {
     const negAt = neg.index ?? -1;
     if (negAt < 0 || negAt > matchAt) continue;
     const negEnd = negAt + neg[0].length;
-    for (const sink of sinks) {
-      if (sink < negEnd) continue;
+    const negWord = neg[0].toLowerCase().replace(/\s+/g, " ");
+    const sinks = [
+      ...matches.map((m) => m.index ?? -1),
+      ...[...text.matchAll(USING_SINK)].map((m) => m.index ?? -1),
+    ];
+    if (negWord === "avoid" || negWord === "stop") {
+      sinks.push(
+        ...[...text.matchAll(BARE_TIER_SINK)].map((m) => m.index ?? -1),
+      );
+    }
+    const ordered = [...new Set(sinks.filter((i) => i >= negEnd))].sort(
+      (a, b) => a - b,
+    );
+    for (const sink of ordered) {
       if (!proximityOk(text.slice(negEnd, sink))) break;
       return sink === matchAt;
     }
