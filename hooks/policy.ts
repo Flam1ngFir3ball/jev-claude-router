@@ -17,12 +17,32 @@ export type Decision = {
   /** Jev's confidence in the tier, 0 to 1. The gateway rounds to 2 places. */
   confidence: number;
   /**
+   * Jev's confidence in the effort score, separately. Measured 2026-09-22:
+   * the two move independently (tier 0.81 with effort 0.49 on the same
+   * prompt), and effort confidence is lowest on terse follow-ups, which is
+   * where an effort flip is least worth paying for. 0 when the answer
+   * carried none.
+   */
+  effortConfidence?: number;
+  /**
    * The tier Jev named, when stickiness kept the turn on the previous one
    * instead. Absent on a turn that went where Jev pointed. Kept so the route
    * line can say a hold happened; a hold nobody can see is indistinguishable
    * from a router that is not running.
    */
   held?: Tier;
+  /**
+   * The effort Jev named, when a turn staying on Sonnet kept the previous
+   * turn's effort instead (see `holdsSonnetEffort`). Absent otherwise.
+   */
+  heldEffort?: Effort;
+  /**
+   * The tier was named in the prompt itself ("use opus"), so Jev's tier
+   * answer was set aside and stickiness did not get a vote. Its effort still
+   * comes from Jev. Shown on the route line, since a forced turn at 43%
+   * would otherwise read as a low-confidence pick.
+   */
+  forced?: true;
 };
 
 export const TIERS: readonly Tier[] = ["haiku", "sonnet", "opus", "fable"];
@@ -124,16 +144,15 @@ export function decisionOf(
   if (!offered.includes(choice as Tier)) return null;
 
   const effort = answers.effort as ScoreAnswer | undefined;
-  const confidence =
-    typeof tier.confidence === "number" && Number.isFinite(tier.confidence)
-      ? tier.confidence
-      : 0;
+  const confidenceOf = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) ? v : 0;
 
   return {
     tier: choice as Tier,
     model: MODEL_OF[choice as Tier],
     effort: effortOf(isRecord(effort) ? effort.score : undefined),
-    confidence,
+    confidence: confidenceOf(tier.confidence),
+    effortConfidence: confidenceOf(isRecord(effort) ? effort.confidence : 0),
   };
 }
 
@@ -174,9 +193,10 @@ export function thresholdOf(raw: string | undefined): number {
 /**
  * Holds a shaky switch on the tier the last turn used.
  *
- * Only the model is held. The effort Jev asked for is applied either way,
- * because effort does not change the model and so costs no cache: a held
- * turn still gets to think harder or less hard than the one before it.
+ * Only the model is held here. The effort Jev asked for is applied either
+ * way: on Opus and Haiku it is sent per request and costs no cache, so a
+ * held turn still gets to think harder or less hard than the one before it.
+ * Sonnet is the exception, and `holdsSonnetEffort` handles it separately.
  *
  * `previous` is the tier the last routed turn ran on, or null on the first
  * turn of a session, which has nothing to hold to.
@@ -199,60 +219,97 @@ export function stickyDecision(
 }
 
 /**
- * Detects a bare continuation: "yes", "y", "ok", "go ahead", "continue", etc.
- * These should hold the previous tier and effort, not drop to haiku on 1.00 confidence.
+ * A bare go-ahead: the person is answering the previous turn, not starting a
+ * task. Jev reads these as trivial with near-total confidence ("yes" 1.00,
+ * "y" 0.98, "go ahead" 0.79, measured 2026-09-22), which is right about the
+ * text and wrong about the work: the work is whatever the last turn proposed,
+ * on whatever tier it ran. Stickiness cannot catch this, since its bar is a
+ * confidence and these clear any bar. Trailing punctuation is tolerated;
+ * anything longer is a real prompt and goes to Jev.
  */
+const CONTINUATION =
+  /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!]*$/i;
+
 export function isContinuation(text: string): boolean {
-  const trimmed = text.trim().toLowerCase();
-  const continuations = [
-    "yes",
-    "y",
-    "ok",
-    "ok do it",
-    "go ahead",
-    "go",
-    "continue",
-    "sure",
-    "yep",
-    "yeah",
-    "uh huh",
-    "do it",
-    "go for it",
-    "let's do it",
-  ];
-  return continuations.includes(trimmed);
+  return CONTINUATION.test(text.trim());
 }
 
 /**
- * Parses explicit tier overrides from the prompt text.
- * Matches: "use opus", "with fable", "switch to haiku", "on haiku", "for sonnet"
+ * A tier named in the prompt: "use opus", "with fable, do more research",
+ * "switch to haiku", "run this on sonnet". Only verbs that actually mean
+ * "run on" are accepted; the first cut also took bare "on" and "for", which
+ * turned "search for opus docs" and "notes on haiku" into routes. A model id
+ * ("use claude-opus-5-5") names its tier too. Returns the tier, or null when
+ * none is named or the named one is not offered: an exclusion is a standing
+ * decision, and a prompt does not overrule the environment.
  */
-export function parseOverride(text: string): Tier | null {
-  const lower = text.toLowerCase();
-  // Match patterns like "use X", "with X", "switch to X", "on X", "for X"
-  const match = lower.match(
-    /(?:use|with|switch to|on|for)\s+(haiku|sonnet|opus|fable)/,
-  );
-  if (match && match[1]) {
-    const tier = match[1] as Tier;
-    if (TIERS.includes(tier)) return tier;
-  }
-  return null;
+const OVERRIDE =
+  /\b(?:use|using|switch(?:ing)? to|route to|run (?:it |this )?on|go with|with)\s+(?:claude-)?(haiku|sonnet|opus|fable)\b/i;
+
+export function parseOverride(
+  text: string,
+  offered: readonly Tier[] = TIERS,
+): Tier | null {
+  const named = OVERRIDE.exec(text)?.[1]?.toLowerCase() as Tier | undefined;
+  return named !== undefined && offered.includes(named) ? named : null;
+}
+
+/** A decision forced to a named tier; Jev's effort is kept, its tier is not. */
+export function forcedDecision(tier: Tier, fresh: Decision | null): Decision {
+  return {
+    tier,
+    model: MODEL_OF[tier],
+    effort: fresh?.effort ?? "medium",
+    confidence: fresh?.confidence ?? 0,
+    effortConfidence: fresh?.effortConfidence ?? 0,
+    forced: true,
+  };
 }
 
 /**
- * Whether a Sonnet effort change should be blocked due to low confidence.
- * Sonnet's cache key includes effort, so a flip rewrites ~50% of the prefix.
- * Only allow the flip if confidence is high or the tier itself is changing.
+ * Whether a turn staying on Sonnet should keep the previous turn's effort.
+ *
+ * Measured 2026-09-22 on one session at ~58k context: an effort change on
+ * Opus 5.5 and Haiku 4.5 costs nothing (the engine sends it per turn), but
+ * on Sonnet 5 it rewrites everything after the system block, about half the
+ * prefix, $0.12 at that size. So on Sonnet an effort flip is a cache miss
+ * and gets the same treatment as a model switch: it has to clear the bar.
+ *
+ * The bar is read against Jev's confidence in the effort score, not the
+ * tier, because the two are separate answers and the effort one is the
+ * shakier (0.00 to 0.81 across ten prompts; lowest on the short follow-ups
+ * where a flip is least worth $0.12). Symmetric on purpose: letting rises
+ * through freely ratchets a Sonnet stretch up to xhigh and holds it there.
  */
-export function shouldBlockSonnetEffort(
-  decision: Decision,
+export function holdsSonnetEffort(
+  fresh: Decision,
   previous: Decision | null,
-  confidenceThreshold: number,
+  threshold: number,
 ): boolean {
   if (previous === null) return false;
-  if (decision.tier !== "sonnet" || previous.tier !== "sonnet") return false;
-  if (decision.effort === previous.effort) return false;
-  // Block the effort change if confidence is too low
-  return decision.confidence < confidenceThreshold;
+  if (fresh.tier !== "sonnet" || previous.tier !== "sonnet") return false;
+  if (fresh.effort === previous.effort) return false;
+  return (fresh.effortConfidence ?? 0) < threshold;
+}
+
+/**
+ * The confidence a subagent's classification must reach before its model is
+ * set, up or down. A subagent starts with an empty conversation, so there is
+ * no cache to protect and stickiness does not apply; what the bar guards is
+ * a guess. Calibrated 2026-09-22 on six subagent-style prompts: the
+ * well-specified ones scored 0.72 to 0.98, the one vague audit 0.22, so 0.5
+ * splits them. Below it the subagent runs on what it would have anyway.
+ */
+export const SUBAGENT_CONFIDENCE = 0.5;
+
+/**
+ * Jev's decision for a spawned subagent, or null to leave the spawn alone.
+ * Nothing is held to: the parent's tier is only what "alone" resolves to.
+ */
+export function subagentDecision(
+  fresh: Decision | null,
+  threshold: number = SUBAGENT_CONFIDENCE,
+): Decision | null {
+  if (fresh === null) return null;
+  return fresh.confidence >= threshold ? fresh : null;
 }

@@ -1,0 +1,16 @@
+#!/bin/sh
+# The engine refuses a hooks module that breaks its `$`-flow rule, and does so
+# silently at session start: every turn then runs unrouted, which looks exactly
+# like a router that is off. tsc and the unit tests cannot see the rule;
+# `claude plugin validate` applies it. Measured 2026-09-23. Skip once with
+# SKIP_PLUGIN_VALIDATE=1.
+[ -n "$SKIP_PLUGIN_VALIDATE" ] && exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 1
+if ! command -v claude >/dev/null 2>&1; then
+  echo "pre-commit: claude CLI not found; skipping plugin validate" >&2
+  exit 0
+fi
+claude plugin validate . >/dev/null 2>&1 || {
+  echo "pre-commit: 'claude plugin validate .' failed; the hooks module would not load. Run it to see why." >&2
+  exit 1
+}

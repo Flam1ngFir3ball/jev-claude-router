@@ -20,13 +20,18 @@ function load(env: Record<string, string> = { AI_GATEWAY_API_KEY: "gw-key" }) {
   let tier = "opus";
   let confidence = 0.91;
   let score = 2;
+  let scoreConfidence = 0.9;
   let ok = true;
+  let fetches = 0;
+  let lastState: string | undefined;
 
   const $ = {
     env: { get: async (k: string) => env[k] },
     clock: { sleep: () => new Promise<never>(() => {}) },
     http: {
-      fetch: async () => {
+      fetch: async (_url: string, init?: { body?: string }) => {
+        fetches++;
+        lastState = init?.body ? JSON.parse(init.body).state : undefined;
         const good = ok;
         ok = true;
         return {
@@ -36,7 +41,7 @@ function load(env: Record<string, string> = { AI_GATEWAY_API_KEY: "gw-key" }) {
           text: JSON.stringify({
             answers: {
               tier: { type: "choice", choice: tier, confidence },
-              effort: { type: "score", score },
+              effort: { type: "score", score, confidence: scoreConfidence },
             },
           }),
         };
@@ -62,11 +67,15 @@ function load(env: Record<string, string> = { AI_GATEWAY_API_KEY: "gw-key" }) {
     hooks,
     $,
     listCalls: () => listCalls,
+    /** How many times Jev was asked, and the last text it was asked about. */
+    fetches: () => fetches,
+    lastState: () => lastState,
     /** What Jev answers from the next turn on. */
-    setTier: (name: string, c = 0.91, s = 2) => {
+    setTier: (name: string, c = 0.91, s = 2, sc = 0.9) => {
       tier = name;
       confidence = c;
       score = s;
+      scoreConfidence = sc;
     },
     /** Makes only the next Jev call fail, so that one turn goes unrouted. */
     fail: () => {
@@ -773,5 +782,370 @@ describe("register: the sticky subcommand", () => {
     const out = await run(hooks, $, "sticky 7000");
     assert.match(out.text, /between/);
     assert.match((await run(hooks, $, "")).text, /switch needs 50%/);
+  });
+});
+
+describe("register: a tier named in the prompt", () => {
+  const started = async (over: Record<string, string> = {}) => {
+    const kit = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_STICKY: "1",
+      ...over,
+    });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+    text = "x",
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text, turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("beats stickiness: 'use opus' at 43% is not held on fable", async () => {
+    // Measured 2026-09-22: Jev scores "use opus for this" as opus at 0.43,
+    // under the 0.75 bar, so without this the explicit ask was refused.
+    const { hooks, $, setTier } = await started();
+    setTier("fable", 0.9);
+    await turn(hooks, $, "f1", "plan the migration");
+    setTier("opus", 0.43, 1);
+    const second = await turn(hooks, $, "f2", "use opus for this");
+    assert.equal(second.sent.model, "claude-opus-5-5");
+    assert.equal(second.sent.effort, "medium", "Jev’s effort is still applied");
+    assert.match(second.text, /`opus` · medium · 43% · forced/);
+    assert.doesNotMatch(second.text, /held/);
+  });
+
+  test("needs no answer from Jev", async () => {
+    const { hooks, $, fail } = await started();
+    fail();
+    const t = await turn(hooks, $, "f3", "switch to haiku");
+    assert.equal(t.sent.model, "claude-haiku-4-5");
+    assert.match(t.text, /`haiku` · medium · 0% · forced/);
+  });
+
+  test("cannot name a tier the environment excluded", async () => {
+    const { hooks, $, setTier } = await started({ JEV_ROUTER_EXCLUDE: "fable" });
+    setTier("opus", 0.9);
+    const t = await turn(hooks, $, "f4", "use fable and plan it");
+    assert.equal(t.sent.model, "claude-opus-5-5", "Jev’s pick stands");
+    assert.doesNotMatch(t.text, /forced/);
+  });
+});
+
+describe("register: a bare go-ahead", () => {
+  const started = async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+    text: string,
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text, turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("runs on the previous turn’s tier and effort, without asking Jev", async () => {
+    const { hooks, $, setTier, fetches } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "g1", "plan the migration");
+    const asked = fetches();
+    // Jev would say haiku at 1.00 here (measured), which clears any bar.
+    setTier("haiku", 1, 0);
+    const second = await turn(hooks, $, "g2", "yes");
+    assert.equal(second.sent.model, "claude-fable-5-1");
+    assert.equal(second.sent.effort, "xhigh");
+    assert.equal(fetches(), asked, "no round trip for a go-ahead");
+    assert.match(second.text, /`fable` · xhigh · 90% · continue · 0ms/);
+  });
+
+  test("does not carry a hold tag over from the turn it continues", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("fable", 0.9);
+    await turn(hooks, $, "g3", "plan it");
+    setTier("haiku", 0.4);
+    const held = await turn(hooks, $, "g4", "now the tests");
+    assert.match(held.text, /held:haiku/);
+    const go = await turn(hooks, $, "g5", "ok");
+    assert.equal(go.sent.model, "claude-fable-5-1");
+    assert.doesNotMatch(go.text, /held/);
+    assert.match(go.text, /continue/);
+  });
+
+  test("on the first turn there is nothing to continue, so Jev is asked", async () => {
+    const { hooks, $, setTier, fetches } = await started();
+    setTier("haiku", 1, 0);
+    const t = await turn(hooks, $, "g6", "yes");
+    assert.equal(fetches(), 1);
+    assert.equal(t.sent.model, "claude-haiku-4-5");
+  });
+
+  test("becomes what the next turn holds to", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("fable", 0.9);
+    await turn(hooks, $, "g7", "plan it");
+    await turn(hooks, $, "g8", "go ahead");
+    setTier("haiku", 0.4);
+    const t = await turn(hooks, $, "g9", "and the tests");
+    assert.equal(t.sent.model, "claude-fable-5-1", "held to fable, via the go-ahead");
+  });
+});
+
+describe("register: effort on Sonnet", () => {
+  const started = async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "x", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("a shaky effort change while staying on Sonnet keeps the last effort", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("sonnet", 0.9, 1, 0.9);
+    await turn(hooks, $, "s1");
+    setTier("sonnet", 0.9, 3, 0.49);
+    const t = await turn(hooks, $, "s2");
+    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.equal(t.sent.effort, "medium", "the previous effort, not xhigh");
+    assert.match(t.text, /`sonnet` · medium · 90% · held-effort:xhigh/);
+  });
+
+  test("the bar is the session’s, so /jev sticky 0.3 lowers it here too", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("sonnet", 0.9, 1, 0.9);
+    await turn(hooks, $, "s3");
+    await run(hooks, $, "sticky 0.3");
+    setTier("sonnet", 0.9, 3, 0.49);
+    const t = await turn(hooks, $, "s4");
+    assert.equal(t.sent.effort, "xhigh", "0.49 clears a 0.3 bar");
+    assert.doesNotMatch(t.text, /held/);
+  });
+
+  test("on Opus the same change goes through: effort is free there", async () => {
+    const { hooks, $, setTier } = await started();
+    setTier("opus", 0.9, 1, 0.9);
+    await turn(hooks, $, "s5");
+    setTier("opus", 0.9, 3, 0.1);
+    const t = await turn(hooks, $, "s6");
+    assert.equal(t.sent.effort, "xhigh");
+  });
+
+  test("with stickiness off nothing is held, on Sonnet either", async () => {
+    const { hooks, $, setTier } = load();
+    setTier("sonnet", 0.9, 1, 0.9);
+    await turn(hooks, $, "s7");
+    setTier("sonnet", 0.9, 3, 0.1);
+    assert.equal((await turn(hooks, $, "s8")).sent.effort, "xhigh");
+  });
+});
+
+describe("register: a spawned subagent", () => {
+  const spawnOf = (over: Record<string, unknown> = {}) => ({
+    tool_use_id: "tu1",
+    prompt: "List the files under hooks/ and report the count.",
+    description: "Count hook files",
+    subagentType: "Explore",
+    parentModel: "claude-fable-5-1",
+    fork: false,
+    background: false,
+    ...over,
+  });
+
+  /** Spawns, then runs one step of the subagent's loop under the id core gave it. */
+  async function spawnAndStep(
+    kit: ReturnType<typeof load>,
+    input: Record<string, unknown>,
+  ) {
+    let passed: { model?: string } | null = null;
+    const started = await kit.hooks.get("agent.spawn")!(
+      kit.$,
+      input,
+      async (e: { model?: string }) => {
+        passed = e;
+        return { model: e.model ?? "claude-fable-5-1", agentId: "agent-1" };
+      },
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      kit.hooks.get("turn.step")!(
+        kit.$,
+        { turnId: "sub-1", index: 0, agentId: "agent-1", model: "claude-fable-5-1", effort: "high" },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return { passed: passed as { model?: string } | null, started, sent, chunks };
+  }
+
+  test("is classified on its task and given the model Jev picks", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98, 1);
+    const { passed, started, sent, lastStateWas } = {
+      ...(await spawnAndStep(kit, spawnOf())),
+      lastStateWas: kit.lastState(),
+    };
+    assert.equal(lastStateWas, "List the files under hooks/ and report the count.");
+    assert.equal(passed?.model, "claude-haiku-4-5", "set on the spawn");
+    assert.equal(started.agentId, "agent-1");
+    assert.equal(sent.model, "claude-haiku-4-5", "and on its steps");
+    assert.equal(sent.effort, "medium", "effort reaches the loop through its steps");
+  });
+
+  test("its steps carry no route line and no footer: they are a tool result", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98);
+    const { chunks } = await spawnAndStep(kit, spawnOf());
+    const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
+    assert.deepEqual(texts, ["reply"]);
+  });
+
+  test("/jev shows the spawn under the agent, routed", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98, 1);
+    await spawnAndStep(kit, spawnOf());
+    const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
+      args: "",
+    });
+    assert.match(out.text, /haiku·medium 0\.98 +\[agent:Explore\] Count hook files/);
+  });
+
+  test("a shaky pick leaves the spawn on its own model, and says so", async () => {
+    const kit = load();
+    kit.setTier("sonnet", 0.22);
+    const { passed, sent } = await spawnAndStep(kit, spawnOf());
+    assert.equal(passed?.model, undefined);
+    assert.equal(sent.model, "claude-fable-5-1", "the step is left alone too");
+    const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
+      args: "",
+    });
+    assert.match(out.text, /unrouted — .*sonnet at 0\.22, under the 0\.5 bar/);
+  });
+
+  test("a call that named a model is the caller’s decision", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98);
+    const { passed } = await spawnAndStep(kit, spawnOf({ model: "opus" }));
+    assert.equal(passed?.model, "opus");
+    assert.equal(kit.fetches(), 0, "Jev is not even asked");
+  });
+
+  test("a fork inherits, so it is not asked about either", async () => {
+    const kit = load();
+    kit.setTier("haiku", 0.98);
+    const { passed } = await spawnAndStep(kit, spawnOf({ fork: true }));
+    assert.equal(passed?.model, undefined);
+    assert.equal(kit.fetches(), 0);
+  });
+
+  test("a spawn Jev cannot answer is left alone, and the reason kept", async () => {
+    const kit = load();
+    kit.fail();
+    const { passed } = await spawnAndStep(kit, spawnOf());
+    assert.equal(passed?.model, undefined);
+    const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
+      args: "",
+    });
+    assert.match(out.text, /unrouted — .*gateway responded 500|unrouted — .*500/);
+  });
+
+  test("the parent’s tier is not a hold: no cache to keep warm", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    // A main turn on fable, then a spawn Jev reads as haiku at 0.6: under the
+    // 0.75 sticky bar, over the 0.5 subagent bar. Stickiness must not apply.
+    kit.setTier("fable", 0.9);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "m1" }, async (e: unknown) => e);
+    kit.setTier("haiku", 0.6);
+    const { passed } = await spawnAndStep(kit, spawnOf());
+    assert.equal(passed?.model, "claude-haiku-4-5");
+  });
+
+  test("routing off leaves spawns alone", async () => {
+    const kit = load();
+    await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "off" });
+    kit.setTier("haiku", 0.98);
+    const { passed } = await spawnAndStep(kit, spawnOf());
+    assert.equal(passed?.model, undefined);
+    assert.equal(kit.fetches(), 0);
   });
 });

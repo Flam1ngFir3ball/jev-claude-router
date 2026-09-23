@@ -9,7 +9,11 @@ import { LOW_CONFIDENCE } from "./label.ts";
 import {
   decisionOf,
   DEFAULT_STICKY_CONFIDENCE,
+  forcedDecision,
+  holdsSonnetEffort,
   stickyDecision,
+  SUBAGENT_CONFIDENCE,
+  subagentDecision,
   type Decision,
   type Tier,
 } from "./policy.ts";
@@ -39,14 +43,16 @@ export type Attempt = {
   ms: number;
   usage?: Usage;
   /**
-   * What started the turn, when it was not the person typing. Absent for a
-   * typed prompt. `notify`: the main loop woke because a background task
-   * finished, and the engine's `<task-notification>` was the turn's text.
-   * `agent`: a subagent's own loop, which no `turn.start` announces; its
-   * steps are seen but not routed. Without this, one prompt that spawned
-   * three reviewers read as one reply that changed model three times.
+   * What started the turn, when it was not the person typing a task. Absent
+   * for a typed prompt. `notify`: the main loop woke because a background
+   * task finished, and the engine's `<task-notification>` was the turn's
+   * text. `agent`: a subagent's own loop, which no `turn.start` announces;
+   * its model was settled at `agent.spawn`, and its steps carry that. Without
+   * this, one prompt that spawned three reviewers read as one reply that
+   * changed model three times. `continue`: a bare go-ahead ("yes"), which
+   * ran on the previous turn's decision without asking Jev.
    */
-  kind?: "notify" | "agent";
+  kind?: "notify" | "agent" | "continue";
   /** For `kind: 'agent'`: which subagent, as `$.agent.list()` describes it. */
   agent?: AgentTag;
 } & ({ decision: Decision } | { skipped: string });
@@ -62,18 +68,26 @@ export type AgentTag = {
   label: string;
 };
 
-/** The tag for a turn held on its previous tier: `held:haiku`. */
+/**
+ * The tag for a turn held on its previous tier (`held:haiku`), or on its
+ * previous effort while staying on Sonnet (`held-effort:low`), or forced to
+ * a tier the prompt named (`forced`). Each names what Jev wanted and did not
+ * get, so a run of them is visible in /jev.
+ */
 export function heldMark(attempt: Attempt): string | null {
-  return "decision" in attempt && attempt.decision.held !== undefined
-    ? `held:${attempt.decision.held}`
-    : null;
+  if (!("decision" in attempt)) return null;
+  const { held, heldEffort, forced } = attempt.decision;
+  if (held !== undefined) return `held:${held}`;
+  if (heldEffort !== undefined) return `held-effort:${heldEffort}`;
+  return forced ? "forced" : null;
 }
 
-/** The short tag for a turn nobody typed: `notify`, `agent:Explore`, `agent`. */
+/** The short tag for a turn nobody typed: `notify`, `agent:Explore`, `agent`, `continue`. */
 export function kindMark(
   attempt: Pick<Attempt, "kind" | "agent">,
 ): string | null {
   if (attempt.kind === "notify") return "notify";
+  if (attempt.kind === "continue") return "continue";
   if (attempt.kind === "agent")
     return attempt.agent?.type ? `agent:${attempt.agent.type}` : "agent";
   return null;
@@ -138,36 +152,113 @@ export type Status = {
 };
 
 /**
+ * What settles a main-loop turn beyond Jev's answer. `sticky` is the bar a
+ * switch must clear, or null when switches are free; `running` what the last
+ * routed turn ran on; `forced` a tier the prompt itself named, which takes
+ * the tier question away from Jev and from stickiness both.
+ */
+export type Hold = {
+  sticky: number | null;
+  running: Decision | null;
+  forced?: Tier | null;
+};
+
+/**
  * One turn's outcome from Jev's answer, so the three ways a turn can fail to
  * route all land in one place and all get announced the same way.
+ *
+ * This is the only place a main-loop decision is settled: the route the
+ * engine applies and the line /jev shows are the same object, so the two
+ * cannot disagree. The order is the policy: a named tier first (it needs no
+ * answer from Jev at all), then stickiness on the tier, then, for a turn
+ * that stays on Sonnet, stickiness on the effort.
  */
 export function attemptOf(
   text: string,
   result: JevResult,
   offered: readonly Tier[],
-  hold: { sticky: number | null; running: Decision | null } = {
-    sticky: null,
-    running: null,
-  },
+  hold: Hold = { sticky: null, running: null },
 ): Attempt {
   const summary = notificationOf(text);
   const head =
     summary === null
       ? { prompt: text }
       : { prompt: summary, kind: "notify" as const };
+  const forced = hold.forced ?? null;
 
-  if (!result.ok) return { ...head, ms: result.ms, skipped: result.reason };
+  if (!result.ok && forced === null)
+    return { ...head, ms: result.ms, skipped: result.reason };
 
-  const fresh = decisionOf(result.answers, offered);
-  const decision =
-    fresh && hold.sticky !== null
-      ? stickyDecision(fresh, hold.running, hold.sticky)
-      : fresh;
+  const fresh = result.ok ? decisionOf(result.answers, offered) : null;
+  let decision = forced !== null ? forcedDecision(forced, fresh) : fresh;
   if (!decision) {
     return {
       ...head,
       ms: result.ms,
       skipped: "Jev answered but named no tier we offered",
+    };
+  }
+  if (hold.sticky !== null && !decision.forced) {
+    decision = stickyDecision(decision, hold.running, hold.sticky);
+  }
+  if (
+    hold.sticky !== null &&
+    hold.running !== null &&
+    holdsSonnetEffort(decision, hold.running, hold.sticky)
+  ) {
+    decision = {
+      ...decision,
+      effort: hold.running.effort,
+      heldEffort: decision.effort,
+    };
+  }
+  return { ...head, ms: result.ms, decision };
+}
+
+/**
+ * A bare go-ahead's outcome: the previous turn's decision, carried over as
+ * is. `held` and the like are dropped, since they described that turn's
+ * choice, not this one's; the `continue` tag says what happened here.
+ */
+export function continuationOf(text: string, running: Decision): Attempt {
+  const { tier, model, effort, confidence, effortConfidence } = running;
+  return {
+    prompt: text,
+    ms: 0,
+    kind: "continue",
+    decision: { tier, model, effort, confidence, effortConfidence },
+  };
+}
+
+/**
+ * A spawned subagent's outcome from Jev's answer to its task. No stickiness
+ * and no forcing: a subagent starts with an empty conversation, so there is
+ * no cache to hold to, and the tier named in the person's prompt was for the
+ * main loop. What there is instead is a confidence floor (`SUBAGENT_CONFIDENCE`),
+ * below which the spawn is left on the model it would have had anyway.
+ */
+export function spawnAttemptOf(
+  description: string,
+  result: JevResult,
+  offered: readonly Tier[],
+  agent: AgentTag,
+): Attempt {
+  const head = { prompt: description, kind: "agent" as const, agent };
+  if (!result.ok) return { ...head, ms: result.ms, skipped: result.reason };
+  const fresh = decisionOf(result.answers, offered);
+  if (!fresh) {
+    return {
+      ...head,
+      ms: result.ms,
+      skipped: "Jev answered but named no tier we offered",
+    };
+  }
+  const decision = subagentDecision(fresh);
+  if (!decision) {
+    return {
+      ...head,
+      ms: result.ms,
+      skipped: `${fresh.tier} at ${fresh.confidence.toFixed(2)}, under the ${SUBAGENT_CONFIDENCE} bar; left on its own model`,
     };
   }
   return { ...head, ms: result.ms, decision };
@@ -186,9 +277,10 @@ function attemptLine(attempt: Attempt): string {
   const mark = kindMark(attempt);
   const what = `${mark ? `[${mark}] ` : ""}${shorten(attempt.prompt)}`;
   if ("skipped" in attempt) {
-    // A subagent's row names the agent, since "unrouted" is the whole story.
+    // A subagent's row names the agent first, then why: "under the bar"
+    // and "Jev timed out" are different stories.
     return attempt.kind === "agent"
-      ? `  ${when}  unrouted — ${what}`
+      ? `  ${when}  unrouted — ${what} · ${attempt.skipped}`
       : `  ${when}  unrouted — ${attempt.skipped}`;
   }
   const { tier, effort, confidence } = attempt.decision;

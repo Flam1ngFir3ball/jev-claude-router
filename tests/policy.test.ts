@@ -6,13 +6,16 @@ import {
   decisionOf,
   effortOf,
   excludedTiers,
+  forcedDecision,
+  holdsSonnetEffort,
   isContinuation,
   MODEL_OF,
   offeredTiers,
   parseOverride,
-  shouldBlockSonnetEffort,
   stickyDecision,
   stickyOf,
+  SUBAGENT_CONFIDENCE,
+  subagentDecision,
   thresholdOf,
   TIERS,
   type Decision,
@@ -177,124 +180,214 @@ describe("sticky routing", () => {
   });
 });
 
-describe("continuation guard", () => {
-  test("bare affirmations are recognized", () => {
+
+describe("a bare go-ahead", () => {
+  test("is recognised in the forms people type, punctuation and case aside", () => {
     for (const text of [
       "yes",
       "y",
-      "ok",
+      "Yes.",
+      "ok!",
+      "OK",
+      "okay",
+      "k",
       "go ahead",
+      "Go ahead.",
       "continue",
-      "sure",
-      "yep",
+      "proceed",
       "do it",
+      "let's do it",
+      "yes please",
+      "sounds good",
+      "lgtm",
+      "  sure  ",
     ]) {
-      assert.equal(isContinuation(text), true, text);
+      assert.equal(isContinuation(text), true, JSON.stringify(text));
     }
   });
 
-  test("non-continuations are rejected", () => {
+  test("anything that carries a task is not one", () => {
     for (const text of [
-      "rename the variable",
-      "use opus",
       "yes, and also fix the test",
       "ok do something else",
-      "   ",
+      "continue with the migration",
+      "go to the next file",
+      "use opus",
+      "rename foo to bar",
+      "no",
       "",
+      "   ",
     ]) {
-      assert.equal(isContinuation(text), false, text);
+      assert.equal(isContinuation(text), false, JSON.stringify(text));
     }
-  });
-
-  test("case and whitespace are normalized", () => {
-    assert.equal(isContinuation("  YES  "), true);
-    assert.equal(isContinuation("Go Ahead"), true);
   });
 });
 
-describe("explicit overrides", () => {
-  test("patterns like 'use X' are parsed", () => {
-    assert.equal(parseOverride("use opus"), "opus");
-    assert.equal(parseOverride("use haiku"), "haiku");
-    assert.equal(parseOverride("use fable for this"), "fable");
-  });
-
-  test("'with' and 'switch to' also work", () => {
-    assert.equal(parseOverride("with sonnet, do it"), "sonnet");
+describe("a tier named in the prompt", () => {
+  test("is read from the verbs that mean 'run on'", () => {
+    assert.equal(parseOverride("use opus for this"), "opus");
+    assert.equal(parseOverride("with fable, do more research"), "fable");
     assert.equal(parseOverride("switch to haiku"), "haiku");
+    assert.equal(parseOverride("run this on sonnet"), "sonnet");
+    assert.equal(parseOverride("do it using opus"), "opus");
+    assert.equal(parseOverride("go with haiku"), "haiku");
   });
 
-  test("'on' and 'for' work too", () => {
-    assert.equal(parseOverride("on fable"), "fable");
-    assert.equal(parseOverride("for opus"), "opus");
+  test("a model id names its tier too", () => {
+    assert.equal(parseOverride("use claude-opus-5-5"), "opus");
+    assert.equal(parseOverride("switch to claude-haiku-4-5"), "haiku");
   });
 
-  test("unknown tiers are rejected", () => {
-    assert.equal(parseOverride("use gpt-5"), null);
-    assert.equal(parseOverride("with mistral"), null);
-  });
-
-  test("no override is null, not an error", () => {
-    assert.equal(parseOverride("just rename it"), null);
-    assert.equal(parseOverride(""), null);
-  });
-
-  test("case is normalized", () => {
+  test("case does not matter", () => {
     assert.equal(parseOverride("USE OPUS"), "opus");
     assert.equal(parseOverride("With Fable"), "fable");
   });
+
+  test("the tier names as ordinary words are left alone", () => {
+    // Each of these routed under the first cut, which took bare "on" / "for".
+    for (const text of [
+      "search for opus docs",
+      "notes on haiku poetry",
+      "write a sonnet",
+      "what is the fable about",
+      "the opus tier is expensive",
+      "for haiku, what is the price",
+    ]) {
+      assert.equal(parseOverride(text), null, text);
+    }
+  });
+
+  test("a tier the environment excluded cannot be named back in", () => {
+    const offered = offeredTiers(excludedTiers("fable"));
+    assert.equal(parseOverride("use fable", offered), null);
+    assert.equal(parseOverride("use opus", offered), "opus");
+  });
+
+  test("no name is null, and an unknown name is no name", () => {
+    assert.equal(parseOverride("just rename it"), null);
+    assert.equal(parseOverride("use gpt-5"), null);
+    assert.equal(parseOverride(""), null);
+  });
+
+  test("a forced decision takes the tier and keeps Jev’s effort", () => {
+    const fresh = decisionOf({
+      tier: { type: "choice", choice: "haiku", confidence: 0.43 },
+      effort: { type: "score", score: 3, confidence: 0.6 },
+    });
+    const d = forcedDecision("opus", fresh);
+    assert.equal(d.tier, "opus");
+    assert.equal(d.model, MODEL_OF.opus);
+    assert.equal(d.effort, "xhigh");
+    assert.equal(d.confidence, 0.43, "Jev’s number, not a made-up 1.0");
+    assert.equal(d.forced, true);
+  });
+
+  test("a forced decision needs no answer from Jev at all", () => {
+    const d = forcedDecision("sonnet", null);
+    assert.equal(d.tier, "sonnet");
+    assert.equal(d.effort, "medium");
+    assert.equal(d.confidence, 0);
+  });
 });
 
-describe("Sonnet effort blocking", () => {
-  const at = (
+describe("effort on Sonnet", () => {
+  const on = (
     tier: string,
-    effort: Effort = "high",
-    confidence = 0.9,
+    effort: Effort,
+    effortConfidence: number,
   ): Decision => ({
     tier: tier as Decision["tier"],
     model: MODEL_OF[tier as Decision["tier"]],
     effort,
+    confidence: 0.9,
+    effortConfidence,
+  });
+
+  test("the effort answer’s own confidence is read, not the tier’s", () => {
+    const d = decisionOf({
+      tier: { type: "choice", choice: "sonnet", confidence: 0.81 },
+      effort: { type: "score", score: 2.49, confidence: 0.49 },
+    });
+    assert.equal(d?.confidence, 0.81);
+    assert.equal(d?.effortConfidence, 0.49);
+  });
+
+  test("an answer without one reads as no confidence", () => {
+    const d = decisionOf({ tier: { type: "choice", choice: "sonnet" } });
+    assert.equal(d?.effortConfidence, 0);
+  });
+
+  test("a shaky effort change while staying on Sonnet is held", () => {
+    assert.equal(
+      holdsSonnetEffort(on("sonnet", "high", 0.49), on("sonnet", "low", 0.9), 0.75),
+      true,
+    );
+  });
+
+  test("held in both directions: a rise would ratchet a stretch upward", () => {
+    assert.equal(
+      holdsSonnetEffort(on("sonnet", "low", 0.49), on("sonnet", "high", 0.9), 0.75),
+      true,
+    );
+  });
+
+  test("a confident change goes through, and the bar is a minimum", () => {
+    assert.equal(
+      holdsSonnetEffort(on("sonnet", "high", 0.8), on("sonnet", "low", 0.9), 0.75),
+      false,
+    );
+    assert.equal(
+      holdsSonnetEffort(on("sonnet", "high", 0.75), on("sonnet", "low", 0.9), 0.75),
+      false,
+    );
+  });
+
+  test("the same effort is nothing to hold", () => {
+    assert.equal(
+      holdsSonnetEffort(on("sonnet", "high", 0.1), on("sonnet", "high", 0.9), 0.75),
+      false,
+    );
+  });
+
+  test("only Sonnet: the other tiers take effort per request for free", () => {
+    assert.equal(
+      holdsSonnetEffort(on("opus", "high", 0.1), on("opus", "low", 0.9), 0.75),
+      false,
+    );
+    assert.equal(
+      holdsSonnetEffort(on("haiku", "high", 0.1), on("haiku", "low", 0.9), 0.75),
+      false,
+    );
+  });
+
+  test("a turn arriving on Sonnet from elsewhere is a model switch, not this", () => {
+    assert.equal(
+      holdsSonnetEffort(on("sonnet", "high", 0.1), on("opus", "low", 0.9), 0.75),
+      false,
+    );
+    assert.equal(holdsSonnetEffort(on("sonnet", "high", 0.1), null, 0.75), false);
+  });
+});
+
+describe("a subagent’s decision", () => {
+  const fresh = (confidence: number): Decision => ({
+    tier: "haiku",
+    model: MODEL_OF.haiku,
+    effort: "low",
     confidence,
   });
 
-  test("first turn has nothing to block", () => {
-    const d = at("sonnet", "high", 0.5);
-    assert.equal(shouldBlockSonnetEffort(d, null, 0.75), false);
+  test("goes through at the bar and above", () => {
+    assert.equal(subagentDecision(fresh(SUBAGENT_CONFIDENCE))?.tier, "haiku");
+    assert.equal(subagentDecision(fresh(0.98))?.tier, "haiku");
   });
 
-  test("effort change on Sonnet below confidence is blocked", () => {
-    const prev = at("sonnet", "low", 0.9);
-    const fresh = at("sonnet", "high", 0.6);
-    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), true);
+  test("is dropped below it, leaving the spawn on its own model", () => {
+    assert.equal(subagentDecision(fresh(0.22)), null);
+    assert.equal(subagentDecision(null), null);
   });
 
-  test("effort change on Sonnet above confidence is allowed", () => {
-    const prev = at("sonnet", "low", 0.9);
-    const fresh = at("sonnet", "high", 0.8);
-    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
-  });
-
-  test("effort change exactly at the bar is allowed", () => {
-    const prev = at("sonnet", "low", 0.9);
-    const fresh = at("sonnet", "high", 0.75);
-    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
-  });
-
-  test("same effort is never blocked", () => {
-    const prev = at("sonnet", "high", 0.9);
-    const fresh = at("sonnet", "high", 0.3);
-    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
-  });
-
-  test("tier changes are unaffected", () => {
-    const prev = at("sonnet", "low", 0.9);
-    const fresh = at("opus", "high", 0.3);
-    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
-  });
-
-  test("effort changes on other tiers are unaffected", () => {
-    const prev = at("opus", "low", 0.9);
-    const fresh = at("opus", "high", 0.3);
-    assert.equal(shouldBlockSonnetEffort(fresh, prev, 0.75), false);
+  test("the bar is the one measured to split specified from vague tasks", () => {
+    assert.equal(SUBAGENT_CONFIDENCE, 0.5);
   });
 });

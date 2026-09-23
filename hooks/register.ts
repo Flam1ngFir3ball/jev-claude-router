@@ -1,17 +1,17 @@
 import type { On } from "claude-code";
 
-import { askJev, timeoutOf } from "./jev.ts";
+import {
+  askJev,
+  timeoutOf,
+  type HttpInitLike,
+  type HttpResponseLike,
+} from "./jev.ts";
 import { labelOf, withLabel } from "./label.ts";
 import {
-  DEFAULT_STICKY_CONFIDENCE,
-  decisionOf,
   excludedTiers,
   isContinuation,
-  MODEL_OF,
   offeredTiers,
   parseOverride,
-  shouldBlockSonnetEffort,
-  stickyDecision,
   stickyOf,
   thresholdOf,
   type Decision,
@@ -22,10 +22,12 @@ import {
   addUsage,
   announceReply,
   attemptOf,
+  continuationOf,
   HISTORY_LIMIT,
   liveLine,
   FOOTER_SEPARATOR,
   REPLY_SEPARATOR,
+  spawnAttemptOf,
   statusReport,
   toggleReply,
   stickyCommand,
@@ -33,6 +35,15 @@ import {
   type AgentTag,
   type Attempt,
 } from "./status.ts";
+
+/** The slice of the engine a Jev call needs; every hook's `$` has it. */
+type Engine = {
+  env: { get: (key: string) => Promise<string | undefined> };
+  http: {
+    fetch: (url: string, init?: HttpInitLike) => Promise<HttpResponseLike>;
+  };
+  clock: { sleep: (ms: number) => Promise<unknown> };
+};
 
 /** Turns kept in the decision cache before the oldest are dropped. */
 const CACHE_LIMIT = 32;
@@ -42,6 +53,29 @@ const CACHE_LIMIT = 32;
  * the footer would land in the middle of a reply. Every other reason ends it.
  */
 const MID_TURN: ReadonlySet<string> = new Set(["tool_use", "pause_turn"]);
+
+/**
+ * Asks Jev about one piece of text; the provider and budget come from the
+ * env. A top-level function on purpose: the engine follows where `$` goes
+ * when it loads a module, and only lets it into a function declared here at
+ * the top, so a closure taking `$` inside `register` fails the whole module
+ * (measured 2026-09-23: it loaded nothing and every turn went unrouted).
+ */
+async function classify($: Engine, text: string, offered: readonly Tier[]) {
+  return askJev({
+    fetch: (url, init) => $.http.fetch(url, init),
+    sleep: (ms) => $.clock.sleep(ms),
+    provider: providerOf({
+      TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
+      AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
+      JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
+      TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
+    }),
+    state: text,
+    offered,
+    timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
+  });
+}
 
 /**
  * Names the subagent a step runs in, from the session's agent list. A row may
@@ -105,10 +139,11 @@ export function register(on: On) {
   let announce = true;
   let surface: string | null = null;
   /**
-   * The previous effort level, for Sonnet effort-change gating.
-   * Effort changes on Sonnet rewrite ~50% of the cache, so block low-confidence flips.
+   * agentId → what its spawn settled on, for the subagent's own steps to
+   * apply and for /jev to show. Keyed by the id `next(e)` hands back from
+   * `agent.spawn`, which is the same id the loop's `turn.step` carries.
    */
-  let previousEffort: string | null = null;
+  const spawned = new Map<string, Attempt>();
 
   const trim = (map: Map<string, unknown>) => {
     while (map.size > CACHE_LIMIT) {
@@ -195,109 +230,40 @@ export function register(on: On) {
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
     );
 
-    // 1. Continuation guard: bare affirmations hold previous tier AND effort
-    if (isContinuation(e.text) && running !== null) {
-      const continuationDecision = {
-        ...running,
-        effort: previousEffort ?? running.effort,
-      };
-      const attempt = {
-        prompt: e.text,
-        ms: 0,
-        skipped: "continuation (held previous tier and effort)",
-        kind: "continuation" as const,
-      };
-      record(attempt);
-      byTurn.set(e.turnId, attempt);
-      trim(byTurn);
-      if (announce) {
-        pending.add(e.turnId);
-        trimSet(pending);
-      }
-      decisions.set(e.turnId, continuationDecision);
-      trim(decisions);
-      latest = continuationDecision;
-      running = continuationDecision;
-      previousEffort = continuationDecision.effort;
-      return next(e);
-    }
+    // A bare go-ahead continues the previous turn's work on the previous
+    // turn's decision, without a round trip: Jev is confidently wrong about
+    // these (it grades the text, which is trivial, not the task, which is
+    // whatever was just proposed). Nothing to continue on the first turn.
+    const attempt =
+      isContinuation(e.text) && running !== null
+        ? continuationOf(e.text, running)
+        : attemptOf(e.text, await classify($, e.text, offered), offered, {
+            sticky,
+            running,
+            forced: parseOverride(e.text, offered),
+          });
 
-    // 2. Parse explicit overrides before asking Jev
-    const override = parseOverride(e.text);
-
-    const provider = providerOf({
-      TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
-      AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
-      JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
-      TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
-    });
-
-    const result = await askJev({
-      fetch: (url, init) => $.http.fetch(url, init),
-      sleep: (ms) => $.clock.sleep(ms),
-      provider,
-      state: e.text,
-      offered,
-      timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
-    });
-
-    // Extract decision from Jev response
-    let freshDecision =
-      result.ok && result.answers ? decisionOf(result.answers, offered) : null;
-
-    // 2. Apply explicit override if one was parsed
-    if (freshDecision && override) {
-      freshDecision = {
-        ...freshDecision,
-        tier: override,
-        model: MODEL_OF[override],
-      };
-    }
-
-    // 3. Apply stickiness (only if sticky is enabled)
-    let finalDecision = freshDecision
-      ? sticky !== null
-        ? stickyDecision(freshDecision, running, sticky)
-        : freshDecision
-      : null;
-
-    // 4. Block Sonnet effort changes on low confidence
-    if (
-      finalDecision &&
-      sticky !== null &&
-      shouldBlockSonnetEffort(
-        finalDecision,
-        running,
-        thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE")),
-      )
-    ) {
-      // Keep the previous effort instead of the new one
-      finalDecision = {
-        ...finalDecision,
-        effort: previousEffort ?? finalDecision.effort,
-      };
-    }
-
-    // One place where the turn's outcome is settled
-    const attempt = attemptOf(e.text, result, offered, {
-      sticky,
-      running,
-    });
+    // One place where the turn's outcome is settled, so the report and the
+    // announcement can never disagree about what happened.
     record(attempt);
     byTurn.set(e.turnId, attempt);
     trim(byTurn);
 
+    // The line goes into the reply's own text, in turn.step below. Render
+    // hooks and $.ui.log both drew nothing in the desktop app; the model's
+    // text is the one channel that reaches every surface.
     if (announce) {
       pending.add(e.turnId);
       trimSet(pending);
     }
 
-    if (finalDecision) {
-      decisions.set(e.turnId, finalDecision);
+    if ("decision" in attempt) {
+      decisions.set(e.turnId, attempt.decision);
       trim(decisions);
-      latest = finalDecision;
-      running = finalDecision;
-      previousEffort = finalDecision.effort;
+      latest = attempt.decision;
+      // What the next turn holds to is the tier actually running, which on a
+      // held turn is the previous one, not the one Jev named.
+      running = attempt.decision;
     }
 
     return next(e);
@@ -314,28 +280,36 @@ export function register(on: On) {
   // sees its past replies open with the line; that is the price of a marker
   // that reaches a surface which draws neither render sites nor ui.log.
   on("turn.step", async function* ($, e, next) {
-    const decision = decisions.get(e.turnId);
-
     // A subagent's loop gets no turn.start (probed live: its steps arrive
     // with agentId set and nothing in byTurn), so its turn is first seen
-    // here. It is not routed: there is no prompt to ask Jev about, and a
-    // line in its reply would land in the tool result its parent reads. It
-    // is recorded, though, with the model that ran it, or /jev would show
-    // one prompt and hide the four requests it caused.
+    // here. Its decision was made at agent.spawn, keyed by the id the spawn
+    // handed back, and the steps apply it: the spawn set the model, but
+    // effort is per request, and this is where requests are made. A line in
+    // its reply would land in the tool result its parent reads, so it gets
+    // none; it is recorded, though, or /jev would show one prompt and hide
+    // the four requests it caused.
     let attempt = byTurn.get(e.turnId);
     if (attempt === undefined && e.agentId !== undefined) {
-      const agent = await agentTagOf($, e.agentId);
-      attempt = {
-        prompt: agent.label,
-        ms: 0,
-        skipped: "subagent runs on the session model",
-        kind: "agent",
-        agent,
-      };
+      attempt = spawned.get(e.agentId);
+      if (attempt === undefined) {
+        // A fork, or a spawn from before the router loaded: nothing was
+        // decided for it, and it runs on whatever the engine resolved.
+        const agent = await agentTagOf($, e.agentId);
+        attempt = {
+          prompt: agent.label,
+          ms: 0,
+          skipped: "not routed at spawn; on its own model",
+          kind: "agent",
+          agent,
+        };
+      }
       record(attempt);
       byTurn.set(e.turnId, attempt);
       trim(byTurn);
     }
+    const decision =
+      decisions.get(e.turnId) ??
+      (attempt && "decision" in attempt ? attempt.decision : undefined);
     const step = decision
       ? next({ ...e, model: decision.model, effort: decision.effort })
       : next(e);
@@ -393,54 +367,39 @@ export function register(on: On) {
     }
   });
 
-  // Subagent routing: classify the subagent's prompt and route its model.
-  // The subagent's effort is not ours to set (Agent tool has no effort param),
-  // and its own model choice wins if the caller named one.
+  // A subagent is routed at its spawn, the one moment its task is in hand as
+  // text. Only the model is set here: the Agent tool has no effort, but the
+  // subagent's own turn.step does, and it reads the decision kept under the
+  // id `next(e)` hands back. Two spawns are left alone: a fork, whose model
+  // the engine ignores (it inherits context and model both), and a call that
+  // named a model itself, which is the caller's decision to make.
+  //
+  // The parent's tier is not a hold: a subagent starts with an empty
+  // conversation, so there is no cache to keep warm, and the one measured
+  // cost of a different model is its ~17k-token system prefix, which a
+  // haiku loop pays back in its first tool call.
   on("agent.spawn", async ($, e, next) => {
-    if (!enabled) return next(e);
-
-    // If the caller explicitly named a model, respect it
-    if (e.model) return next(e);
+    if (!enabled || e.fork || e.model !== undefined) return next(e);
 
     const offered = offeredTiers(
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
     );
-
-    const provider = providerOf({
-      TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
-      AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
-      JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
-      TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
-    });
-
-    // Classify the subagent task
-    const result = await askJev({
-      fetch: (url, init) => $.http.fetch(url, init),
-      sleep: (ms) => $.clock.sleep(ms),
-      provider,
-      state: e.prompt,
+    const attempt = spawnAttemptOf(
+      e.description,
+      await classify($, e.prompt, offered),
       offered,
-      timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
-    });
+      { type: e.subagentType, label: e.description },
+    );
+    record(attempt);
 
-    if (!("decision" in result)) return next(e);
-
-    let subagentDecision = result.decision;
-
-    // Apply sticky to subagents too, using the running tier as the hold point
-    if (sticky !== null && running !== null) {
-      subagentDecision = stickyDecision(
-        subagentDecision,
-        running,
-        sticky,
-      );
+    const started = await next(
+      "decision" in attempt ? { ...e, model: attempt.decision.model } : e,
+    );
+    if (started.agentId !== undefined) {
+      spawned.set(started.agentId, attempt);
+      trim(spawned);
     }
-
-    // If the subagent's own model choice was set, it wins (checked above, but
-    // for clarity: only use the routed model if no model was specified by caller)
-    const routedModel = subagentDecision.model;
-
-    return next({ ...e, model: routedModel });
+    return started;
   });
 
   // The footer, where a surface draws one. The announcement above is what
