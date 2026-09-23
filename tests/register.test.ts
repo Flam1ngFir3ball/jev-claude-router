@@ -7,7 +7,11 @@ import { register } from "../hooks/register.ts";
  * Drives the real `register` with a fake engine: captures the hooks it
  * registers, then runs turn.start and turn.step the way the engine would.
  */
-function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "gw-key" }) {
+function load(
+  env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "gw-key" },
+  /** A store and session id shared with another load: a reload of the module. */
+  shared: { store: Map<string, unknown>; id: string } = { store: new Map(), id: "sess-1" },
+) {
   let listCalls = 0;
   const hooks = new Map<string, Function>();
   const on = (name: string, a: unknown, b?: unknown) => {
@@ -58,7 +62,21 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
       },
     },
     command: { register: async () => {} },
+    store: {
+      get: async (k: string) => {
+        const v = shared.store.get(k);
+        return v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+      },
+      set: async (k: string, v: unknown) => {
+        shared.store.set(k, JSON.parse(JSON.stringify(v)));
+      },
+      keys: async () => [...shared.store.keys()],
+      delete: async (k: string) => {
+        shared.store.delete(k);
+      },
+    },
     session: {
+      id: async () => shared.id,
       surface: async () => "test",
       model: async () => sessionModel,
       /** The engine's count of what the last response carried; settable per test. */
@@ -2008,5 +2026,103 @@ describe("register: a session that was already running", () => {
     );
     await run(hooks, $, "on");
     assert.match((await run(hooks, $, "")).text, /spent\s+\$0\.\d+ this session/);
+  });
+});
+
+describe("register: a reload of the module", () => {
+  const boot = async (shared: { store: Map<string, unknown>; id: string }) => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string, text = "plan it") {
+    await hooks.get("turn.start")!($, { text, turnId: id }, async (e: unknown) => e);
+    let sent: { model?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!($, { turnId: id, index: 0 }, (e: { model: string }) => {
+        sent = e;
+        return answeredBy(e.model);
+      }),
+    );
+    return { sent, text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join("") };
+  }
+
+  test("history, spend and the held tier survive a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-A" };
+    const before = await boot(shared);
+    before.setTier("fable", 0.95, 3);
+    await turn(before.hooks, before.$, "a1");
+    const spentBefore = (await run(before.hooks, before.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1];
+    assert.ok(spentBefore);
+
+    // The module is reloaded: a new register, the same store and session.
+    // session.start does not fire again on a reload, so the next hook restores.
+    const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    const status = (await run(after.hooks, after.$, "")).text;
+    assert.match(status, /fable·medium .* plan it/, "the history is back");
+    assert.match(status, new RegExp(`spent\\s+\\${spentBefore}`), "and the spend");
+    after.setContext(150_000);
+    after.setTier("haiku", 0.99, 0);
+    const t = await turn(after.hooks, after.$, "a2", "what is 2+2");
+    assert.equal(t.sent.model, "claude-fable-5-1", "held to the tier that is warm, not reset");
+    assert.match(t.text, /stayed on fable: haiku would cost/);
+  });
+
+  test("/jev sticky and /jev ceiling survive a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-B" };
+    const before = await boot(shared);
+    await run(before.hooks, before.$, "sticky 0.6");
+    await run(before.hooks, before.$, "ceiling xhigh fable");
+    await run(before.hooks, before.$, "quiet");
+    const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    const status = (await run(after.hooks, after.$, "")).text;
+    assert.match(status, /switch needs 60%/);
+    assert.match(status, /ceiling\s+medium \(fable: xhigh\)/);
+    assert.match(status, /announce\s+off/);
+  });
+
+  test("another session's snapshot is not restored", async () => {
+    const store = new Map<string, unknown>();
+    const before = await boot({ store, id: "sess-C" });
+    before.setTier("fable", 0.95, 3);
+    await turn(before.hooks, before.$, "c1");
+    const other = await boot({ store, id: "sess-D" });
+    assert.match((await run(other.hooks, other.$, "")).text, /No turns yet/);
+  });
+
+  test("a snapshot that is not one of ours is ignored, and the router starts over", async () => {
+    const store = new Map<string, unknown>([["session:sess-E", { v: 999, junk: true }]]);
+    const kit = await boot({ store, id: "sess-E" });
+    assert.match((await run(kit.hooks, kit.$, "")).text, /No turns yet/);
+    kit.setTier("opus", 0.9, 1);
+    assert.equal((await turn(kit.hooks, kit.$, "e1")).sent.model, "claude-opus-5-5");
+  });
+
+  test("a store that refuses to save does not cost the turn", async () => {
+    const store = new Map<string, unknown>();
+    const kit = await boot({ store, id: "sess-F" });
+    (kit.$ as { store: { set: unknown } }).store.set = async () => {
+      throw new Error("store over 4 MiB");
+    };
+    kit.setTier("opus", 0.9, 1);
+    assert.equal((await turn(kit.hooks, kit.$, "f1")).sent.model, "claude-opus-5-5");
+  });
+
+  test("only the last twenty sessions are kept", async () => {
+    const store = new Map<string, unknown>();
+    for (let i = 0; i < 25; i++) store.set(`session:old-${i}`, { v: 1 });
+    store.set("unrelated", 1);
+    const kit = await boot({ store, id: "sess-G" });
+    kit.setTier("opus", 0.9, 1);
+    await turn(kit.hooks, kit.$, "g1");
+    const sessions = [...store.keys()].filter((k) => k.startsWith("session:"));
+    assert.equal(sessions.length, 20);
+    assert.ok(store.has("session:sess-G"));
+    assert.ok(store.has("session:old-24"), "the newest old ones stay");
+    assert.ok(!store.has("session:old-0"), "the oldest go");
+    assert.ok(store.has("unrelated"), "keys that are not snapshots are left alone");
   });
 });

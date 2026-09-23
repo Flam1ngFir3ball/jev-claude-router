@@ -27,6 +27,13 @@ import {
   type Tier,
 } from "./policy.ts";
 import { ttlOf, usageCost, type Ttl } from "./pricing.ts";
+import {
+  pack,
+  SNAPSHOT_PREFIX,
+  staleKeys,
+  unpack,
+  type State,
+} from "./persist.ts";
 import { providerOf, type ProviderResult } from "./provider.ts";
 import {
   addUsage,
@@ -170,6 +177,58 @@ async function contextTokensOf($: {
     return typeof tokens === "number" && tokens > 0 ? tokens : null;
   } catch {
     return null;
+  }
+}
+
+/** The store key for this session's snapshot, or null when the engine has no id. */
+async function snapshotKeyOf($: {
+  session: { id: () => Promise<string> };
+}): Promise<string | null> {
+  try {
+    const id = await $.session.id();
+    return typeof id === "string" && id !== "" ? `${SNAPSHOT_PREFIX}${id}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The snapshot saved under `key`, or null. Never throws. */
+async function loadSnapshot(
+  $: { store: { get: (key: string) => Promise<unknown> } },
+  key: string,
+): Promise<State | null> {
+  try {
+    return unpack(await $.store.get(key));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Saves `state` under `key`. A session's first save drops the oldest
+ * snapshots past `SNAPSHOTS_KEPT`. Never throws: losing a snapshot costs
+ * what a reload cost before, and must not cost the turn.
+ */
+async function saveSnapshot(
+  $: {
+    store: {
+      set: (key: string, value: unknown) => Promise<void>;
+      keys: () => Promise<string[]>;
+      delete: (key: string) => Promise<void>;
+    };
+  },
+  key: string,
+  state: State,
+  first: boolean,
+): Promise<void> {
+  try {
+    if (first) {
+      for (const stale of staleKeys(await $.store.keys(), key))
+        await $.store.delete(stale);
+    }
+    await $.store.set(key, pack(state));
+  } catch {
+    // The store refused (over 4 MiB, a disk error): carry on unsaved.
   }
 }
 
@@ -347,6 +406,59 @@ export function register(on: On) {
     lastUsage = null;
   };
 
+  /**
+   * This session's snapshot key: undefined until looked up, null when the
+   * engine gives no session id (then nothing is saved or restored).
+   */
+  let snapshotKey: string | null | undefined = undefined;
+  let savedOnce = false;
+
+  const stateNow = (): State => ({
+    attempts,
+    reply,
+    replyAgents: [...replyAgents],
+    spawned: [...spawned.entries()],
+    running,
+    continueFrom,
+    latest,
+    lastUsage,
+    sessionModel,
+    spent,
+    enabled,
+    announce,
+    sticky: settings?.sticky ?? null,
+    ceiling: settings!.ceiling,
+  });
+
+  /** Puts a restored snapshot back, over what the environment seeded. */
+  const applyState = (s: State | null) => {
+    if (s === null) return;
+    attempts.splice(0, attempts.length, ...s.attempts);
+    reply = s.reply;
+    replyAgents = new Set(s.replyAgents);
+    spawned.clear();
+    for (const [id, a] of s.spawned) spawned.set(id, a);
+    running = s.running;
+    continueFrom = s.continueFrom;
+    latest = s.latest;
+    lastUsage = s.lastUsage;
+    sessionModel = s.sessionModel ?? sessionModel;
+    spent = s.spent;
+    enabled = s.enabled;
+    announce = s.announce;
+    if (settings !== null) {
+      settings.sticky = s.sticky;
+      settings.ceiling = s.ceiling;
+    }
+  };
+
+  /** Whether this save is the session's first, which prunes old sessions. */
+  const firstSave = () => {
+    const first = !savedOnce;
+    savedOnce = true;
+    return first;
+  };
+
   const record = (attempt: Attempt) => {
     attempts.unshift(attempt);
     attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
@@ -360,6 +472,10 @@ export function register(on: On) {
     });
     surface = await $.session.surface();
     settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+    }
     sessionModel = await sessionModelOf($);
     return next(e);
   });
@@ -389,7 +505,10 @@ export function register(on: On) {
   // The cache the hold was protecting does not survive a compaction, and the
   // context is small again, so switches are cheap: start over from Jev.
   on("session.compact", async ($, e, next) => {
-    if (e.trigger !== "precompute") clearRouting();
+    if (e.trigger !== "precompute") {
+      clearRouting();
+      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    }
     return next(e);
   });
 
@@ -400,21 +519,28 @@ export function register(on: On) {
     if (typeof e.to_model === "string") sessionModel = e.to_model;
     running = null;
     continueFrom = null;
+    if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return next(e);
   });
 
   on("command.run", { command: "jev" }, async ($, e) => {
     settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+    }
     const arg = e.args.trim().toLowerCase();
 
     if (arg === "on" || arg === "off") {
       enabled = arg === "on";
       if (!enabled) clearRouting();
+      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: toggleReply(enabled) };
     }
 
     if (arg === "quiet" || arg === "loud") {
       announce = arg === "loud";
+      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: announceReply(announce) };
     }
 
@@ -424,6 +550,7 @@ export function register(on: On) {
     if (sub === "sticky" || sub.startsWith("sticky ")) {
       const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
       settings.sticky = result.sticky;
+      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
 
@@ -433,6 +560,7 @@ export function register(on: On) {
         settings.ceiling,
       );
       settings.ceiling = result.ceiling;
+      if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
 
@@ -445,6 +573,7 @@ export function register(on: On) {
       if ((effortNamed(head) !== null || head === "ultra") && !legacy) {
         const result = ceilingCommand(sub, settings.ceiling);
         settings.ceiling = result.ceiling;
+        if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         return { text: result.text };
       }
       return { text: unknownCommandReply(sub, legacy) };
@@ -478,6 +607,10 @@ export function register(on: On) {
   on("turn.start", async ($, e, next) => {
     if (!enabled) return next(e);
     settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+    }
     if (surface === null) surface = await $.session.surface();
     const { offered, ceiling } = settings;
 
@@ -599,6 +732,8 @@ export function register(on: On) {
       continueFrom = null;
     }
 
+    if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+
     return next(e);
   });
 
@@ -614,6 +749,10 @@ export function register(on: On) {
   // that reaches a surface which draws neither render sites nor ui.log.
   on("turn.step", async function* ($, e, next) {
     settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+    }
 
     // Routing off is authoritative for every step, including subagents whose
     // spawn decision was cached before /jev off. What the session spends is
@@ -715,6 +854,7 @@ export function register(on: On) {
               output: chunk.usage.output_tokens,
             };
           }
+          if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         }
 
         // The summary goes under the reply once it is over: this step ends
@@ -751,6 +891,7 @@ export function register(on: On) {
             // Written once; what comes after is a new reply's worth.
             reply = [];
             replyAgents = new Set();
+            if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
           }
         }
       }
@@ -779,6 +920,10 @@ export function register(on: On) {
       return started;
     }
     settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null) applyState(await loadSnapshot($, snapshotKey));
+    }
 
     const attempt = spawnAttemptOf(
       e.description,
@@ -810,6 +955,7 @@ export function register(on: On) {
         }
       }
     }
+    if (snapshotKey) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return started;
   });
 
