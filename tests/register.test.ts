@@ -2367,6 +2367,49 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
   });
 
+  test("copies reading different session ids for one conversation write one line and one summary, the newest's", async () => {
+    // What the desktop app showed 2026-09-23 after resuming a conversation
+    // under a new id: a copy still reading the old id routed every turn too,
+    // with its own Jev call, so each reply carried two or three lines.
+    const store = new Map<string, unknown>();
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const stale = load(env, { store, id: "sess-OLD" });
+    await stale.hooks.get("session.start")!(stale.$, {}, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    const fresh = load(env, { store, id: "sess-NEW" });
+    await fresh.hooks.get("session.start")!(fresh.$, {}, async (e: unknown) => e);
+    // Separate runtimes: only the store is shared.
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    stale.setTier("fable", 0.95, 3);
+    fresh.setTier("opus", 0.95, 1);
+    // The stale copy sees the turn first; the fresh one overrides its claim.
+    for (const k of [stale, fresh])
+      await k.hooks.get("turn.start")!(k.$, { text: "restarted, do another audit", turnId: "d1" }, async (e: unknown) => e);
+    const outOf = async (k: typeof stale) =>
+      (await collect(k.hooks.get("turn.step")!(k.$, { turnId: "d1", index: 0 }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5-5"))))
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join("");
+    const out = (await outOf(stale)) + (await outOf(fresh));
+    assert.equal(out.match(/✳️/g)?.length, 1, "one route line");
+    assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
+    assert.match(out, /✳️ opus/, "the newest copy's");
+  });
+
+  test("a prompt repeated by the same copy is routed each time", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.95, 1);
+    for (const id of ["r1", "r2"]) {
+      await kit.hooks.get("turn.start")!(kit.$, { text: "again", turnId: id }, async (e: unknown) => e);
+      const out = (await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => answeredBy(e.model))))
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join("");
+      assert.match(out, /✳️ opus/, id);
+    }
+  });
+
   test("a session id that changes under a live copy is followed, not treated as a stranger", async () => {
     const shared = { store: new Map<string, unknown>(), id: "sess-OLDID" };
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);

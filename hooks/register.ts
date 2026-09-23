@@ -78,6 +78,26 @@ const ROUTE_LINE = /^> (?:✳️|⚠️) /;
 /** A summary block, as `replySummary` writes it after `FOOTER_SEPARATOR`. */
 const SUMMARY = /^\n\n```\n[^\n]*\(\d+% cached\)/;
 
+/** Store key prefix for a claim on one turn, by its text. */
+const TURN_PREFIX = "turn:";
+
+/**
+ * How long a claim on a turn's text stands. Copies of the module that see
+ * the same turn see it within a second or two of each other; a prompt the
+ * person repeats minutes later is a turn of its own.
+ */
+const TURN_CLAIM_MS = 60_000;
+
+/** Turn claims kept in the store before the oldest are dropped. */
+const TURN_CLAIMS_KEPT = 50;
+
+/** A short stable hash of a turn's text, for its claim key. */
+function textHash(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
 /** Store key prefix for which copy of the module owns a session. */
 const OWNER_PREFIX = "owner:";
 
@@ -277,6 +297,67 @@ async function ownsSession(
   }
 }
 
+/**
+ * Claims a turn for this copy, by the turn's text. One conversation has been
+ * seen handled by copies that each read a different session id (the app
+ * resumed it under a new id and a copy kept the old one, 2026-09-23), so the
+ * session-keyed claim could not pair them and every copy wrote a line. What
+ * they share is the store and the turn's text. The newest copy wins: an
+ * older one that claimed first is overridden, and checks again before it
+ * writes. False means a newer copy holds the turn. A store that cannot be
+ * read lets the copy through, as before.
+ */
+async function claimTurn(
+  $: {
+    store: {
+      get: (key: string) => Promise<unknown>;
+      set: (key: string, value: unknown) => Promise<void>;
+      keys: () => Promise<string[]>;
+      delete: (key: string) => Promise<void>;
+    };
+  },
+  text: string,
+  birth: number,
+): Promise<boolean> {
+  try {
+    const at = `${TURN_PREFIX}${textHash(text)}`;
+    const now = Date.now();
+    const held = (await $.store.get(at)) as { birth?: unknown; at?: unknown } | undefined;
+    if (
+      held &&
+      typeof held.at === "number" &&
+      typeof held.birth === "number" &&
+      now - held.at < TURN_CLAIM_MS &&
+      held.birth > birth
+    ) {
+      return false;
+    }
+    await $.store.set(at, { birth, at: now });
+    const claims = (await $.store.keys()).filter((k) => k.startsWith(TURN_PREFIX));
+    for (const old of claims.slice(0, Math.max(0, claims.length - TURN_CLAIMS_KEPT)))
+      await $.store.delete(old);
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether this copy still holds a turn it claimed. Never throws; true when unreadable. */
+async function holdsTurn(
+  $: { store: { get: (key: string) => Promise<unknown> } },
+  text: string,
+  birth: number,
+): Promise<boolean> {
+  try {
+    const held = (await $.store.get(`${TURN_PREFIX}${textHash(text)}`)) as
+      | { birth?: unknown }
+      | undefined;
+    return typeof held?.birth !== "number" || held.birth === birth;
+  } catch {
+    return true;
+  }
+}
+
 /** Drops this copy's claim on the session, if it still holds it. Never throws. */
 async function releaseSession(
   $: {
@@ -384,6 +465,10 @@ export function register(on: On) {
   const superseded = () => birth < (runtime.__jevRouterNewest ?? 0);
   /** True once a newer copy has claimed the session: this one stands aside. */
   let inert = false;
+  /** Turns a newer copy claimed: this one passes them through untouched. */
+  const ceded = new Set<string>();
+  /** Each claimed turn's text, to check the claim again before writing. */
+  const claimed = new Map<string, string>();
   let settings: Settings | null = null;
   const decisions = new Map<string, Decision>();
   /**
@@ -778,6 +863,13 @@ export function register(on: On) {
     if (superseded()) inert = true;
     else if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
     if (inert) return next(e);
+    if (!(await claimTurn($, e.text, birth))) {
+      ceded.add(e.turnId);
+      trimSet(ceded);
+      return next(e);
+    }
+    claimed.set(e.turnId, e.text);
+    if (claimed.size > 200) claimed.delete(claimed.keys().next().value as string);
     if (surface === null) surface = await surfaceOf($);
     const { offered, ceiling } = settings;
 
@@ -923,6 +1015,19 @@ export function register(on: On) {
   // that reaches a surface which draws neither render sites nor ui.log.
   on("turn.step", async function* ($, e, next) {
     settings = await seedSettings($, settings);
+
+    // A turn a newer copy claimed is that copy's to route and announce.
+    const holdsTurnOf = async (turnId: string) => {
+      const text = claimed.get(turnId);
+      if (text === undefined) return true;
+      if (await holdsTurn($, text, birth)) return true;
+      ceded.add(turnId);
+      return false;
+    };
+    if (ceded.has(e.turnId)) {
+      for await (const chunk of next(e)) yield chunk;
+      return;
+    }
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
@@ -1035,6 +1140,7 @@ export function register(on: On) {
           if (
             ROUTE_LINE.test(chunk.text) ||
             superseded() ||
+            !(await holdsTurnOf(e.turnId)) ||
             (snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
           ) {
             inert = true;
@@ -1096,6 +1202,7 @@ export function register(on: On) {
           !MID_TURN.has(chunk.stopReason) &&
           !summarised &&
           !(await agentsRunning($, replyAgents)) &&
+          (await holdsTurnOf(e.turnId)) &&
           // Still the newest copy: one loaded mid-turn may have claimed since.
           !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
         ) {
