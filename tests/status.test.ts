@@ -6,6 +6,7 @@ import {
   attemptOf,
   heldMark,
   stickyCommand,
+  xhighCommand,
   liveLine,
   REPLY_SEPARATOR,
   statusReport,
@@ -17,7 +18,7 @@ import {
   type Attempt,
   type Usage,
 } from "../hooks/status.ts";
-import { DEFAULT_STICKY_CONFIDENCE } from "../hooks/policy.ts";
+import { DEFAULT_STICKY_CONFIDENCE, TIERS } from "../hooks/policy.ts";
 import type { ProviderResult } from "../hooks/provider.ts";
 
 const decision = {
@@ -46,6 +47,7 @@ const base: Status = {
   provider: goodProvider,
   timeoutMs: 1500,
   sticky: null,
+  xhighOff: [],
   offered: ["haiku", "sonnet", "opus", "fable"],
   excluded: [],
   announce: true,
@@ -645,5 +647,72 @@ describe("the sticky subcommand", () => {
   test("the reply says how to undo it, since the state is invisible otherwise", () => {
     assert.match(stickyCommand("", null).text, /\/jev sticky off/);
     assert.match(stickyCommand("off", 0.6).text, /\/jev sticky/);
+  });
+});
+
+describe("the xhigh subcommand", () => {
+  test("bare reports whether it is on", () => {
+    const r = xhighCommand("", new Set());
+    assert.equal(r.xhighOff.size, 0);
+    assert.match(r.text, /allowed on every tier/);
+  });
+
+  test("off with no tier blocks every tier", () => {
+    const r = xhighCommand("off", new Set());
+    assert.equal(r.xhighOff.size, TIERS.length);
+    assert.match(r.text, /off for all/);
+  });
+
+  test("on with no tier clears every block", () => {
+    const r = xhighCommand("on", new Set(TIERS));
+    assert.equal(r.xhighOff.size, 0);
+  });
+
+  test("off opus blocks only that tier", () => {
+    const r = xhighCommand("off opus", new Set());
+    assert.deepEqual([...r.xhighOff], ["opus"]);
+    assert.match(r.text, /opus/);
+  });
+
+  test("on opus unblocks one while leaving the others", () => {
+    const r = xhighCommand("on opus", new Set(["opus", "fable"]));
+    assert.deepEqual([...r.xhighOff], ["fable"]);
+  });
+
+  test("an unknown tier is refused", () => {
+    const r = xhighCommand("off gpt", new Set());
+    assert.equal(r.xhighOff.size, 0);
+    assert.match(r.text, /not a tier/);
+  });
+
+  test("attemptOf caps xhigh when the hold says so", () => {
+    const attempt = attemptOf(
+      "plan it",
+      {
+        ok: true,
+        ms: 10,
+        answers: {
+          tier: { type: "choice", choice: "fable", confidence: 0.9 },
+          effort: { type: "score", score: 3, confidence: 0.8 },
+        },
+      },
+      TIERS,
+      { sticky: null, running: null, xhighOff: new Set(["fable"]) },
+    );
+    assert.equal("decision" in attempt && attempt.decision.effort, "high");
+    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "xhigh");
+    assert.equal(heldMark(attempt), "capped:xhigh");
+  });
+
+  test("the status report says which tiers are capped", () => {
+    assert.match(statusReport(base), /xhigh\s+on/);
+    assert.match(
+      statusReport({ ...base, xhighOff: ["opus", "fable"] }),
+      /xhigh\s+off for opus, fable/,
+    );
+    assert.match(
+      statusReport({ ...base, xhighOff: [...TIERS] }),
+      /xhigh\s+off for all/,
+    );
   });
 });

@@ -100,6 +100,7 @@ jev-router
   provider  typesafe · TYPESAFE_API_KEY is set
   budget    1500ms
   sticky    on, switch needs 75%
+  xhigh     on (JEV_ROUTER_XHIGH_OFF=1)
   tiers     haiku, sonnet, opus, fable
 
   Recent turns, newest first:
@@ -263,6 +264,12 @@ model, which this mod does not touch — the rewrite happens per request, in
 - `JEV_ROUTER_STICKY=1` and `JEV_ROUTER_STICKY_CONFIDENCE=0.6` set the same
   thing for a session before it starts, for a project that always wants it.
   The command overrides them from then on.
+- `/jev xhigh off` blocks effort at or above xhigh (xhigh and max) on every
+  tier and caps those turns at `high`; `/jev xhigh off opus` does it for one
+  tier; `/jev xhigh on` / `/jev xhigh on fable` turn it back on. The route
+  line says `capped:xhigh` when a turn was cut down.
+- `JEV_ROUTER_XHIGH_OFF=1` (or `all`) seeds the same block for every tier;
+  `JEV_ROUTER_XHIGH_OFF=opus,fable` for named ones. The command overrides.
 
 ## Holding a shaky switch
 
