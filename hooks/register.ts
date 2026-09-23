@@ -290,6 +290,10 @@ export function register(on: On) {
     // the four requests it caused.
     let attempt = byTurn.get(e.turnId);
     if (attempt === undefined && e.agentId !== undefined) {
+      // A spawn the router saw was recorded then; this only links the turn
+      // to it, so a resumed agent's later turns add their usage to the same
+      // row rather than opening one each. Recording it again here listed
+      // every routed subagent twice.
       attempt = spawned.get(e.agentId);
       if (attempt === undefined) {
         // A fork, or a spawn from before the router loaded: nothing was
@@ -302,8 +306,8 @@ export function register(on: On) {
           kind: "agent",
           agent,
         };
+        record(attempt);
       }
-      record(attempt);
       byTurn.set(e.turnId, attempt);
       trim(byTurn);
     }

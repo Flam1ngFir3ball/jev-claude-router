@@ -1087,6 +1087,11 @@ describe("register: a spawned subagent", () => {
       args: "",
     });
     assert.match(out.text, /haiku·medium 0\.98 +\[agent:Explore\] Count hook files/);
+    assert.equal(
+      out.text.split("\n").filter((l: string) => /\[agent:Explore\]/.test(l)).length,
+      1,
+      "recorded at the spawn only; its steps join that row, not open another",
+    );
   });
 
   test("a shaky pick leaves the spawn on its own model, and says so", async () => {

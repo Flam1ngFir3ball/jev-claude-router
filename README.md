@@ -124,11 +124,12 @@ Without it, one prompt that dispatched three reviewers reads as one reply that
 changed model three times.
 
 The agents themselves are the `[agent:type]` rows. A subagent's loop gets no
-`turn.start`, so the router never sees a prompt to ask Jev about, and it runs
-on whatever the Agent tool resolved (the session model, usually). It is listed
-as unrouted with the model that answered it, so the requests one prompt really
-caused are all on the screen. Nothing is written into a subagent's reply: that
-text is a tool result its parent reads.
+`turn.start`; it is routed at `agent.spawn` instead, where its task is in
+hand as text (see *Subagents* below). The row shows the tier Jev picked, or
+why it was left alone (`under the 0.5 bar`, a timeout), with the model that
+answered it, so the requests one prompt really caused are all on the screen.
+Nothing is written into a subagent's reply: that text is a tool result its
+parent reads.
 
 The same `answered` information is under each reply as it happens, in the
 footer below; `/jev` is where you go to see it across turns.
@@ -282,9 +283,14 @@ Jev wanted haiku, was 61% sure, and the bar is 75%, so the turn stayed on
 fable. The same `held:haiku` appears in the footer and in `/jev`, because a
 hold nobody can see is indistinguishable from a router that is not running.
 
-Only the model is held. The effort Jev asked for is applied either way, since
-effort does not change the model and so costs no cache: a held turn still
-thinks harder or less hard than the one before it.
+Only the model is held, on Opus and Haiku. There the effort Jev asked for is
+applied either way, since the engine sends it per request and it costs no
+cache: a held turn still thinks harder or less hard than the one before it.
+Sonnet is the exception, measured 2026-09-22: an effort change there rewrites
+everything after the system block, about half the prefix. So a turn that
+stays on Sonnet also holds its effort unless Jev's confidence in the effort
+score (a separate number from the tier's, and usually the shakier) clears the
+same bar; the footer says `held-effort:xhigh` for what Jev wanted.
 
 What the next turn holds to is the tier actually running, not the one Jev
 named. Three shaky haiku calls in a row will not creep the session onto haiku
@@ -299,6 +305,36 @@ a bar you have already set, so turning it off and on again does not lose it.
 A session that should always be sticky can say so before it starts, with
 `JEV_ROUTER_STICKY=1` in the `env` block of settings.json. The command wins
 after that.
+
+## Two things stickiness cannot catch
+
+**A bare go-ahead.** Jev reads "yes", "ok", "go ahead" as trivial with
+near-total confidence (measured: "yes" 1.00, "y" 0.98), which clears any bar
+and drops a fable task to haiku. It is right about the text and wrong about
+the work, which is whatever the last turn proposed. So a prompt that is only
+a go-ahead (`y`, `yes`, `ok`, `sure`, `go ahead`, `continue`, `do it`, `lgtm`
+and the like, trailing punctuation aside) runs on the previous turn's tier and
+effort without asking Jev, tagged `continue`. Anything longer is a prompt.
+
+**A tier you named.** "use opus for this" scores opus at 0.43, under the bar,
+so stickiness refused it. A tier named with a run-on verb (`use`, `using`,
+`switch to`, `route to`, `run this on`, `go with`, `with`) is taken as read,
+needs no answer from Jev, and is tagged `forced`. Jev's effort still applies.
+Bare "on" and "for" are not verbs here: "search for opus docs" is a search.
+A tier the environment excluded cannot be named back in.
+
+## Subagents
+
+Each spawn is classified on its own prompt at `agent.spawn` and given the
+model Jev picks, unless the call named a model itself or is a fork (which
+inherits, and whose model the engine ignores). The subagent's own steps then
+carry that model and effort. There is no hold to the parent's tier: a
+subagent starts with an empty conversation, so there is no cache to keep
+warm; measured, a haiku loop under a fable parent cost $0.023 against about
+$0.34 inherited. What there is instead is a floor, `SUBAGENT_CONFIDENCE` in
+policy.ts (0.5, calibrated on subagent-style prompts: the specified ones
+scored 0.72 to 0.98, a vague audit 0.22). Under it the spawn is left alone
+and `/jev` says so.
 
 ## Checking and tuning
 
@@ -377,15 +413,22 @@ and endpoints already resolved.
 ## Working on it
 
 ```
-node --test 'tests/*.test.ts'
-claude plugin validate .
+npm run types    # once: fetches Anthropic's claude-code.d.ts into .claude/types (gitignored)
+npm run check    # typecheck, tests, plugin validate
+git config core.hooksPath scripts/githooks   # once per clone: validate before every commit
 ```
 
-`plugin validate` is worth running on every change. It does static analysis and
-prints every event the module hooks, everything it calls on `$`, and every
-environment variable it reads or writes, without executing anything. It also
-catches shape errors that are easy to get wrong, such as `turn.step` needing to
-be an `async function*` because it streams.
+`plugin validate` is not optional. It does static analysis and prints every
+event the module hooks, everything it calls on `$`, and every environment
+variable it reads or writes, without executing anything. It also applies the
+engine's load-time rule that `$` may only be passed to a function declared at
+the top of the file: a closure inside `register` that takes `$` makes the
+whole module refuse to load, and it does so silently, so every turn runs
+unrouted while `tsc` and the tests pass (measured 2026-09-23; the only other
+trace is `hooks module ... failed to load` in `~/.claude/debug/`). The
+pre-commit hook exists for that. It also catches shape errors that are easy to
+get wrong, such as `turn.step` needing to be an `async function*` because it
+streams.
 
 There is no `claude plugin test` in Claude Code 2.1.275, so the engine-level
 test kit described in the upstream `mods/README.md` is not available yet.
