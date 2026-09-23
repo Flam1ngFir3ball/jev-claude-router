@@ -1,4 +1,4 @@
-# jev-router
+# jev-claude-router
 
 A Claude Code plugin that picks the model and effort for every turn with
 [Jev](https://docs.typesafe.ai), TypeSafe's decision model, and weighs each
@@ -86,8 +86,8 @@ when the switch is worth it, and says so when it is not.
 
    Without `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` the plugin loads and silently
    does nothing.
-3. **Install it.** Place the folder at `~/.claude/skills/jev-router/` to load
-   it in every session, or run `claude --plugin-dir /path/to/jev-router` for
+3. **Install it.** Place the folder at `~/.claude/skills/jev-claude-router/` to load
+   it in every session, or run `claude --plugin-dir /path/to/jev-claude-router` for
    one session.
 4. **Check it.** `npm run check-jev` reports the provider and whether it
    answers. In a session, `/jev` shows the router's state.
@@ -157,7 +157,7 @@ Lines after the first appear only when something did not run as Jev asked.
 ### `/jev`
 
 ```
-jev-router:
+jev-claude-router:
   routing   on
   surface   desktop
   provider  typesafe · TYPESAFE_API_KEY is set · jev-latest
@@ -336,7 +336,7 @@ characters before Jev sees them.
 
 **State survives a reload.** The routing history, spend, the tier being
 held, the open reply and every `/jev` setting are saved in Claude Code's
-per-plugin store (`~/.claude/plugins/store/jev-router_*.json`) and restored
+per-plugin store (`~/.claude/plugins/store/jev-claude-router_*.json`) and restored
 after an update or reload. The twenty most recently used sessions are kept.
 
 **One copy acts.** More than one copy of the plugin can be loaded at once,

@@ -2,6 +2,8 @@
 
 ## 1.0.0 — 2026-09-23
 
+Released as **jev-claude-router**.
+
 The first release of this fork of
 [satviksinha/jev-model-router](https://github.com/satviksinha/jev-model-router).
 It routes every Claude Code turn with [Jev](https://docs.typesafe.ai), weighs

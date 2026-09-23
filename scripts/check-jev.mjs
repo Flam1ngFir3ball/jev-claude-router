@@ -57,7 +57,7 @@ if (provider.name === "gateway") {
 }
 
 const body = {
-  state: "health check from jev-router",
+  state: "health check from jev-claude-router",
   model: provider.model,
   questions: {
     tier: {
