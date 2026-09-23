@@ -27,9 +27,14 @@ import type { ProviderResult } from "./provider.ts";
 /** Below this share removed, the engine's summary does better; its default. */
 export const MIN_REDUCTION = 0.25;
 
-/** How long the whole scoring may take before the engine's summary runs instead. */
+/**
+ * How long the whole scoring may take before the engine's summary runs
+ * instead. The hook itself has a 10-second budget that a wait counts
+ * against, so the cap stays under it: a hook the engine kills leaves no
+ * record and resets nothing.
+ */
 export const DEFAULT_COMPACT_TIMEOUT_MS = 8_000;
-const MAX_COMPACT_TIMEOUT_MS = 30_000;
+const MAX_COMPACT_TIMEOUT_MS = 8_000;
 
 /** `JEV_ROUTER_COMPACT`: on unless `0`, `false`, `no` or `off`. */
 export function compactOnOf(raw: string | undefined): boolean {

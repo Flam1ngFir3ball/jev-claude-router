@@ -317,11 +317,13 @@ The engine's own summary runs instead, and `/jev` says why, when:
   question type this uses (TypeSafe direct is required), or
 - Jev fails.
 
-What Jev sees is the conversation's text (each message cut to 500
-characters) and each tool call's input; tool results are described only by
-their size and whether they errored, never sent. The engine compacts ahead
-of time and then for real over the same transcript; that transcript is
-scored once.
+What Jev sees is the conversation's text and each tool call's input (up
+to 1,000 characters of it, so a Write or Edit call's content is included);
+tool results are described only by their size and whether they errored,
+never sent. Long transcripts are abridged to fit. `/compact` with
+instructions of its own is left to the engine's summary, which can follow
+them. The engine compacts ahead of time and then for real a few messages
+later; the transcript is scored once and the new messages appended.
 
 `/jev compact off` restores the engine's summary; `/jev compact on` brings
 Jev back. `JEV_ROUTER_COMPACT=0` starts a session with it off, and
@@ -366,7 +368,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_EXCLUDE` | | Tiers never offered to Jev, e.g. `fable,haiku`. |
 | `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
 | `JEV_ROUTER_COMPACT` | on | `0` leaves compaction to the engine's summary. |
-| `JEV_ROUTER_COMPACT_TIMEOUT_MS` | `8000` | How long Jev may take to score a transcript before the engine's summary runs instead. Capped at 30000. |
+| `JEV_ROUTER_COMPACT_TIMEOUT_MS` | `8000` | How long Jev may take to score a transcript before the engine's summary runs instead. At most 8000: the hook's own budget is 10 seconds. |
 | `JEV_ROUTER_COMPACT_MIN_REDUCTION` | `0.25` | The share of the transcript Jev must remove for its result to stand; `40%` works too. |
 | `JEV_ROUTER_NOTIFY_CONTINUE` | on | `0` asks Jev about each task-notification turn instead of continuing the reply's route. |
 

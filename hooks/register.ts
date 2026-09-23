@@ -130,6 +130,13 @@ const OWNER_PREFIX = "owner:";
 const MID_TURN_SAVE_MS = 5_000;
 
 /**
+ * How many messages a transcript may have gained since it was scored for
+ * the scoring to be reused with them appended: within the newest messages
+ * pruning leaves alone (fast-jev-compaction's `preserveRecentMessages`).
+ */
+const PRUNE_TAIL_REUSED = 6;
+
+/**
  * The decision a session is running on, from the model id the API reports
  * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
  * Null for an id off the ladder or not a string.
@@ -540,7 +547,11 @@ export function register(on: On) {
    * ahead of time (`precompute`) and then for real over the same messages,
    * and each dispatch would otherwise be another scoring.
    */
-  let prunedCache: { key: string; messages: readonly unknown[] } | null = null;
+  let prunedCache: {
+    handles: readonly string[];
+    messages: readonly unknown[];
+    reduction: number;
+  } | null = null;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
   /** Agents whose reply's summary has been written: their wake-up joins no other. */
@@ -830,20 +841,35 @@ export function register(on: On) {
     // is verbatim. One copy does it; anything short of a good result
     // leaves the engine's summary to run.
     let pruned: { messages: readonly typeof e.messages[number][] } | null = null;
+    let reduction = 0;
     const transcript = Array.isArray(e.messages) ? e.messages : [];
-    // The same transcript, scored once: its length and the engine's handles.
-    const cacheKey = `${transcript.length}:${textHash(transcript.map((m) => m.handle ?? "").join(","))}`;
-    if (
-      enabled &&
-      settings.compactOn &&
-      transcript.length > 0 &&
+    // `/compact <what to keep>` is an instruction to the summariser; Jev's
+    // pruning has no way to follow it, so the summary runs.
+    const instructed = typeof e.instructions === "string" && e.instructions.trim() !== "";
+    // A transcript already scored, or one it is a prefix of: the engine
+    // compacts ahead of time and then for real a message or two later, and
+    // those messages are inside the zone pruning never touches anyway.
+    const handles = transcript.map((m) => m.handle ?? "");
+    const cached =
       prunedCache !== null &&
-      prunedCache.key === cacheKey
-    ) {
-      pruned = { messages: prunedCache.messages as unknown as typeof e.messages };
+      handles.every((h) => h !== "") &&
+      handles.length >= prunedCache.handles.length &&
+      handles.length - prunedCache.handles.length <= PRUNE_TAIL_REUSED &&
+      prunedCache.handles.every((h, i) => h === handles[i])
+        ? prunedCache
+        : null;
+    if (enabled && settings.compactOn && !instructed && transcript.length > 0 && cached !== null) {
+      pruned = {
+        messages: [
+          ...(cached.messages as unknown as typeof e.messages),
+          ...transcript.slice(cached.handles.length),
+        ],
+      };
+      reduction = cached.reduction;
     } else if (
       enabled &&
       settings.compactOn &&
+      !instructed &&
       transcript.length > 0 &&
       !inert &&
       !superseded() &&
@@ -857,18 +883,33 @@ export function register(on: On) {
         timeoutMs: settings.compactTimeoutMs,
         minReduction: settings.compactMinReduction,
       });
-      lastCompaction = result.compaction;
+      // The main conversation's, for /jev; a subagent's transcript is its own.
+      if (e.agentId === undefined) lastCompaction = result.compaction;
       // The library's message shape is the engine's, less the engine's own
       // `true | undefined` spelling of isError (rebuilt blocks carry false).
       if (result.ok) {
         pruned = { messages: result.messages as unknown as typeof e.messages };
-        prunedCache = { key: cacheKey, messages: result.messages };
+        prunedCache = { handles, messages: result.messages, reduction: result.compaction.reduction };
+        reduction = result.compaction.reduction;
       }
     }
     if (e.trigger !== "precompute" && e.agentId === undefined) {
-      running = null;
-      continueFrom = null;
-      lastUsage = null;
+      if (pruned === null) {
+        // The engine's summary: a new prefix, nothing warm, a small context.
+        running = null;
+        continueFrom = null;
+        lastUsage = null;
+      } else if (lastUsage !== null) {
+        // Pruned: the opening of the transcript stays verbatim, so the
+        // cache is partly warm on the same model and the context is only
+        // as much smaller as was removed. The hold stands; what the next
+        // turn carries is scaled, so the window guard and the price checks
+        // still see a large context, not none.
+        lastUsage = {
+          context: Math.round(lastUsage.context * (1 - reduction)),
+          output: lastUsage.output,
+        };
+      }
     }
     if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return pruned ?? next(e);
@@ -1424,7 +1465,12 @@ export function register(on: On) {
                 baseModel(running.model) !== baseModel(warm.model))
             ) {
               running = warm;
-            } else if (warm !== null && running !== null && unrouted) {
+            }
+            // A compaction in the middle of this turn cleared what a
+            // go-ahead continues; the turn's own decision is still it.
+            if (!unrouted && continueFrom === null && attempt !== undefined && "decision" in attempt)
+              continueFrom = asAsked(attempt.decision);
+            if (warm !== null && running !== null && unrouted) {
               // Same model, but the session's own effort ran and is what
               // the cache holds; Jev's earlier effort is no longer warm.
               const { effortConfidence: _, ...rest } = running;

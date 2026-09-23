@@ -193,11 +193,28 @@ export function unpack(raw: unknown): State | null {
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
     ceiling: raw.ceiling as Ceiling,
     compactOn: raw.compactOn !== false,
-    compaction: isRecord(raw.compaction) ? (raw.compaction as unknown as Compaction) : null,
+    compaction: compactionOf(raw.compaction),
   };
 }
 
 /** The snapshot keys to drop so `SNAPSHOTS_KEPT` remain, oldest first. */
+/** A saved compaction with every field it needs, or null. */
+function compactionOf(raw: unknown): Compaction | null {
+  if (!isRecord(raw) || !isRecord(raw.calls)) return null;
+  const n = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  const c = raw.calls;
+  if (![raw.at, raw.kept, raw.of, raw.reduction, raw.ms, c.kept, c.cut, c.dropped].every(n)) return null;
+  return {
+    at: raw.at as number,
+    kept: raw.kept as number,
+    of: raw.of as number,
+    reduction: raw.reduction as number,
+    ms: raw.ms as number,
+    calls: { kept: c.kept as number, cut: c.cut as number, dropped: c.dropped as number },
+    ...(typeof raw.fallback === "string" ? { fallback: raw.fallback } : {}),
+  };
+}
+
 export function staleKeys(keys: readonly string[], current: string): string[] {
   const sessions = keys.filter(
     (k) => k.startsWith(SNAPSHOT_PREFIX) && k !== current,

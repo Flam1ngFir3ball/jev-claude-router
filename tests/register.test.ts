@@ -2826,7 +2826,7 @@ describe("register: audit regressions (2026-09-23)", () => {
       assert.equal(kit.compactions(), 2, "a different transcript is scored again");
     });
 
-    test("a compaction still forgets what was warm", async () => {
+    test("a pruned compaction keeps the hold and scales the context; a summary forgets both", async () => {
       const kit = await withJev();
       kit.setTier("fable", 0.95, 3);
       kit.setContext(20_000);
@@ -2834,7 +2834,55 @@ describe("register: audit regressions (2026-09-23)", () => {
       await kit.hooks.get("session.compact")!(kit.$, compactEvent(), async () => ({ messages: [] }));
       kit.setContext(null);
       kit.setTier("haiku", 0.99, 0);
-      assert.equal((await turn(kit.hooks, kit.$, "cw2", "2+2")).sent.model, "claude-haiku-4-5", "no hold survives a compaction");
+      const t = await turn(kit.hooks, kit.$, "cw2", "2+2");
+      assert.equal(t.sent.model, "claude-fable-5-1", "the opening of the transcript is still warm on fable");
+      assert.match(t.text, /kept fable: haiku costs/);
+
+      const sum = await withJev({}, { store: new Map(), id: "sess-SUM" });
+      sum.setTier("fable", 0.95, 3);
+      sum.setContext(20_000);
+      await turn(sum.hooks, sum.$, "cs1", "plan it");
+      await sum.hooks.get("session.compact")!(sum.$, compactEvent(2), async () => ({ messages: [] }));
+      sum.setContext(null);
+      sum.setTier("haiku", 0.99, 0);
+      assert.equal((await turn(sum.hooks, sum.$, "cs2", "2+2")).sent.model, "claude-haiku-4-5", "a summary leaves nothing warm");
+    });
+
+    test("/compact with instructions is the engine's to summarise", async () => {
+      const kit = await withJev();
+      let fellThrough = false;
+      await kit.hooks.get("session.compact")!(kit.$, { ...compactEvent(), trigger: "manual", instructions: "keep the test plan" }, async () => (fellThrough = true, { messages: [] }));
+      assert.equal(fellThrough, true);
+      assert.equal(kit.compactions(), 0);
+    });
+
+    test("a transcript that grew by a few messages since it was scored reuses the scoring, tail appended", async () => {
+      const kit = await withJev();
+      const messages = transcript(10);
+      const first = await kit.hooks.get("session.compact")!(kit.$, { trigger: "precompute", messages }, async () => ({ messages: [] }));
+      const grown = [...messages, { role: "user", text: "and now?", toolUses: [], handle: "h-new" }];
+      const second = await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: grown }, async () => ({ messages: [] }));
+      assert.equal(kit.compactions(), 1, "scored once");
+      assert.equal(second.messages.length, first.messages.length + 1);
+      assert.equal(second.messages.at(-1).handle, "h-new");
+    });
+
+    test("a subagent's compaction does not become /jev's last", async () => {
+      const kit = await withJev();
+      await kit.hooks.get("session.compact")!(kit.$, { ...compactEvent(), agentId: "agent-9" }, async () => ({ messages: [] }));
+      assert.doesNotMatch((await run(kit.hooks, kit.$, "")).text, /last:/);
+    });
+
+    test("a go-ahead after a compaction in the middle of a turn still continues that turn", async () => {
+      const kit = await withJev();
+      kit.setTier("fable", 0.95, 3);
+      kit.setContext(20_000);
+      await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "mc1" }, async (e: unknown) => e);
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "mc1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+      await kit.hooks.get("session.compact")!(kit.$, compactEvent(2), async () => ({ messages: [] }));
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "mc1", index: 1 }, (e: { model: string }) => answeredBy(e.model)));
+      const yes = await turn(kit.hooks, kit.$, "mc2", "yes");
+      assert.equal(yes.sent.model, "claude-fable-5-1", "continues the turn's decision");
     });
   });
 

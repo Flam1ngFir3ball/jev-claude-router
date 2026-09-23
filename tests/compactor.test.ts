@@ -140,7 +140,7 @@ describe("compaction settings", () => {
   test("timeout and minimum reduction", () => {
     assert.equal(compactTimeoutOf(undefined), DEFAULT_COMPACT_TIMEOUT_MS);
     assert.equal(compactTimeoutOf("2500"), 2500);
-    assert.equal(compactTimeoutOf("999999"), 30_000);
+    assert.equal(compactTimeoutOf("999999"), 8_000, "under the hook's own 10s budget");
     assert.equal(minReductionOf(undefined), 0.25);
     assert.equal(minReductionOf("0.4"), 0.4);
     assert.equal(minReductionOf("40%"), 0.4);
