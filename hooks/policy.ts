@@ -333,7 +333,10 @@ function overrideNegated(
     );
     for (const sink of ordered) {
       if (!proximityOk(text.slice(negEnd, sink))) break;
-      return sink === matchAt;
+      // This negation binds its first attached sink only; keep scanning later
+      // negations when that sink is someone else ("don't use haiku never use opus").
+      if (sink === matchAt) return true;
+      break;
     }
   }
   return false;
