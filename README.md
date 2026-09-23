@@ -163,7 +163,7 @@ jev-router:
   spent     $4.12 this session
 
   Recent turns, newest first:
-   653ms  fable·medium  Jev 61%  [task finished] Agent "Review library-sync…
+     0ms  fable·medium    [task finished] Agent "Review library-sync…
           → fable-5-1 ✓ · $0.061 · 45k in (98% cached) · 1k out
      0ms  not routed — [general-purpose agent] Review library-sync cluster · not routed at spawn…
           → opus-5-5 · $0.023 · 22k in (82% cached) · 0k out
@@ -182,9 +182,9 @@ jev-router:
 - Each turn shows the decision and its reason, then (`→`) what the API
   reports actually answered.
 - Rows for turns you did not type are labelled: `[task finished]` for a
-  background agent waking the loop, `[continuing]` for the engine's own nudge
-  (no Jev call, nothing written in the reply), and `[type agent]` for a
-  subagent.
+  background agent waking the loop (it continues the reply's route, with
+  no Jev call and no extra line), `[continuing]` for the engine's own nudge
+  (the same), and `[type agent]` for a subagent.
 
 ## How a turn is routed
 
@@ -242,13 +242,19 @@ the router sends `high` there and says so (`FIRST_TURN_EFFORT` in
 `policy.ts`). Claude Code sends no effort to Sonnet 5, so its effort setting
 has no effect.
 
-### Go-aheads
+### Go-aheads and wake-ups
 
 Jev scores a bare "yes" as trivial, which is right about the text and wrong
 about the work. A prompt that is only a go-ahead (`y`, `yes`, `ok`, `sure`,
 `go ahead`, `continue`, `do it`, `lgtm` and similar) continues on the previous
 turn's tier and effort without asking Jev. With nothing to continue, it stays
 on the session model.
+
+Turns the engine starts on its own are treated the same way: a background
+task finishing (its `<task-notification>` is the turn's text) and the
+engine's own nudge both continue the reply's route without a Jev call, so
+they add no latency and cannot switch the model under a reply in progress.
+`JEV_ROUTER_NOTIFY_CONTINUE=0` asks Jev about notifications anyway.
 
 ### Naming a tier
 
@@ -305,7 +311,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
 | `JEV_ROUTER_EXCLUDE` | | Tiers never offered to Jev, e.g. `fable,haiku`. |
 | `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
-| `JEV_ROUTER_NOTIFY_CONTINUE` | off | `1` continues task-notification turns on the previous route instead of asking Jev. |
+| `JEV_ROUTER_NOTIFY_CONTINUE` | on | `0` asks Jev about each task-notification turn instead of continuing the reply's route. |
 
 ## Session state and multiple copies
 
@@ -358,6 +364,7 @@ npm run check-jev                     # is the configured provider serving?
 npm run try-prompts                   # Jev's tier, effort and confidence on sample prompts
 npm run try-prompts -- "your prompt"
 npm run measure-switch-cost           # what a switch costs at each context size
+npm run bench-overhead                # engine calls and plugin time per turn, with a fake engine
 ```
 
 `try-prompts` is the tuning loop: edit `TIER_CRITERIA`, run it, and check
@@ -393,7 +400,7 @@ hooks/label.ts      the session-mode footer label
 hooks/status.ts     the route line, the summary, /jev output, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks
                     against a fake engine
-scripts/            check-jev, try-prompts, measure-switch-cost
+scripts/            check-jev, try-prompts, measure-switch-cost, bench-overhead
 ```
 
 ## Development

@@ -102,6 +102,9 @@ function textHash(text: string): string {
 /** Store key prefix for which copy of the module owns a session. */
 const OWNER_PREFIX = "owner:";
 
+/** How often a turn still running saves its state. */
+const MID_TURN_SAVE_MS = 5_000;
+
 /**
  * Stop reasons that mean the turn continues: the engine will step again, so
  * a summary would land in the middle of a reply. `tool_use` and `pause_turn`
@@ -512,6 +515,8 @@ export function register(on: On) {
   let surface: string | null = null;
   /** Dollars across every turn seen this session, at list price. */
   let spent = 0;
+  /** When the state was last saved mid-turn; end-of-turn saves are not throttled. */
+  let lastMidTurnSave = 0;
   /**
    * agentId → what its spawn settled on, for the subagent's own steps to
    * apply and for /jev to show. Keyed by the id `next(e)` hands back from
@@ -913,6 +918,13 @@ export function register(on: On) {
             )
           : continuationSkipped(e.text);
       if (nudge) attempt.kind = "nudge";
+      // A task notification that continues is still the task waking the
+      // loop: the row and the summary say so, with the task's summary in
+      // place of the XML.
+      if (softNotify) {
+        attempt.kind = "notify";
+        attempt.prompt = notificationOf(e.text) ?? attempt.prompt;
+      }
     } else {
       // What a downgrade is priced against: the engine's count of what the
       // last response carried, or ours from its usage; the last output, or
@@ -979,7 +991,9 @@ export function register(on: On) {
     // gets no line and no summary: it is the engine prodding a task that is
     // mid-flight, not a reply to the person, and a block under it was the
     // middle of the three that stacked under one reply (seen 2026-09-23).
-    if (announce && !nudge) {
+    // A continuing notification gets none either: the reply it woke is
+    // already open under its own line.
+    if (announce && !nudge && !softNotify) {
       pending.add(e.turnId);
       trimSet(pending);
     }
@@ -1136,6 +1150,13 @@ export function register(on: On) {
     type StepChunk = typeof step extends AsyncIterable<infer C> ? C : never;
     type TextChunk = Extract<StepChunk, { kind: "text" }>;
     let filter: ImitationFilter<TextChunk> | null | undefined;
+    // Whether this copy still holds the turn and the session, read from the
+    // store once per step: the filter, the line and the summary all ask, and
+    // a step is short enough that one answer serves all three.
+    let holds: boolean | undefined;
+    // The session's ownership was checked as this step began, above.
+    const holdsNow = async () =>
+      (holds ??= !superseded() && (await holdsTurnOf(e.turnId)));
 
     for await (const raw of step) {
       const at = (raw as { index?: unknown }).index;
@@ -1143,12 +1164,7 @@ export function register(on: On) {
       let pieces: StepChunk[] = [raw];
       if (raw.kind === "text" && raw.ref !== undefined && attempt && !inert) {
         if (filter === undefined)
-          filter =
-            !superseded() &&
-            (await holdsTurnOf(e.turnId)) &&
-            !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
-              ? new ImitationFilter<TextChunk>()
-              : null;
+          filter = (await holdsNow()) ? new ImitationFilter<TextChunk>() : null;
         if (filter) pieces = filter.push(raw);
       } else if (filter) {
         pieces = [...filter.end(), raw];
@@ -1162,12 +1178,7 @@ export function register(on: On) {
           // since the turn began leaves it to the owner, once, and a line an
           // inner copy already wrote is not written again.
           pending.delete(e.turnId);
-          if (
-            ROUTE_LINE.test(chunk.text) ||
-            superseded() ||
-            !(await holdsTurnOf(e.turnId)) ||
-            (snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
-          ) {
+          if (ROUTE_LINE.test(chunk.text) || !(await holdsNow())) {
             inert = true;
             yield chunk;
             continue;
@@ -1195,7 +1206,14 @@ export function register(on: On) {
               output: chunk.usage.output_tokens,
             };
           }
-          if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+          // A step that ends the turn always saves; one that continues it
+          // saves at most every few seconds. A tool-using turn has dozens
+          // of steps, and each save rewrites the whole store file.
+          const now = Date.now();
+          if (!MID_TURN.has(chunk.stopReason ?? "") || now - lastMidTurnSave >= MID_TURN_SAVE_MS) {
+            lastMidTurnSave = now;
+            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+          }
         }
 
         // The summary goes under the reply once it is over: this step ends
@@ -1227,9 +1245,9 @@ export function register(on: On) {
           !MID_TURN.has(chunk.stopReason) &&
           !summarised &&
           !(await agentsRunning($, replyAgents)) &&
-          (await holdsTurnOf(e.turnId)) &&
-          // Still the newest copy: one loaded mid-turn may have claimed since.
-          !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+          // Still the copy holding the turn: one loaded mid-turn may have
+          // claimed since.
+          (await holdsNow())
         ) {
           const summary = replySummary(reply);
           if (summary !== null) {

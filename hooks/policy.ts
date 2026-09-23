@@ -456,12 +456,16 @@ export function overrideAllowedOf(raw: string | undefined): boolean {
 }
 
 /**
- * Whether task-notification turns soft-continue the previous route instead
- * of re-asking Jev. Off by default; `JEV_ROUTER_NOTIFY_CONTINUE=1` enables.
+ * Whether a task-notification turn continues the previous route instead of
+ * asking Jev. On by default: the turn's text is the engine's XML about a
+ * finished background task, not work to grade, and the reply it wakes is
+ * the one already under way. Skipping Jev there saves a round trip on the
+ * critical path of every task that finishes. `JEV_ROUTER_NOTIFY_CONTINUE=0`
+ * asks Jev anyway.
  */
 export function notifyContinueOf(raw: string | undefined): boolean {
   const flag = (raw ?? "").trim().toLowerCase();
-  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+  return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
 }
 
 /**

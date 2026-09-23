@@ -2447,6 +2447,44 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.ok(chunks.filter((c) => c.kind === "text").every((c) => c.ref !== undefined || /% cached\)/.test(c.text)), "pieces keep the engine's refs");
   });
 
+  test("a task notification continues the reply's route without asking Jev, and counts as woken", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-NOTIFY" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("fable", 0.95, 3);
+    await turn(kit.hooks, kit.$, "n1", "review the cluster in the background");
+    const asked = kit.fetches();
+    const xml = '<task-notification><task-id>abc</task-id><summary>Agent "reviewer" completed</summary></task-notification>';
+    kit.setTier("haiku", 0.99, 0);
+    const t = await turn(kit.hooks, kit.$, "n2", xml);
+    assert.equal(kit.fetches(), asked, "Jev was not asked about the XML");
+    assert.equal(t.sent.model, "claude-fable-5-1", "the reply's own route continues");
+    assert.doesNotMatch(t.text, /✳️/, "no second line under the open reply");
+    assert.match(t.text, /fable-5-1 ✓ medium/, "summarised on what answered");
+    assert.match((await run(kit.hooks, kit.$, "")).text, /\[task finished\] Agent "reviewer" completed/);
+  });
+
+  test("a turn still running saves its state at most every few seconds; the end always saves", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-SAVES" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.95, 1);
+    let sets = 0;
+    const set = kit.$.store.set;
+    kit.$.store.set = async (k: string, v: unknown) => {
+      if (k.startsWith("session:")) sets++;
+      return set(k, v);
+    };
+    await kit.hooks.get("turn.start")!(kit.$, { text: "implement it", turnId: "s1" }, async (e: unknown) => e);
+    for (let i = 0; i < 10; i++)
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "s1", index: i }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    const midTurn = sets;
+    assert.ok(midTurn <= 3, `the line's save and one throttled save, not one per step: ${midTurn}`);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "s1", index: 10 }, (e: { model: string }) => answeredBy(e.model)));
+    assert.ok(sets > midTurn, "the end of the turn saves");
+    const saved = JSON.stringify(shared.store.get("session:sess-SAVES"));
+    assert.match(saved, /implement it/);
+  });
+
   test("a prompt repeated by the same copy is routed each time", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, { store: new Map(), id: "sess-REP" });
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
