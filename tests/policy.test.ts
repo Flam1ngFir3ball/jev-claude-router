@@ -9,6 +9,7 @@ import {
   forcedDecision,
   holdsSonnetEffort,
   isContinuation,
+  isXhighOrAbove,
   MODEL_OF,
   offeredTiers,
   parseOverride,
@@ -18,6 +19,9 @@ import {
   subagentDecision,
   thresholdOf,
   TIERS,
+  capXhigh,
+  xhighOffOf,
+  XHIGH_CAP,
   type Decision,
   type Effort,
 } from "../hooks/policy.ts";
@@ -488,5 +492,47 @@ describe("a subagent’s decision", () => {
 
   test("the bar is the one measured to split specified from vague tasks", () => {
     assert.equal(SUBAGENT_CONFIDENCE, 0.5);
+  });
+});
+
+describe("xhigh cap", () => {
+  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+    tier,
+    model: MODEL_OF[tier],
+    effort,
+    confidence: 0.9,
+  });
+
+  test("xhigh and max are the rungs that cost the most", () => {
+    assert.equal(isXhighOrAbove("xhigh"), true);
+    assert.equal(isXhighOrAbove("max"), true);
+    assert.equal(isXhighOrAbove("high"), false);
+  });
+
+  test("a blocked tier is capped to high, and what Jev wanted is kept", () => {
+    const d = capXhigh(at("fable", "xhigh"), new Set(["fable"]));
+    assert.equal(d.effort, XHIGH_CAP);
+    assert.equal(d.cappedEffort, "xhigh");
+    assert.equal(capXhigh(at("fable", "max"), new Set(["fable"])).cappedEffort, "max");
+  });
+
+  test("an unblocked tier is left alone", () => {
+    const d = capXhigh(at("fable", "xhigh"), new Set(["opus"]));
+    assert.equal(d.effort, "xhigh");
+    assert.equal(d.cappedEffort, undefined);
+  });
+
+  test("high and below are never capped", () => {
+    assert.equal(capXhigh(at("opus", "high"), new Set(TIERS)).effort, "high");
+    assert.equal(capXhigh(at("opus", "low"), new Set(TIERS)).cappedEffort, undefined);
+  });
+
+  test("the env reads all-off and a tier list", () => {
+    assert.deepEqual([...xhighOffOf(undefined)], []);
+    assert.deepEqual([...xhighOffOf("")].sort(), []);
+    assert.deepEqual([...xhighOffOf("1")].sort(), [...TIERS].sort());
+    assert.deepEqual([...xhighOffOf("all")].sort(), [...TIERS].sort());
+    assert.deepEqual([...xhighOffOf("opus,fable")].sort(), ["fable", "opus"]);
+    assert.deepEqual([...xhighOffOf("nope,opus")], ["opus"]);
   });
 });

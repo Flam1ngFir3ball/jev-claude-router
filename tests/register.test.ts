@@ -823,6 +823,85 @@ describe("register: the sticky subcommand", () => {
   });
 });
 
+describe("register: the xhigh subcommand", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+  ) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "plan the architecture", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model);
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks
+        .filter((c) => c.kind === "text")
+        .map((c) => c.text)
+        .join(""),
+    };
+  }
+
+  test("/jev xhigh off caps every tier at high", async () => {
+    const { hooks, $, setTier } = load();
+    setTier("fable", 0.9, 3);
+    await run(hooks, $, "xhigh off");
+    const t = await turn(hooks, $, "xh1");
+    assert.equal(t.sent.effort, "high");
+    assert.match(t.text, /capped:xhigh/);
+    assert.match((await run(hooks, $, "")).text, /xhigh\s+off for all/);
+  });
+
+  test("/jev xhigh off opus leaves fable alone", async () => {
+    const { hooks, $, setTier } = load();
+    await run(hooks, $, "xhigh off opus");
+    setTier("fable", 0.9, 3);
+    assert.equal((await turn(hooks, $, "xh2")).sent.effort, "xhigh");
+    setTier("opus", 0.9, 3);
+    const opus = await turn(hooks, $, "xh3");
+    assert.equal(opus.sent.effort, "high");
+    assert.match(opus.text, /capped:xhigh/);
+  });
+
+  test("JEV_ROUTER_XHIGH_OFF=1 seeds the session", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_XHIGH_OFF: "1",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    setTier("fable", 0.9, 4);
+    const t = await turn(hooks, $, "xh4");
+    assert.equal(t.sent.effort, "high", "max is capped too");
+    assert.match(t.text, /capped:max/);
+  });
+
+  test("/jev xhigh on clears the env seed", async () => {
+    const { hooks, $, setTier } = load({
+      AI_GATEWAY_API_KEY: "gw-key",
+      JEV_ROUTER_XHIGH_OFF: "all",
+    });
+    await hooks.get("session.start")!($, {}, async (e: unknown) => e);
+    await run(hooks, $, "xhigh on");
+    setTier("fable", 0.9, 3);
+    assert.equal((await turn(hooks, $, "xh5")).sent.effort, "xhigh");
+  });
+});
+
 describe("register: a tier named in the prompt", () => {
   const started = async (over: Record<string, string> = {}) => {
     const kit = load({

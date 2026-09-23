@@ -43,6 +43,11 @@ export type Decision = {
    * would otherwise read as a low-confidence pick.
    */
   forced?: true;
+  /**
+   * The effort Jev named, when xhigh (and above) was blocked for this tier
+   * and the turn was capped to `high`. Absent when the cap did not apply.
+   */
+  cappedEffort?: Effort;
 };
 
 export const TIERS: readonly Tier[] = ["haiku", "sonnet", "opus", "fable"];
@@ -400,4 +405,57 @@ export function subagentDecision(
 ): Decision | null {
   if (fresh === null) return null;
   return fresh.confidence >= threshold ? fresh : null;
+}
+
+/**
+ * Effort at or above xhigh. Both `xhigh` and `max` are blocked together:
+ * max is the rung above xhigh, and turning off the expensive thinking
+ * without max would leave the costlier option open.
+ */
+export function isXhighOrAbove(effort: Effort): boolean {
+  return effort === "xhigh" || effort === "max";
+}
+
+/** The ceiling when xhigh is off: everything above becomes `high`. */
+export const XHIGH_CAP: Effort = "high";
+
+/**
+ * Caps a decision's effort to `high` when xhigh is blocked for its tier.
+ * Keeps what Jev wanted in `cappedEffort` so the route line can say so.
+ */
+export function capXhigh(
+  decision: Decision,
+  blocked: ReadonlySet<Tier>,
+): Decision {
+  if (!blocked.has(decision.tier)) return decision;
+  if (!isXhighOrAbove(decision.effort)) return decision;
+  return {
+    ...decision,
+    effort: XHIGH_CAP,
+    cappedEffort: decision.effort,
+  };
+}
+
+/**
+ * Reads `JEV_ROUTER_XHIGH_OFF`: empty → none; `1`/`all`/`true`/`yes`/`on` →
+ * every tier; otherwise a comma list of tier names.
+ */
+export function xhighOffOf(raw: string | undefined): Set<Tier> {
+  const flag = (raw ?? "").trim().toLowerCase();
+  if (!flag) return new Set();
+  if (
+    flag === "1" ||
+    flag === "all" ||
+    flag === "true" ||
+    flag === "yes" ||
+    flag === "on"
+  ) {
+    return new Set(TIERS);
+  }
+  return new Set(
+    flag
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter((n): n is Tier => (TIERS as string[]).includes(n)),
+  );
 }
