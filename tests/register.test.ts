@@ -2337,6 +2337,51 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(sent.model, "m", "/jev off reached the owner");
   });
 
+  test("two copies neither of which can claim still write one line and one summary", async () => {
+    // What the desktop app showed after a clean restart: two copies acting,
+    // one saving nowhere. No session id, and no shared runtime marker, so
+    // neither ownership check can separate them; the output must dedupe.
+    const shared = { store: new Map<string, unknown>(), id: "" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const outer = load(env, shared);
+    const inner = load(env, shared);
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    for (const k of [outer, inner]) {
+      await k.hooks.get("session.start")!(k.$, {}, async (e: unknown) => e);
+      k.setTier("opus", 0.9, 1);
+    }
+    await outer.hooks.get("turn.start")!(outer.$, { text: "implement it", turnId: "n1" }, (e: unknown) =>
+      inner.hooks.get("turn.start")!(inner.$, e, async (x: unknown) => x),
+    );
+    const out = (
+      await collect(
+        outer.hooks.get("turn.step")!(outer.$, { turnId: "n1", index: 0 }, (e: { model: string }) =>
+          inner.hooks.get("turn.step")!(inner.$, e, (x: { model: string }) => answeredBy(x.model)),
+        ),
+      )
+    )
+      .filter((c) => c.kind === "text")
+      .map((c) => c.text)
+      .join("");
+    assert.equal(out.match(/✳️/g)?.length, 1, "one route line");
+    assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
+  });
+
+  test("a session id that changes under a live copy is followed, not treated as a stranger", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-OLDID" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.9, 1);
+    await turn(kit.hooks, kit.$, "i1", "implement it");
+    shared.id = "sess-NEWID";
+    await turn(kit.hooks, kit.$, "i2", "and the tests");
+    assert.ok(shared.store.has("session:sess-NEWID"), "saves follow the new id");
+    assert.ok(shared.store.has("owner:session:sess-NEWID"), "and the claim does too");
+    const status = (await run(kit.hooks, kit.$, "")).text;
+    assert.match(status, /and the tests/);
+    assert.match(status, /implement it/, "the state came along");
+  });
+
   test("the session ending releases its claim, so a later process on it is not left standing aside", async () => {
     const shared = { store: new Map<string, unknown>(), id: "sess-END" };
     const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
@@ -2347,6 +2392,9 @@ describe("register: audit regressions (2026-09-23)", () => {
     await second.hooks.get("session.start")!(second.$, {}, async (e: unknown) => e);
     await second.hooks.get("session.end")!(second.$, {}, async (e: unknown) => e);
     assert.ok(!shared.store.has("owner:session:sess-END"));
+    // Two processes share the store but not a runtime: clear the runtime's
+    // marker so `first` stands for the other process it models.
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
     first.setTier("opus", 0.9, 1);
     assert.equal((await turn(first.hooks, first.$, "e1", "implement the parser")).sent.model, "claude-opus-5-5");
   });

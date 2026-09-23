@@ -72,6 +72,12 @@ type Engine = {
 /** Turns kept in the decision cache before the oldest are dropped. */
 const CACHE_LIMIT = 32;
 
+/** A reply's route line, as `liveLine` writes it: what an inner copy already put in. */
+const ROUTE_LINE = /^> (?:✳️|⚠️) /;
+
+/** A summary block, as `replySummary` writes it after `FOOTER_SEPARATOR`. */
+const SUMMARY = /^\n\n```\n[^\n]*\(\d+% cached\)/;
+
 /** Store key prefix for which copy of the module owns a session. */
 const OWNER_PREFIX = "owner:";
 
@@ -364,7 +370,18 @@ async function agentTagOf(
  */
 export function register(on: On) {
   /** When this copy was loaded; the newest copy owns the session. */
-  const birth = Date.now() + Math.random();
+  // Copies loaded into one runtime share `globalThis`; the newest stands, and
+  // this holds even for a copy that cannot read a session id to claim with.
+  // A copy's stamp is always above every one already there, so two loaded
+  // in the same millisecond still have an order; the fraction keeps copies
+  // in different processes, which share only the store, from tying.
+  const runtime = globalThis as { __jevRouterNewest?: number };
+  const birth = Math.max(
+    Date.now() + Math.random() * 0.001,
+    (runtime.__jevRouterNewest ?? 0) + 0.001,
+  );
+  runtime.__jevRouterNewest = birth;
+  const superseded = () => birth < (runtime.__jevRouterNewest ?? 0);
   /** True once a newer copy has claimed the session: this one stands aside. */
   let inert = false;
   let settings: Settings | null = null;
@@ -658,6 +675,7 @@ export function register(on: On) {
     // its frozen state and change settings the owner never sees.
     if (
       inert ||
+      superseded() ||
       (snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
     ) {
       inert = true;
@@ -748,7 +766,17 @@ export function register(on: On) {
       restoreOnKey = true;
     }
     // The newest copy of the module handles the turn; an older one stands aside.
-    if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
+    // The session's id can change under a live copy (a resume into a new
+    // id); keep the state and follow the id, so every copy claims one key.
+    if (snapshotKey !== undefined) {
+      const current = await snapshotKeyOf($);
+      if (current !== null && current !== snapshotKey) {
+        snapshotKey = current;
+        savedOnce = false;
+      }
+    }
+    if (superseded()) inert = true;
+    else if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
     if (inert) return next(e);
     if (surface === null) surface = await surfaceOf($);
     const { offered, ceiling } = settings;
@@ -903,6 +931,7 @@ export function register(on: On) {
     }
     if (
       inert ||
+      superseded() ||
       (snapshotKey && !(await ownsSession($, snapshotKey, birth, true)))
     ) {
       inert = true;
@@ -988,16 +1017,26 @@ export function register(on: On) {
     // The highest block index streamed so far, any kind: the summary must
     // open a block past it, or the engine drops it silently.
     let lastIndex = 0;
+    // Whether an inner copy's summary has already passed through this step:
+    // copies are chained, so an outer copy sees what an inner one wrote, and
+    // writes nothing a second time, whatever put two copies in the chain.
+    let summarised = false;
 
     for await (const chunk of step) {
       const at = (chunk as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
       if (chunk.kind === "text") {
+        if (chunk.ref === undefined && SUMMARY.test(chunk.text)) summarised = true;
         if (attempt && pending.has(e.turnId)) {
           // The line is this turn's either way; a copy that lost the session
-          // since the turn began leaves it to the owner, once.
+          // since the turn began leaves it to the owner, once, and a line an
+          // inner copy already wrote is not written again.
           pending.delete(e.turnId);
-          if (snapshotKey && !(await ownsSession($, snapshotKey, birth, false))) {
+          if (
+            ROUTE_LINE.test(chunk.text) ||
+            superseded() ||
+            (snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+          ) {
             inert = true;
             yield chunk;
             continue;
@@ -1055,6 +1094,7 @@ export function register(on: On) {
           // null: the request failed, and there is no response to sum up.
           chunk.stopReason != null &&
           !MID_TURN.has(chunk.stopReason) &&
+          !summarised &&
           !(await agentsRunning($, replyAgents)) &&
           // Still the newest copy: one loaded mid-turn may have claimed since.
           !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
@@ -1106,6 +1146,7 @@ export function register(on: On) {
     }
     if (
       inert ||
+      superseded() ||
       (snapshotKey && !(await ownsSession($, snapshotKey, birth, true)))
     ) {
       inert = true;
