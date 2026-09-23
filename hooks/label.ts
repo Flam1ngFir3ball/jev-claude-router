@@ -8,6 +8,9 @@ import type { Decision } from "./policy.ts";
 /** Below this, the pick is marked so a bad route is visible rather than silent. */
 export const LOW_CONFIDENCE = 0.5;
 
+/** A previous router label left in SessionMode's modes list. */
+const JEV_MODE = /^jev( →| off)/;
+
 /**
  * The label for the footer, or null to add nothing.
  *
@@ -25,12 +28,17 @@ export function labelOf(
   return `jev → ${decision.tier}·${decision.effort}${doubt}`;
 }
 
-/** The modes array `SessionMode` should draw, with our label on the end. */
+/**
+ * The modes array `SessionMode` should draw, with our label on the end.
+ * Prior `jev → …` / `jev off` entries are stripped so crumbs do not
+ * accumulate across tier changes.
+ */
 export function withLabel(
   modes: readonly string[],
   label: string | null,
 ): readonly string[] {
-  if (label === null) return modes;
-  if (modes.includes(label)) return modes;
-  return [...modes, label];
+  const cleared = modes.filter((m) => !JEV_MODE.test(m));
+  if (label === null) return cleared;
+  if (cleared.includes(label)) return cleared;
+  return [...cleared, label];
 }

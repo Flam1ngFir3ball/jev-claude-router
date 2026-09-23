@@ -196,8 +196,8 @@ export type Hold = {
  * This is the only place a main-loop decision is settled: the route the
  * engine applies and the line /jev shows are the same object, so the two
  * cannot disagree. The order is the policy: a named tier first (it needs no
- * answer from Jev at all), then stickiness on the tier, then, for a turn
- * that stays on Sonnet, stickiness on the effort.
+ * answer from Jev at all — effort defaults to medium), then stickiness on
+ * the tier, then, for a turn that stays on Sonnet, stickiness on the effort.
  */
 export function attemptOf(
   text: string,
@@ -227,8 +227,8 @@ export function attemptOf(
   if (hold.sticky !== null && !decision.forced) {
     decision = stickyDecision(decision, hold.running, hold.sticky);
   }
-  // A forced turn named its tier; Jev's effort still applies (README). The
-  // Sonnet effort gate is a stickiness rule and does not get a vote here.
+  // A forced turn named its tier; effort comes from Jev when it was asked,
+  // otherwise medium. The Sonnet effort gate does not get a vote here.
   if (
     !decision.forced &&
     hold.sticky !== null &&
@@ -490,7 +490,7 @@ export function statusReport(status: Status): string {
   lines.push(
     `  sticky    ${
       status.sticky === null
-        ? "off (JEV_ROUTER_STICKY=1)"
+        ? "off (JEV_ROUTER_STICKY=0)"
         : `on, switch needs ${Math.round(status.sticky * 100)}%`
     }`,
   );

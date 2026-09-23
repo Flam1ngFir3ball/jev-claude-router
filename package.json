@@ -8,9 +8,10 @@
     "types": "mkdir -p .claude/types && curl -sSL -o .claude/types/claude-code.d.ts https://raw.githubusercontent.com/anthropics/claude-code/56f36532530f88b572854538d685fcf781141e8c/mods/types/claude-code.d.ts",
     "validate": "claude plugin validate .",
     "check": "npm run typecheck && npm test && npm run validate",
-    "check-jev": "node scripts/check-jev.mjs",
-    "check-gateway": "node scripts/check-jev.mjs",
-    "try-prompts": "node scripts/try-prompts.mjs"
+    "check-jev": "node --experimental-strip-types scripts/check-jev.mjs",
+    "check-gateway": "node --experimental-strip-types scripts/check-jev.mjs",
+    "try-prompts": "node --experimental-strip-types scripts/try-prompts.mjs",
+    "measure-switch-cost": "node scripts/measure-switch-cost.mjs"
   },
   "devDependencies": {
     "typescript": "^5"

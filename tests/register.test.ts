@@ -7,7 +7,7 @@ import { register } from "../hooks/register.ts";
  * Drives the real `register` with a fake engine: captures the hooks it
  * registers, then runs turn.start and turn.step the way the engine would.
  */
-function load(env: Record<string, string> = { AI_GATEWAY_API_KEY: "gw-key" }) {
+function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "gw-key" }) {
   let listCalls = 0;
   const hooks = new Map<string, Function>();
   const on = (name: string, a: unknown, b?: unknown) => {
@@ -25,8 +25,15 @@ function load(env: Record<string, string> = { AI_GATEWAY_API_KEY: "gw-key" }) {
   let fetches = 0;
   let lastState: string | undefined;
 
+  // Most register tests assume sticky off; production defaults sticky on.
+  // Pass `JEV_ROUTER_STICKY: undefined` to exercise the real default.
+  const merged: Record<string, string | undefined> = {
+    JEV_ROUTER_STICKY: "0",
+    ...env,
+  };
+
   const $ = {
-    env: { get: async (k: string) => env[k] },
+    env: { get: async (k: string) => merged[k] },
     clock: { sleep: () => new Promise<never>(() => {}) },
     http: {
       fetch: async (_url: string, init?: { body?: string }) => {
@@ -1215,25 +1222,27 @@ describe("register: a tier named in the prompt", () => {
     };
   }
 
-  test("beats stickiness: 'use opus' at 43% is not held on fable", async () => {
-    // Measured 2026-09-22: Jev scores "use opus for this" as opus at 0.43,
-    // under the 0.75 bar, so without this the explicit ask was refused.
-    const { hooks, $, setTier } = await started();
+  test("beats stickiness: 'use opus' is not held on fable", async () => {
+    const { hooks, $, setTier, fetches } = await started();
     setTier("fable", 0.9);
     await turn(hooks, $, "f1", "plan the migration");
+    const asked = fetches();
     setTier("opus", 0.43, 1);
     const second = await turn(hooks, $, "f2", "use opus for this");
     assert.equal(second.sent.model, "claude-opus-5-5");
-    assert.equal(second.sent.effort, "medium", "Jev’s effort is still applied");
-    assert.match(second.text, /`opus` · medium · 43% · forced/);
+    assert.equal(second.sent.effort, "medium");
+    assert.equal(fetches(), asked, "forced skips Jev");
+    assert.match(second.text, /`opus` · medium · 0% · forced/);
     assert.doesNotMatch(second.text, /held/);
   });
 
   test("needs no answer from Jev", async () => {
-    const { hooks, $, fail } = await started();
+    const { hooks, $, fail, fetches } = await started();
+    const asked = fetches();
     fail();
     const t = await turn(hooks, $, "f3", "switch to haiku");
     assert.equal(t.sent.model, "claude-haiku-4-5");
+    assert.equal(fetches(), asked, "Jev is not called");
     assert.match(t.text, /`haiku` · medium · 0% · forced/);
   });
 
@@ -1245,16 +1254,18 @@ describe("register: a tier named in the prompt", () => {
     assert.doesNotMatch(t.text, /forced/);
   });
 
-  test("a forced Sonnet turn is not effort-held, and the line says forced", async () => {
-    const { hooks, $, setTier } = await started({
+  test("a forced Sonnet turn skips Jev and says forced", async () => {
+    const { hooks, $, setTier, fetches } = await started({
       JEV_ROUTER_MEDIUM_OFF: "0",
       JEV_ROUTER_XHIGH_OFF: "0",
     });
     setTier("sonnet", 0.9, 1, 0.9);
     await turn(hooks, $, "fs1", "small edit");
+    const asked = fetches();
     setTier("sonnet", 0.9, 3, 0.2);
     const t = await turn(hooks, $, "fs2", "use sonnet for this");
-    assert.equal(t.sent.effort, "xhigh", "Jev’s effort still applies");
+    assert.equal(t.sent.effort, "medium", "forced defaults effort");
+    assert.equal(fetches(), asked, "Jev is not asked");
     assert.match(t.text, /forced/);
     assert.doesNotMatch(t.text, /held-effort/);
   });

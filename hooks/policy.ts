@@ -168,17 +168,32 @@ export function decisionOf(
  * is on.
  *
  * The prompt cache is per model: a session cached under one tier is cold for
- * the next, so the turn that switches pays full input tokens. A router that
- * flips on a 51% hunch can pick the cheaper model every time and still cost
- * more. 0.75 is the starting point, not a measured optimum; retune it with
+ * the next, so the turn that switches pays full input tokens. Break-even
+ * depends on context size and destination tier (see
+ * `scripts/measure-switch-cost.mjs`): holding fable when Jev wants haiku only
+ * saves on the switch turn above ~90–100k context. 0.75 is the starting
+ * point, not a measured optimum; retune with `/jev sticky` or
  * `npm run try-prompts`.
  */
 export const DEFAULT_STICKY_CONFIDENCE = 0.75;
 
-/** Whether stickiness is on. Off unless the env var says otherwise. */
+/**
+ * Whether stickiness is on. **On by default** (unset/empty). Opt out with
+ * `0`/`false`/`off`/`no`/`none`; opt in explicitly with `1`/`true`/`yes`/`on`.
+ */
 export function stickyOf(raw: string | undefined): boolean {
   const flag = (raw ?? "").trim().toLowerCase();
-  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+  if (
+    flag === "0" ||
+    flag === "false" ||
+    flag === "off" ||
+    flag === "no" ||
+    flag === "none"
+  ) {
+    return false;
+  }
+  // Unset, explicit on, or anything else → on (session default).
+  return true;
 }
 
 /**
@@ -232,16 +247,44 @@ export function stickyDecision(
  * A bare go-ahead: the person is answering the previous turn, not starting a
  * task. Jev reads these as trivial with near-total confidence ("yes" 1.00,
  * "y" 0.98, "go ahead" 0.79, measured 2026-09-22), which is right about the
- * text and wrong about the work: the work is whatever the last turn proposed,
- * on whatever tier it ran. Stickiness cannot catch this, since its bar is a
- * confidence and these clear any bar. Trailing punctuation (`.`, `!`, `?`,
- * `,`) is tolerated; anything longer is a real prompt and goes to Jev.
+ * text and wrong about the work. Stickiness cannot catch this, since its bar
+ * is a confidence and these clear any bar. The list is intentionally narrow
+ * — bare `k`/`go`/`next`/`approved` used to false-positive on real tasks.
+ * Trailing punctuation (`.`, `!`, `?`, `,`) is tolerated; anything longer is
+ * a real prompt and goes to Jev.
  */
 const CONTINUATION =
-  /^(?:y|yes|yep|yeah|yup|ok|okay|k|sure|go|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm|approved|next)[\s.!,?]*$/i;
+  /^(?:y|yes|yep|yeah|yup|ok|okay|sure|go ahead|go on|go for it|proceed|continue|carry on|do it|ok do it|let'?s do it|please do|yes please|sounds good|lgtm)[\s.!,?]*$/i;
 
 export function isContinuation(text: string): boolean {
   return CONTINUATION.test(normalizeQuotes(text).trim());
+}
+
+/**
+ * Whether natural-language tier overrides ("use opus") are honored.
+ * On by default; `JEV_ROUTER_ALLOW_OVERRIDE=0` disables them.
+ */
+export function overrideAllowedOf(raw: string | undefined): boolean {
+  const flag = (raw ?? "").trim().toLowerCase();
+  if (
+    flag === "0" ||
+    flag === "false" ||
+    flag === "off" ||
+    flag === "no" ||
+    flag === "none"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whether task-notification turns soft-continue the previous route instead
+ * of re-asking Jev. Off by default; `JEV_ROUTER_NOTIFY_CONTINUE=1` enables.
+ */
+export function notifyContinueOf(raw: string | undefined): boolean {
+  const flag = (raw ?? "").trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
 }
 
 /**

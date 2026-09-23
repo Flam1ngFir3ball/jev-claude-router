@@ -117,6 +117,22 @@ describe("jev", () => {
     );
   });
 
+
+  test("a timeout aborts the in-flight fetch", async () => {
+    let signal: AbortSignal | undefined;
+    const got = await askJev({
+      ...base,
+      fetch: async (_url, init) => {
+        signal = init?.signal;
+        return never();
+      },
+      sleep: immediately,
+      timeoutMs: 1,
+    });
+    assert.equal(got.ok, false);
+    assert.equal(signal?.aborted, true);
+  });
+
   test("a slow gateway loses the race and the turn is left alone", async () => {
     const got = await askJev({
       ...base,
@@ -144,8 +160,19 @@ describe("jev", () => {
     });
     assert.match(
       reasonOf(refused),
-      /HTTP 403 \(customer_verification_required\)/,
+      /gateway said HTTP 403 \(customer_verification_required\)/,
     );
+
+    const tsRefused = await askJev({
+      ...base,
+      provider: typeafeProvider,
+      fetch: async () => ({
+        ok: false,
+        status: 401,
+        text: JSON.stringify({ error: { type: "auth" } }),
+      }),
+    });
+    assert.match(reasonOf(tsRefused), /typesafe said HTTP 401 \(auth\)/);
 
     const threw = await askJev({
       ...base,
@@ -227,7 +254,13 @@ describe("label", () => {
       "jev off",
     ]);
     assert.deepEqual(withLabel(["jev off"], "jev off"), ["jev off"]);
-    assert.deepEqual(withLabel(["plan mode"], null), ["plan mode"]);
+    assert.deepEqual(
+      withLabel(["plan mode", "jev → opus·high"], "jev → haiku·low"),
+      ["plan mode", "jev → haiku·low"],
+    );
+    assert.deepEqual(withLabel(["plan mode", "jev → opus·high"], null), [
+      "plan mode",
+    ]);
   });
 });
 

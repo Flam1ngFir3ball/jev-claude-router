@@ -3,13 +3,12 @@
  * Gateway or TypeSafe's direct API.
  *
  * The gateway (POST /v1/evaluate) speaks its own vocabulary: question types
- * are `choice`, `score` and `boolean`, never TypeSafe's native `noul`, which
- * it rejects outright. Probabilities and confidences come back rounded to two
- * decimal places.
- *
- * TypeSafe direct (POST /v1/systemone) supports all three question types
- * (choice, score, noul) and returns probabilities rounded to four decimal
+ * are `choice` and `score` (never TypeSafe's native `noul`, which it rejects
+ * outright). Probabilities and confidences come back rounded to two decimal
  * places.
+ *
+ * TypeSafe direct (POST /v1/systemone) supports choice, score, and noul and
+ * returns probabilities rounded to four decimal places.
  *
  * Both support the same `choice` and `score` question types and the same
  * `answers` response shape, so the request/response handling is identical.
@@ -65,6 +64,7 @@ export type HttpInitLike = {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 };
 
 /**
@@ -102,6 +102,9 @@ export function requestBodyOf(state: string, offered: readonly Tier[]) {
  * Every failure is still a pass for the turn, but it is a named one: the
  * caller reports the reason rather than leaving the person guessing whether
  * the router ran at all.
+ *
+ * On timeout the in-flight fetch is aborted so the provider is not billed
+ * for work we already gave up on.
  */
 export async function askJev(args: AskArgs): Promise<JevResult> {
   const {
@@ -122,10 +125,8 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     return { ok: false, reason: "no tiers offered", ms: 0 };
 
   const TIMED_OUT = Symbol("timed-out");
+  const controller = new AbortController();
 
-  // Build the request body. For TypeSafe direct, we use the model name directly.
-  // For the gateway, we still ask for it but the gateway ignores our model field
-  // and uses typesafe-ai/jev regardless.
   const body = {
     ...requestBodyOf(state, offered),
     model: provider.model,
@@ -138,6 +139,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: controller.signal,
   });
 
   let response: HttpResponseLike;
@@ -147,6 +149,8 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
       sleep(timeoutMs).then(() => TIMED_OUT),
     ]);
     if (raced === TIMED_OUT) {
+      controller.abort();
+      void call.catch(() => undefined);
       return {
         ok: false,
         reason: `timed out after ${timeoutMs}ms`,
@@ -155,6 +159,13 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     }
     response = raced as HttpResponseLike;
   } catch (error) {
+    if (controller.signal.aborted) {
+      return {
+        ok: false,
+        reason: `timed out after ${timeoutMs}ms`,
+        ms: since(),
+      };
+    }
     const detail = error instanceof Error ? error.message : String(error);
     return { ok: false, reason: `request failed: ${detail}`, ms: since() };
   }
@@ -162,9 +173,10 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
   if (!response) return { ok: false, reason: "no response", ms: since() };
 
   if (!response.ok) {
+    const who = provider.name;
     return {
       ok: false,
-      reason: `gateway said HTTP ${response.status}${gatewayNoteOf(response)}`,
+      reason: `${who} said HTTP ${response.status}${providerNoteOf(response)}`,
       ms: since(),
     };
   }
@@ -180,8 +192,8 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
   }
 }
 
-/** The gateway's own error type, when it sent one, for the status line. */
-function gatewayNoteOf(response: HttpResponseLike): string {
+/** The provider's own error type, when it sent one, for the status line. */
+function providerNoteOf(response: HttpResponseLike): string {
   try {
     const body = JSON.parse(response.text) as { error?: { type?: string } };
     const type = body?.error?.type;

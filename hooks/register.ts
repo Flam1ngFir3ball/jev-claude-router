@@ -12,7 +12,9 @@ import {
   isContinuation,
   lowOffOf,
   mediumOffOf,
+  notifyContinueOf,
   offeredTiers,
+  overrideAllowedOf,
   parseOverride,
   stickyOf,
   thresholdOf,
@@ -34,6 +36,7 @@ import {
   liveLine,
   FOOTER_SEPARATOR,
   REPLY_SEPARATOR,
+  notificationOf,
   spawnAttemptOf,
   statusReport,
   toggleReply,
@@ -82,6 +85,9 @@ async function classify($: Engine, text: string, offered: readonly Tier[]) {
       AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
       JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
       TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
+      JEV_ROUTER_ALLOW_CUSTOM_BASE: await $.env.get(
+        "JEV_ROUTER_ALLOW_CUSTOM_BASE",
+      ),
     }),
     state: text,
     offered,
@@ -213,6 +219,36 @@ async function agentTagOf(
  *
  * @param on the engine's registrar
  */
+
+/** Appended when a higher rung is opened while a tighter ceiling still binds. */
+function ceilingNote(
+  opened: "medium" | "xhigh" | "max" | "ultra",
+  lowOff: ReadonlySet<Tier>,
+  mediumOff: ReadonlySet<Tier>,
+  xhighOff: ReadonlySet<Tier>,
+  maxOff: ReadonlySet<Tier>,
+): string {
+  if (lowOff.size === TIERS.length) {
+    return " Note: low ceiling is still on — effort caps at low until /jev low on.";
+  }
+  if (opened !== "medium" && mediumOff.size === TIERS.length) {
+    return " Note: medium ceiling is still on — effort caps at medium until /jev medium on.";
+  }
+  if (
+    (opened === "max" || opened === "ultra") &&
+    xhighOff.size === TIERS.length
+  ) {
+    return " Note: xhigh is still off — effort caps at high until /jev xhigh on.";
+  }
+  if (opened === "ultra" && maxOff.size === TIERS.length) {
+    return " Note: max is still off — ultra caps at xhigh until /jev max on.";
+  }
+  if (opened === "xhigh" && mediumOff.size === TIERS.length) {
+    return " Note: medium ceiling is still on — effort caps at medium until /jev medium on.";
+  }
+  return "";
+}
+
 export function register(on: On) {
   const decisions = new Map<string, Decision>();
   /**
@@ -402,34 +438,69 @@ export function register(on: On) {
         mediumOff,
         mediumReady,
       }));
+      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
       const result = mediumCommand(sub.slice("medium".length), mediumOff);
       mediumOff = result.mediumOff;
       mediumReady = true;
-      return { text: result.text };
+      const note =
+        result.mediumOff.size === 0
+          ? ceilingNote("medium", lowOff, mediumOff, xhighOff, maxOff)
+          : "";
+      return { text: result.text + note };
     }
 
     if (sub === "xhigh" || sub.startsWith("xhigh ")) {
       ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
+      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+      ({ mediumOff, mediumReady } = await seedMedium($, {
+        mediumOff,
+        mediumReady,
+      }));
       const result = xhighCommand(sub.slice("xhigh".length), xhighOff);
       xhighOff = result.xhighOff;
       xhighReady = true;
-      return { text: result.text };
+      const note =
+        result.xhighOff.size === 0
+          ? ceilingNote("xhigh", lowOff, mediumOff, xhighOff, maxOff)
+          : "";
+      return { text: result.text + note };
     }
 
     if (sub === "max" || sub.startsWith("max ")) {
       ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
+      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+      ({ mediumOff, mediumReady } = await seedMedium($, {
+        mediumOff,
+        mediumReady,
+      }));
+      ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
       const result = maxCommand(sub.slice("max".length), maxOff);
       maxOff = result.maxOff;
       maxReady = true;
-      return { text: result.text };
+      const note =
+        result.maxOff.size === 0
+          ? ceilingNote("max", lowOff, mediumOff, xhighOff, maxOff)
+          : "";
+      return { text: result.text + note };
     }
 
     if (sub === "ultra" || sub.startsWith("ultra ")) {
       ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
+      ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
+      ({ mediumOff, mediumReady } = await seedMedium($, {
+        mediumOff,
+        mediumReady,
+      }));
+      ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
+      ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
       const result = ultraCommand(sub.slice("ultra".length), ultraOff);
       ultraOff = result.ultraOff;
       ultraReady = true;
-      return { text: result.text };
+      const note =
+        result.ultraOff.size === 0
+          ? ceilingNote("ultra", lowOff, mediumOff, xhighOff, maxOff)
+          : "";
+      return { text: result.text + note };
     }
 
     ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
@@ -448,6 +519,9 @@ export function register(on: On) {
       AI_GATEWAY_API_KEY: await $.env.get("AI_GATEWAY_API_KEY"),
       JEV_ROUTER_PROVIDER: await $.env.get("JEV_ROUTER_PROVIDER"),
       TYPESAFE_BASE_URL: await $.env.get("TYPESAFE_BASE_URL"),
+      JEV_ROUTER_ALLOW_CUSTOM_BASE: await $.env.get(
+        "JEV_ROUTER_ALLOW_CUSTOM_BASE",
+      ),
     });
     return {
       text: statusReport({
@@ -493,28 +567,48 @@ export function register(on: On) {
     // whatever was just proposed). When there is nothing to continue (first
     // turn, or the previous turn left the session model), still do not ask
     // Jev — that would clear sticky with a ~1.00 haiku pick.
-    const attempt = isContinuation(e.text)
-      ? continueFrom !== null
-        ? continuationOf(
+    const allowOverride = overrideAllowedOf(
+      await $.env.get("JEV_ROUTER_ALLOW_OVERRIDE"),
+    );
+    const forced = allowOverride ? parseOverride(e.text, offered) : null;
+    const softNotify =
+      notifyContinueOf(await $.env.get("JEV_ROUTER_NOTIFY_CONTINUE")) &&
+      notificationOf(e.text) !== null &&
+      continueFrom !== null;
+    const attempt =
+      isContinuation(e.text) || softNotify
+        ? continueFrom !== null
+          ? continuationOf(
+              e.text,
+              continueFrom,
+              xhighOff,
+              mediumOff,
+              lowOff,
+              maxOff,
+              ultraOff,
+            )
+          : continuationSkipped(e.text)
+        : attemptOf(
             e.text,
-            continueFrom,
-            xhighOff,
-            mediumOff,
-            lowOff,
-            maxOff,
-            ultraOff,
-          )
-        : continuationSkipped(e.text)
-      : attemptOf(e.text, await classify($, e.text, offered), offered, {
-          sticky,
-          running,
-          forced: parseOverride(e.text, offered),
-          lowOff,
-          mediumOff,
-          xhighOff,
-          maxOff,
-          ultraOff,
-        });
+            forced !== null
+              ? {
+                  ok: false,
+                  reason: "forced override; Jev not asked",
+                  ms: 0,
+                }
+              : await classify($, e.text, offered),
+            offered,
+            {
+              sticky,
+              running,
+              forced,
+              lowOff,
+              mediumOff,
+              xhighOff,
+              maxOff,
+              ultraOff,
+            },
+          );
 
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
@@ -708,9 +802,21 @@ export function register(on: On) {
       "decision" in attempt ? { ...e, model: attempt.decision.model } : e,
     );
     if (started.agentId !== undefined) {
-      // Never trimmed: FIFO eviction here silently dropped effort routing for
-      // resumed agents and invented "not routed at spawn" history rows.
-      spawned.set(started.agentId, attempt);
+      // Prefer dropping finished agents over FIFO: blind eviction silently
+      // dropped effort routing for resumed agents. Always keep the id we
+      // just set — list() may not include it yet.
+      const justStarted = started.agentId;
+      spawned.set(justStarted, attempt);
+      if (spawned.size > CACHE_LIMIT) {
+        const live = new Set(
+          (await $.agent.list().catch(() => [])).map((a) => a.id),
+        );
+        live.add(justStarted);
+        for (const id of [...spawned.keys()]) {
+          if (spawned.size <= CACHE_LIMIT) break;
+          if (!live.has(id)) spawned.delete(id);
+        }
+      }
     }
     return started;
   });

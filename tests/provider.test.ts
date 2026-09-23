@@ -6,7 +6,7 @@
 import assert from "assert";
 import { describe, it } from "node:test";
 
-import { providerOf } from "../hooks/provider.ts";
+import { providerOf, typesafeBaseOf } from "../hooks/provider.ts";
 
 describe("providerOf", () => {
   it("prefers TypeSafe direct when TYPESAFE_API_KEY is set", () => {
@@ -119,12 +119,13 @@ describe("providerOf", () => {
     });
   });
 
-  it("applies TYPESAFE_BASE_URL override", () => {
+  it("applies TYPESAFE_BASE_URL override when custom bases are allowed", () => {
     const provider = providerOf({
       TYPESAFE_API_KEY: "ts-key",
       AI_GATEWAY_API_KEY: undefined,
       JEV_ROUTER_PROVIDER: undefined,
       TYPESAFE_BASE_URL: "https://api.example.com",
+      JEV_ROUTER_ALLOW_CUSTOM_BASE: "1",
     });
 
     assert.deepStrictEqual(provider, {
@@ -134,6 +135,17 @@ describe("providerOf", () => {
       model: "jev-latest",
       apiKey: "ts-key",
     });
+  });
+
+  it("refuses a foreign TYPESAFE_BASE_URL without an allow", () => {
+    const provider = providerOf({
+      TYPESAFE_API_KEY: "ts-key",
+      AI_GATEWAY_API_KEY: undefined,
+      JEV_ROUTER_PROVIDER: undefined,
+      TYPESAFE_BASE_URL: "https://api.example.com",
+    });
+
+    assert.equal(provider.ok, false);
   });
 
   it("ignores TYPESAFE_BASE_URL when provider is gateway", () => {
@@ -169,5 +181,30 @@ describe("providerOf", () => {
       model: "jev-latest",
       apiKey: "ts-key",
     });
+  });
+});
+
+describe("TYPESAFE_BASE_URL allowlist", () => {
+  it("default and typesafe.ai hosts are allowed", () => {
+    assert.equal(typesafeBaseOf(undefined, undefined).ok, true);
+    assert.equal(
+      typesafeBaseOf("https://api.typesafe.ai", undefined).ok,
+      true,
+    );
+    assert.equal(
+      typesafeBaseOf("https://staging.typesafe.ai", undefined).ok,
+      true,
+    );
+  });
+
+  it("foreign hosts need an explicit allow", () => {
+    const blocked = typesafeBaseOf("https://evil.example", undefined);
+    assert.equal(blocked.ok, false);
+    const allowed = typesafeBaseOf("https://evil.example", "1");
+    assert.equal(allowed.ok, true);
+  });
+
+  it("http is refused", () => {
+    assert.equal(typesafeBaseOf("http://api.typesafe.ai", "1").ok, false);
   });
 });

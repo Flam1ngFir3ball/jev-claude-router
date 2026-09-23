@@ -124,9 +124,9 @@ describe("sticky routing", () => {
     confidence,
   });
 
-  test("off by default, so a session routes as it always has", () => {
-    assert.equal(stickyOf(undefined), false);
-    assert.equal(stickyOf(""), false);
+  test("on by default; opt out with 0/false/off", () => {
+    assert.equal(stickyOf(undefined), true);
+    assert.equal(stickyOf(""), true);
     assert.equal(stickyOf("0"), false);
     assert.equal(stickyOf("false"), false);
   });
@@ -226,7 +226,6 @@ describe("a bare go-ahead", () => {
       "ok!",
       "OK",
       "okay",
-      "k",
       "go ahead",
       "Go ahead.",
       "go ahead,",
@@ -256,6 +255,10 @@ describe("a bare go-ahead", () => {
       "use opus",
       "rename foo to bar",
       "no",
+      "k",
+      "go",
+      "next",
+      "approved",
       "",
       "   ",
     ]) {

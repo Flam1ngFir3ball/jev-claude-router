@@ -152,10 +152,12 @@ traffic or force a bogus model id to check the rewrite lands.
 
 `cache` is the share of the turn's input read from the prompt cache. The
 cache is per model, so the turn after a switch runs cold: `cache 4%` on the
-haiku turn above is the price of leaving fable. Cache reads bill at a tenth of
-uncached input, so a switch on a large context costs roughly ten times what
-staying would have, once. Watch this number to see whether Jev's switching is
-eating what the cheaper tiers save.
+haiku turn above is the price of leaving fable. Cache-read multipliers differ
+by tier (Haiku/Sonnet ~10% of input, Opus ~5%, Fable ~2.5%). A same-model cold
+turn on Haiku/Sonnet is ~10× a warm one; a **cross-tier** switch is a different
+calculation — see `npm run measure-switch-cost`. Holding fable when Jev wants
+haiku only saves on the switch turn above ~90–100k context under that model.
+Watch `cache` to see whether switches are eating what cheaper tiers save.
 
 **The first line of every reply.** The route is written into the reply's
 own text, as the first text chunk streams through `turn.step`:
@@ -203,9 +205,8 @@ jev  haiku·medium · 75% · 402ms
 api  claude-haiku-4-5 ✓ · cache 4% · 128k in · 0k out
 ```
 
-That `4%` is the price of leaving fable. Cache reads bill at a tenth of
-uncached input, so a switch on a large context costs roughly ten times what
-staying would have, once. Watch it to see whether the switching is eating what
+That `4%` is the price of leaving fable. Cache-read pricing is per-tier
+(see `npm run measure-switch-cost`); do not treat every switch as a flat 10×. Watch it to see whether the switching is eating what
 the cheaper tiers save.
 
 The footer is fenced because markdown collapses leading whitespace and joins
@@ -254,8 +255,13 @@ model, which this mod does not touch — the rewrite happens per request, in
   Quiet still routes and still records, so `/jev` shows what you missed.
 - `JEV_ROUTER_PROVIDER=typesafe|gateway` forces a specific provider. If both
   keys are set, the default is TypeSafe direct; use this to force the gateway.
-- `TYPESAFE_BASE_URL=https://api.example.com` overrides the TypeSafe endpoint
-  base (defaults to `https://api.typesafe.ai`). Useful for custom deployments.
+- `TYPESAFE_BASE_URL=https://api.typesafe.ai` overrides the TypeSafe endpoint
+  base (default). Only `api.typesafe.ai` / `*.typesafe.ai` are allowed unless
+  `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`.
+- `JEV_ROUTER_ALLOW_OVERRIDE=0` disables natural-language tier overrides
+  ("use opus"). On by default.
+- `JEV_ROUTER_NOTIFY_CONTINUE=1` soft-continues task-notification turns on the
+  previous route instead of re-asking Jev. Off by default.
 - `JEV_ROUTER_EXCLUDE=fable,haiku` drops those tiers from the question
   entirely, so Jev is never offered them. Excluding all four is ignored.
 - `JEV_ROUTER_TIMEOUT_MS=2500` changes how long a turn waits for Jev before
@@ -264,10 +270,9 @@ model, which this mod does not touch — the rewrite happens per request, in
   on the slowest of them.
 - `/jev sticky` makes a tier switch clear a confidence bar before the model
   moves, `/jev sticky 0.6` sets that bar, `/jev sticky off` stops. `--sticky`
-  works too. See below.
-- `JEV_ROUTER_STICKY=1` and `JEV_ROUTER_STICKY_CONFIDENCE=0.6` set the same
-  thing for a session before it starts, for a project that always wants it.
-  The command overrides them from then on.
+  works too. See below. **On by default** at 0.75.
+- `JEV_ROUTER_STICKY=0` turns sticky off for a session; `JEV_ROUTER_STICKY_CONFIDENCE=0.6`
+  sets the bar. The command overrides them from then on.
 - `/jev low off` blocks effort above low (medium through ultra) on every tier
   and caps those turns at `low`; `/jev low off opus` for one tier;
   `/jev low on` turns it back on. Opt-in — unset leaves medium allowed.
@@ -303,8 +308,8 @@ haiku, so the turn that switches pays full input tokens and a slower first
 token. A router that flips tier on a 51% hunch can pick the cheaper model
 every time and still cost more than staying put.
 
-Run `/jev sticky` and a turn that names a different tier than the last one
-has to clear the bar to move. Below it, the turn runs on the tier already
+Sticky is on by default. A turn that names a different tier than the last one
+has to clear the bar to move. `/jev sticky off` switches freely. Below it, the turn runs on the tier already
 loaded, and says so:
 
 ```
@@ -339,9 +344,9 @@ turns; `npm run try-prompts` prints Jev's confidence across a set of prompts,
 which is the other input to picking a number. `/jev sticky` on its own keeps
 a bar you have already set, so turning it off and on again does not lose it.
 
-A session that should always be sticky can say so before it starts, with
-`JEV_ROUTER_STICKY=1` in the `env` block of settings.json. The command wins
-after that.
+A session that wants sticky **off** can say so before it starts, with
+`JEV_ROUTER_STICKY=0` in the `env` block of settings.json. The command wins
+after that. Sticky is on by default at 0.75.
 
 ## Two things stickiness cannot catch
 
@@ -353,16 +358,16 @@ a go-ahead (`y`, `yes`, `ok`, `sure`, `go ahead`, `continue`, `do it`, `lgtm`
 and the like, trailing punctuation aside) runs on the previous turn's tier and
 effort without asking Jev, tagged `continue`. Anything longer is a prompt.
 
-**A tier you named.** "use opus for this" scores opus at 0.43, under the bar,
-so stickiness refused it. A tier named with a run-on verb (`use`, `do it using`,
-`switch to`, `route to`, `run this on`, `go with`) is taken as read,
-needs no answer from Jev, and is tagged `forced`. Jev's effort still applies.
-Bare "on", "for", "with", and "using" are not verbs here: "search for opus
-docs" is a search, "happy with opus" and "I'm using opus for comparison" are
-not routes. Negations skip only the first run-on after them, so a later
-affirmative still wins ("don't use haiku use opus" → opus). "why not use
-opus" is an affirmative ask. A tier the environment excluded cannot be named
-back in.
+**A tier you named.** "use opus for this" used to score opus at 0.43 under
+the sticky bar, so stickiness refused it. A tier named with a run-on verb
+(`use`, `do it using`, `switch to`, `route to`, `run this on`, `go with`) is
+taken as read, **skips Jev entirely**, uses medium effort, and is tagged
+`forced`. Bare "on", "for", "with", and "using" are not verbs here: "search
+for opus docs" is a search, "happy with opus" and "I'm using opus for
+comparison" are not routes. Negations skip only the first run-on after them,
+so a later affirmative still wins ("don't use haiku use opus" → opus). "why
+not use opus" is an affirmative ask. A tier the environment excluded cannot
+be named back in. `JEV_ROUTER_ALLOW_OVERRIDE=0` disables this channel.
 
 ## Subagents
 
