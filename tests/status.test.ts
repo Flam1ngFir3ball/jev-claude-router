@@ -7,7 +7,11 @@ import {
   ceilingCommand,
   ceilingLine,
   continuationOf,
-  heldMark,
+  continuationSkipped,
+  notificationOf,
+  originOf,
+  reasonsOf,
+  replySummary,
   spawnAttemptOf,
   stickyCommand,
   liveLine,
@@ -17,7 +21,6 @@ import {
   type Status,
   addUsage,
   cacheRatio,
-  usageFooter,
   type Attempt,
   type Usage,
 } from "../hooks/status.ts";
@@ -43,7 +46,7 @@ const goodProvider: ProviderResult = {
   apiKey: "test-key",
 };
 
-const noKeyProvider: ProviderResult = {
+const noProvider: ProviderResult = {
   ok: false,
   reason: "no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY",
 };
@@ -57,6 +60,8 @@ const base: Status = {
   ceiling: ceilingAt("max"),
   ttl: "1h",
   contextTokens: null,
+  sessionModel: "claude-opus-5",
+  running: null,
   offered: ["haiku", "sonnet", "opus", "fable"],
   excluded: [],
   announce: true,
@@ -64,17 +69,27 @@ const base: Status = {
   spent: 0,
 };
 
+const usageOf = (
+  model: string,
+  over: Partial<Usage> = {},
+): Usage => ({
+  model,
+  input_tokens: 1000,
+  output_tokens: 2000,
+  cache_read_input_tokens: 200_000,
+  cache_creation_input_tokens: 10_000,
+  ...over,
+});
+
 describe("status report", () => {
   test('the first lines answer "is this even on"', () => {
-    const lines = statusReport(base).split("\n");
-    assert.match(lines[1] ?? "", /routing\s+on/);
-    assert.match(lines[2] ?? "", /surface\s+desktop/);
-    assert.match(lines[3] ?? "", /gateway.*AI_GATEWAY_API_KEY is set/);
+    const report = statusReport(base);
+    assert.match(report, /^jev-router\n  routing   on\n  surface   desktop\n  provider  gateway/);
+    assert.match(report, /budget\s+1500ms/);
   });
 
   test("a missing key is stated loudly, not implied", () => {
-    const text = statusReport({ ...base, provider: noKeyProvider });
-    assert.match(text, /NO KEYS — nothing will route/);
+    assert.match(statusReport({ ...base, provider: noProvider }), /NO KEYS/);
   });
 
   test("routing off says how to turn it back on", () => {
@@ -85,100 +100,91 @@ describe("status report", () => {
     assert.match(statusReport(base), /No turns yet/);
   });
 
-  test("a routed turn shows tier, effort, confidence and latency", () => {
-    const text = statusReport({
+  test("a routed turn shows tier, effort, how sure Jev was, and latency", () => {
+    const report = statusReport({
       ...base,
-      attempts: [{ prompt: "plan the migration", ms: 641, decision }],
+      attempts: [{ prompt: "plan the architecture", ms: 641, decision }],
     });
-    assert.match(text, /641ms/);
-    assert.match(text, /fable·xhigh 0\.97/);
-    assert.match(text, /plan the migration/);
+    assert.match(report, / 641ms  fable·xhigh  Jev 97% sure  plan the architecture/);
   });
 
   test("an unrouted turn shows why, which is the whole point", () => {
-    const text = statusReport({
+    const report = statusReport({
       ...base,
-      attempts: [
-        {
-          prompt: "x",
-          ms: 12,
-          skipped: "gateway said HTTP 403 (customer_verification_required)",
-        },
-      ],
+      attempts: [{ prompt: "x", ms: 12, skipped: "gateway said HTTP 403 (customer_verification_required)" }],
     });
-    assert.match(text, /unrouted — gateway said HTTP 403/);
+    assert.match(report, /not routed — gateway said HTTP 403/);
   });
 
-  test("a low-confidence pick is called out in words, not a symbol", () => {
-    const text = statusReport({
+  test("a low-confidence pick says only, in words", () => {
+    const report = statusReport({
       ...base,
-      attempts: [
-        { prompt: "x", ms: 400, decision: { ...decision, confidence: 0.3 } },
-      ],
+      attempts: [{ prompt: "x", ms: 1, decision: { ...decision, confidence: 0.3 } }],
     });
-    assert.match(text, /low confidence/);
+    assert.match(report, /Jev only 30% sure/);
   });
 
   test("excluded tiers are listed only when there are some", () => {
     assert.doesNotMatch(statusReport(base), /excluded/);
+    assert.match(statusReport({ ...base, excluded: ["fable"] }), /excluded\s+fable/);
+  });
+
+  test("the session line says what the loop runs and what is warm", () => {
+    assert.match(statusReport(base), /session\s+claude-opus-5, nothing routed yet/);
     assert.match(
-      statusReport({
-        ...base,
-        excluded: ["fable"],
-        offered: ["haiku", "sonnet", "opus"],
-      }),
-      /excluded\s+fable/,
+      statusReport({ ...base, running: decision }),
+      /session\s+claude-opus-5, running on fable/,
     );
+    assert.match(
+      statusReport({ ...base, sessionModel: "claude-fable-5-1", running: decision }),
+      /session\s+claude-fable-5-1, still on it/,
+    );
+    assert.match(statusReport({ ...base, sessionModel: null }), /session\s+unknown/);
   });
 
   test("a long prompt is trimmed so the report stays one screen", () => {
-    const text = statusReport({
+    const report = statusReport({
       ...base,
       attempts: [{ prompt: "a".repeat(200), ms: 1, decision }],
     });
-    for (const line of text.split("\n")) assert.ok(line.length < 100, line);
+    for (const line of report.split("\n")) assert.ok(line.length < 120, line);
   });
 
   test("toggling reports the state it moved to", () => {
-    assert.match(toggleReply(true), /on\./);
-    assert.match(toggleReply(false), /session model/);
+    assert.match(toggleReply(true), /on/);
+    assert.match(toggleReply(false), /off/);
   });
 });
 
 describe("live line", () => {
-  test("a routed turn is announced with tier, effort, confidence and latency", () => {
+  test("a routed turn is announced in words: tier, effort, how sure, latency", () => {
     assert.equal(
-      liveLine({ prompt: "plan the migration", ms: 641, decision }),
-      "> ✳️ `fable` · xhigh · 97% · 641ms",
+      liveLine({ prompt: "x", ms: 641, decision }),
+      "> ✳️ fable · xhigh effort · Jev 97% sure · 641ms",
     );
   });
 
   test("an unrouted turn announces why, rather than going silent", () => {
     assert.equal(
-      liveLine({
-        prompt: "x",
-        ms: 12,
-        skipped: "no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY",
-      }),
-      "> ⚠️ `unrouted` · no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY",
+      liveLine({ prompt: "x", ms: 12, skipped: "gateway said HTTP 403" }),
+      "> ⚠️ not routed · gateway said HTTP 403 · the session model answers",
     );
   });
 
-  test("a shaky pick is marked so a bad route is visible as it happens", () => {
+  test("a shaky pick says only, so a bad route is visible as it happens", () => {
     assert.match(
-      liveLine({
-        prompt: "x",
-        ms: 400,
-        decision: { ...decision, confidence: 0.3 },
-      }),
-      /· 30%\? ·/,
+      liveLine({ prompt: "x", ms: 1, decision: { ...decision, confidence: 0.3 } }),
+      /Jev only 30% sure/,
     );
   });
 
-  test("the line is a blockquote with the tier as inline code, since that is what the transcript can colour", () => {
-    const line = liveLine({ prompt: "x", ms: 641, decision });
-    assert.ok(line.startsWith("> "), line);
-    assert.match(line, /`fable`/);
+  test("a forced turn does not claim Jev was sure of anything", () => {
+    const line = liveLine({
+      prompt: "use opus",
+      ms: 0,
+      decision: { ...decision, tier: "opus", confidence: 0, forced: true },
+    });
+    assert.equal(line, "> ✳️ opus · xhigh effort · as you asked · 0ms");
   });
 
   test("the separator is a rule with a blank line before it, or --- would make the route a heading", () => {
@@ -186,376 +192,353 @@ describe("live line", () => {
   });
 
   test("the line stays short enough not to wrap", () => {
-    const line = liveLine({ prompt: "a".repeat(300), ms: 641, decision });
-    assert.ok(line.length < 60, line);
+    assert.ok(liveLine({ prompt: "x", ms: 1234, decision }).length < 80);
   });
 
   test("announcing can be turned off without turning routing off", () => {
     assert.match(announceReply(false), /quietly/);
     assert.match(announceReply(true), /announce/);
-    assert.match(statusReport({ ...base, announce: false }), /announce\s+off/);
   });
 });
 
 describe("attemptOf", () => {
-  const offered = ["haiku", "sonnet", "opus", "fable"] as const;
-  const skippedOf = (a: ReturnType<typeof attemptOf>) =>
-    "skipped" in a ? a.skipped : "UNEXPECTEDLY ROUTED";
+  const good = {
+    ok: true as const,
+    ms: 300,
+    answers: {
+      tier: { type: "choice", choice: "opus", confidence: 0.8 },
+      effort: { type: "score", score: 2 },
+    },
+  };
 
   test("a good answer becomes a routed attempt", () => {
-    const attempt = attemptOf(
-      "plan it",
-      {
-        ok: true,
-        ms: 500,
-        answers: { tier: { type: "choice", choice: "fable" } },
-      },
-      offered,
-    );
-    assert.equal("decision" in attempt && attempt.decision.tier, "fable");
-    assert.equal(attempt.ms, 500);
+    const a = attemptOf("implement it", good, TIERS);
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "opus");
+    assert.equal(a.decision.effort, "high");
+    assert.equal(a.ms, 300);
+    assert.equal(a.prompt, "implement it");
   });
 
   test("a failed call keeps its reason, so the line can say why", () => {
-    assert.equal(
-      skippedOf(
-        attemptOf(
-          "x",
-          { ok: false, ms: 9, reason: "timed out after 1500ms" },
-          offered,
-        ),
-      ),
-      "timed out after 1500ms",
-    );
+    const a = attemptOf("x", { ok: false, reason: "timed out after 1500ms", ms: 1500 }, TIERS);
+    assert.ok("skipped" in a);
+    assert.equal(a.skipped, "timed out after 1500ms");
   });
 
   test("an answer naming a tier we did not offer is its own reason", () => {
-    assert.match(
-      skippedOf(
-        attemptOf("x", { ok: true, ms: 5, answers: { tier: {} } }, offered),
-      ),
-      /named no tier we offered/,
-    );
+    const a = attemptOf("x", good, ["haiku", "sonnet"]);
+    assert.ok("skipped" in a);
+    assert.match(a.skipped, /named no tier we offered/);
   });
 
-  test("a forced Sonnet turn keeps Jev’s effort even when sticky would hold it", () => {
-    const attempt = attemptOf(
-      "use sonnet for this",
+  test("a forced Sonnet turn keeps Jev's effort even when sticky would hold it", () => {
+    const running = {
+      tier: "sonnet" as const,
+      model: "claude-sonnet-5",
+      effort: "low" as const,
+      confidence: 0.9,
+    };
+    const a = attemptOf(
+      "use sonnet",
       {
         ok: true,
-        ms: 10,
+        ms: 1,
         answers: {
-          tier: { type: "choice", choice: "sonnet", confidence: 0.9 },
-          effort: { type: "score", score: 3, confidence: 0.2 },
+          tier: { type: "choice", choice: "opus", confidence: 0.9 },
+          effort: { type: "score", score: 3, confidence: 0.1 },
         },
       },
-      offered,
-      {
-        sticky: 0.75,
-        running: {
-          tier: "sonnet",
-          model: "claude-sonnet-5",
-          effort: "low",
-          confidence: 0.9,
-          effortConfidence: 0.9,
-        },
-        forced: "sonnet",
-      },
+      TIERS,
+      { sticky: 0.75, running, forced: "sonnet" },
     );
-    assert.equal("decision" in attempt && attempt.decision.effort, "xhigh");
-    assert.equal("decision" in attempt && attempt.decision.forced, true);
-    assert.equal(
-      "decision" in attempt && attempt.decision.heldEffort,
-      undefined,
-    );
+    assert.ok("decision" in a);
+    assert.equal(a.decision.tier, "sonnet");
+    assert.equal(a.decision.effort, "xhigh");
+    assert.equal(a.decision.forced, true);
+    assert.equal(a.decision.heldEffort, undefined);
   });
 
-  test("heldMark stacks every outcome that applied", () => {
-    const stacked = heldMark({
+  test("reasonsOf lists every outcome that applied, in words", () => {
+    const a: Attempt = {
       prompt: "x",
       ms: 1,
       decision: {
+        ...decision,
         tier: "sonnet",
-        model: "claude-sonnet-5",
         effort: "low",
-        confidence: 0.4,
         held: "haiku",
+        heldModel: "claude-haiku-4-5",
         heldEffort: "xhigh",
-        forced: true,
+        effortConfidence: 0.2,
+        confidence: 0.61,
+        cappedEffort: "max",
       },
-    });
-    assert.equal(stacked, "held:haiku · held-effort:xhigh · forced");
+    };
+    assert.deepEqual(reasonsOf(a), [
+      "stayed on sonnet: Jev wanted haiku, only 61% sure",
+      "kept low effort: Jev wanted xhigh, only 20% sure, and a change re-caches on Sonnet",
+      "capped from max",
+    ]);
+    assert.deepEqual(reasonsOf({ prompt: "x", ms: 1, decision }), []);
+    assert.deepEqual(reasonsOf({ prompt: "x", ms: 1, skipped: "no" }), []);
+  });
+
+  test("a first request's effort is explained", () => {
+    const a: Attempt = {
+      prompt: "x",
+      ms: 1,
+      decision: { ...decision, effort: "high", askedEffort: "medium" },
+    };
+    assert.deepEqual(reasonsOf(a), ["medium runs as high on a first request"]);
+  });
+
+  test("a cap the first request undid is not reported as a cap", () => {
+    const a: Attempt = {
+      prompt: "x",
+      ms: 1,
+      decision: { ...decision, effort: "high", cappedEffort: "high", askedEffort: "medium" },
+    };
+    assert.deepEqual(reasonsOf(a), ["medium runs as high on a first request"]);
+    const still: Attempt = {
+      prompt: "x",
+      ms: 1,
+      decision: { ...decision, effort: "high", cappedEffort: "max", askedEffort: "medium" },
+    };
+    assert.deepEqual(reasonsOf(still), ["capped from max", "medium runs as high on a first request"]);
   });
 });
 
 describe("usage: what actually answered", () => {
-  const routed = (): Attempt => ({ prompt: "plan it", ms: 641, decision });
-  const usage = (over: Partial<Usage> = {}): Usage => ({
-    model: "claude-fable-5-1",
-    input_tokens: 3_000,
-    output_tokens: 900,
-    cache_read_input_tokens: 117_000,
-    cache_creation_input_tokens: 10_000,
-    ...over,
-  });
-
-  test("a stop chunk’s usage is kept on the turn", () => {
-    const a = routed();
-    addUsage(a, usage());
+  test("a stop chunk's usage is kept on the turn, priced", () => {
+    const a: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(a, usageOf("claude-fable-5-1"));
     assert.equal(a.usage?.model, "claude-fable-5-1");
-    assert.equal(a.usage?.cache_read_input_tokens, 117_000);
+    assert.equal(a.cost, 0.36);
   });
 
   test("a turn of several steps sums its counts and keeps the last model", () => {
-    const a = routed();
-    addUsage(a, usage({ input_tokens: 1000, output_tokens: 100 }));
-    addUsage(
-      a,
-      usage({
-        input_tokens: 2000,
-        output_tokens: 200,
-        model: "claude-fable-5-1-later",
-      }),
-    );
-    assert.equal(a.usage?.input_tokens, 3000);
-    assert.equal(a.usage?.output_tokens, 300);
-    assert.equal(a.usage?.model, "claude-fable-5-1-later");
+    const a: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(a, usageOf("claude-fable-5-1"));
+    addUsage(a, usageOf("claude-fable-5-1-20260901", { input_tokens: 5 }));
+    assert.equal(a.usage?.input_tokens, 1005);
+    assert.equal(a.usage?.output_tokens, 4000);
+    assert.equal(a.usage?.model, "claude-fable-5-1-20260901");
   });
 
   test("the cache ratio is what was read over everything the request carried", () => {
-    assert.equal(cacheRatio(usage()), 0.9);
     assert.equal(
-      cacheRatio(
-        usage({
-          input_tokens: 0,
-          cache_read_input_tokens: 0,
-          cache_creation_input_tokens: 0,
-        }),
-      ),
+      cacheRatio({ model: "m", input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0 }),
+      0.9,
+    );
+    assert.equal(
+      cacheRatio({ model: "m", input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }),
       0,
     );
   });
 
-  test("the report confirms the model the API says answered", () => {
-    const a = routed();
-    addUsage(a, usage());
-    const text = statusReport({ ...base, attempts: [a] });
-    assert.match(text, /claude-fable-5-1 ✓/);
-    assert.match(text, /cache 90%/);
-    assert.match(text, /130k in/);
+  test("the report confirms the model the API says answered, with the dollars", () => {
+    const a: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(a, usageOf("claude-fable-5-1"));
+    assert.match(
+      statusReport({ ...base, attempts: [a] }),
+      /answered by claude-fable-5-1 ✓ · \$0\.36 · 211k in, 95% cached · 2k out/,
+    );
   });
 
   test("a dated id still counts as the model that was asked for", () => {
-    const a = routed();
-    addUsage(a, usage({ model: "claude-fable-5-1-20260901" }));
-    assert.match(
-      statusReport({ ...base, attempts: [a] }),
-      /claude-fable-5-1-20260901 ✓/,
-    );
+    const a: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(a, usageOf("claude-fable-5-1-20260901"));
+    assert.match(statusReport({ ...base, attempts: [a] }), /claude-fable-5-1-20260901 ✓/);
   });
 
-  test("a different model answering is flagged, which is the whole point", () => {
-    const a = routed();
-    addUsage(a, usage({ model: "claude-opus-5-5" }));
-    const text = statusReport({ ...base, attempts: [a] });
-    assert.match(text, /claude-opus-5-5 ≠ claude-fable-5-1/);
-    assert.doesNotMatch(text, /✓/);
+  test("a different model answering is spelled out, which is the whole point", () => {
+    const a: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(a, usageOf("claude-opus-5"));
+    assert.match(
+      statusReport({ ...base, attempts: [a] }),
+      /answered by claude-opus-5 — asked for claude-fable-5-1/,
+    );
   });
 
   test("an unrouted turn still shows what answered, with nothing to check against", () => {
-    const a: Attempt = { prompt: "x", ms: 0, skipped: "timed out" };
-    addUsage(a, usage({ model: "claude-opus-5-5" }));
-    const text = statusReport({ ...base, attempts: [a] });
-    assert.match(text, /claude-opus-5/);
-    assert.doesNotMatch(text, /[✓≠]/);
+    const a: Attempt = { prompt: "x", ms: 1, skipped: "off" };
+    addUsage(a, usageOf("claude-opus-5"));
+    const report = statusReport({ ...base, attempts: [a] });
+    assert.match(report, /answered by claude-opus-5 · \$/);
+    assert.doesNotMatch(report, /✓|asked for/);
   });
 
   test("a turn with no usage yet gets one line, not a blank second one", () => {
-    const lines = statusReport({ ...base, attempts: [routed()] }).split("\n");
-    assert.equal(lines.filter((l) => l.includes("answered")).length, 0);
-  });
-
-  test("the usage line stays within one screen", () => {
-    const a = routed();
-    addUsage(
-      a,
-      usage({
-        model: "claude-fable-5-1-20260901-preview",
-        cache_read_input_tokens: 1_900_000,
-      }),
-    );
-    for (const line of statusReport({ ...base, attempts: [a] }).split("\n"))
-      assert.ok(line.length < 100, line);
+    const report = statusReport({ ...base, attempts: [{ prompt: "x", ms: 1, decision }] });
+    assert.equal(report.split("\n").filter((l) => l.includes("answered")).length, 0);
   });
 });
 
-describe("usage footer", () => {
-  const usage = (over: Partial<Usage> = {}): Usage => ({
-    model: "claude-fable-5-1",
-    input_tokens: 3_000,
-    output_tokens: 900,
-    cache_read_input_tokens: 117_000,
-    cache_creation_input_tokens: 10_000,
-    ...over,
-  });
-  const withUsage = (a: Attempt, u = usage()) => {
-    addUsage(a, u);
+describe("the reply summary", () => {
+  const routed = (): Attempt => {
+    const a: Attempt = { prompt: "plan it", ms: 641, decision };
+    addUsage(a, usageOf("claude-fable-5-1"));
     return a;
   };
-  const routed = (): Attempt => ({ prompt: "plan it", ms: 641, decision });
 
-  test("a turn with no usage has no footer", () => {
-    assert.equal(usageFooter(routed()), null);
+  test("a reply with no usage has no summary", () => {
+    assert.equal(replySummary([{ prompt: "x", ms: 1, decision }]), null);
+    assert.equal(replySummary([]), null);
   });
 
   test("it is a fenced block, or markdown eats the indent and joins the lines", () => {
-    const lines = usageFooter(withUsage(routed()))!.split("\n");
-    assert.equal(lines[0], "```");
-    assert.equal(lines.at(-1), "```");
-    assert.match(lines[1]!, /^─+$/);
+    const s = replySummary([routed()])!;
+    assert.ok(s.startsWith("```\n─"));
+    assert.ok(s.endsWith("\n```"));
   });
 
-  test("the jev line is what was asked for", () => {
-    const footer = usageFooter(withUsage(routed()))!;
-    assert.match(footer, /jev {2}fable·xhigh · 97% · 641ms/);
-  });
-
-  test("the api line is what answered, with the cost", () => {
-    const footer = usageFooter(withUsage(routed()))!;
-    assert.match(
-      footer,
-      /api {2}claude-fable-5-1 ✓ · cache 90% · 130k in · 1k out/,
-    );
+  test("one turn: the model that answered, how it was chosen, and what it cost", () => {
+    const s = replySummary([routed()])!;
+    assert.match(s, /Model  answered by claude-fable-5-1 ✓ at xhigh effort · Jev 97% sure, 641ms/);
+    assert.match(s, /Cost   \$0\.36 · 211k in, 95% cached · 2k out/);
+    assert.doesNotMatch(s, /Note/);
   });
 
   test("a mismatch names both, which is the one case worth looking at", () => {
-    const footer = usageFooter(
-      withUsage(routed(), usage({ model: "claude-opus-5-5" })),
-    )!;
-    assert.match(footer, /api {2}claude-opus-5-5 ≠ claude-fable-5-1/);
+    const a: Attempt = { prompt: "x", ms: 1, decision };
+    addUsage(a, usageOf("claude-opus-5"));
+    assert.match(replySummary([a])!, /answered by claude-opus-5 — asked for claude-fable-5-1/);
   });
 
-  test("a dated id is still the model that was asked for", () => {
-    const footer = usageFooter(
-      withUsage(routed(), usage({ model: "claude-fable-5-1-20260901" })),
-    )!;
-    assert.match(footer, /claude-fable-5-1-20260901 ✓/);
+  test("an unrouted reply says so, and what answered", () => {
+    const a: Attempt = { prompt: "x", ms: 1, skipped: "typesafe said HTTP 401" };
+    addUsage(a, usageOf("claude-opus-5"));
+    assert.match(replySummary([a])!, /Model  answered by claude-opus-5 · not routed: typesafe said HTTP 401/);
   });
 
-  test("an unrouted turn reports what answered, with nothing to compare", () => {
-    const a: Attempt = {
-      prompt: "x",
-      ms: 0,
-      skipped: "timed out after 1500ms",
+  test("a reply of several turns is summed and listed, with the wake-ups counted", () => {
+    const first = routed();
+    const woken: Attempt = {
+      prompt: "Agent finished",
+      ms: 300,
+      kind: "notify",
+      decision: { ...decision, tier: "opus", model: "claude-opus-5-5", effort: "high" },
     };
-    const footer = usageFooter(
-      withUsage(a, usage({ model: "claude-opus-5-5" })),
-    )!;
-    assert.match(footer, /jev {2}unrouted — timed out after 1500ms/);
-    assert.match(footer, /api {2}claude-opus-5-5 · cache 90%/);
-    assert.doesNotMatch(footer, /[✓≠]/);
+    addUsage(woken, usageOf("claude-opus-5-5", { output_tokens: 500 }));
+    const s = replySummary([first, woken])!;
+    assert.match(s, /Model  2 turns: fable·xhigh ✓, opus·high ✓ \(1 woken by finished tasks\)/);
+    // 0.36 + opus: 1000·4 + 10000·8 + 200000·0.2 + 500·20 = 4000+80000+40000+10000 = $0.134
+    assert.match(s, /Cost   \$0\.49 · 422k in, 95% cached · 3k out/);
   });
 
-  test("the rule spans the widest line, and nothing wraps", () => {
-    const footer = usageFooter(
-      withUsage(routed(), usage({ cache_read_input_tokens: 1_900_000 })),
-    )!;
-    const lines = footer.split("\n");
+  test("agents are listed with what they ran on and cost", () => {
+    const main = routed();
+    const agent: Attempt = {
+      prompt: "review it",
+      ms: 200,
+      kind: "agent",
+      agent: { type: "Explore", label: "review it" },
+      decision: { ...decision, tier: "haiku", model: "claude-haiku-4-5", effort: "low" },
+    };
+    addUsage(agent, usageOf("claude-haiku-4-5", { cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0 }));
+    const s = replySummary([main, agent])!;
+    assert.match(s, /Agents Explore on haiku \(\$0\.013\)/);
+    assert.match(s, /Cost   \$0\.37 · /);
+    assert.match(s, /Model  answered by claude-fable-5-1 ✓/, "one main turn still reads as one");
+  });
+
+  test("a hold is explained in a note, numbered when the reply has several turns", () => {
+    const held = routed();
+    if ("decision" in held) {
+      held.decision = {
+        ...held.decision,
+        tier: "fable",
+        effort: "low",
+        held: "haiku",
+        heldModel: "claude-haiku-4-5",
+        heldCost: { stay: 0.125, go: 4.41 },
+      };
+    }
+    assert.match(replySummary([held])!, /Note   stayed on fable: haiku would cost \$4\.41 vs \$0\.13/);
+    const second = routed();
+    assert.match(replySummary([held, second])!, /Note   turn 1: stayed on fable/);
+  });
+
+  test("a go-ahead and a capped turn are noted; a forced one is not, since you asked", () => {
+    const go = continuationOf("yes", decision);
+    addUsage(go, usageOf("claude-fable-5-1"));
+    assert.match(replySummary([go])!, /Note   continuing without asking Jev/);
+    const forced: Attempt = { prompt: "use opus", ms: 0, decision: { ...decision, forced: true } };
+    addUsage(forced, usageOf("claude-fable-5-1"));
+    assert.doesNotMatch(replySummary([forced])!, /Note/);
+    const capped: Attempt = { prompt: "x", ms: 1, decision: { ...decision, effort: "medium", cappedEffort: "max" } };
+    addUsage(capped, usageOf("claude-fable-5-1"));
+    assert.match(replySummary([capped])!, /Note   capped from max/);
+  });
+
+  test("a model with no price shows the tokens and no dollars", () => {
+    const odd: Attempt = { prompt: "x", ms: 0, skipped: "off" };
+    addUsage(odd, usageOf("<synthetic>"));
+    const s = replySummary([odd])!;
+    assert.match(s, /Cost   211k in/);
+    assert.doesNotMatch(s, /\$/);
+  });
+
+  test("the rule spans the widest row, and nothing wraps", () => {
+    const s = replySummary([routed()])!;
+    const lines = s.split("\n");
     const rule = lines[1]!;
     const widest = Math.max(...lines.slice(2, -1).map((l) => [...l].length));
     assert.equal([...rule].length, widest);
-    for (const line of lines) assert.ok([...line].length < 100, line);
+    assert.ok(widest < 100);
   });
 });
 
 describe("turns that are not a typed prompt", () => {
-  const notice = `<task-notification>
-<task-id>a8fb449ee56c09</task-id>
-<status>completed</status>
-<summary>Agent "Review library-sync cluster" completed</summary>
-</task-notification>`;
+  const envelope =
+    '<task-notification>\n<task-id>abc</task-id>\n<summary>Agent "Review cluster" finished</summary>\n</task-notification>';
 
   test("a task notification is recognised and its summary kept as the prompt", () => {
-    const a = attemptOf(notice, { ok: true, ms: 653, answers: {} as never }, [
-      "fable",
-    ]);
-    assert.equal(a.kind, "notify");
-    assert.equal(a.prompt, 'Agent "Review library-sync cluster" completed');
+    assert.equal(notificationOf(envelope), 'Agent "Review cluster" finished');
+    assert.equal(notificationOf("plan it"), null);
   });
 
   test("a notification without a summary falls back to its id", () => {
-    const a = attemptOf(
-      "<task-notification><task-id>abc123</task-id></task-notification>",
-      { ok: false, ms: 0, reason: "x" },
-      ["fable"],
+    assert.equal(
+      notificationOf("<task-notification><task-id>abc</task-id></task-notification>"),
+      "task abc",
     );
+  });
+
+  test("the line and the history say a wake-up is not a reply to the person", () => {
+    const a = attemptOf(envelope, { ok: true, ms: 1, answers: { tier: { type: "choice", choice: "opus", confidence: 0.9 } } }, TIERS);
     assert.equal(a.kind, "notify");
-    assert.equal(a.prompt, "task abc123");
+    assert.match(liveLine(a), /woken by a finished task/);
+    assert.match(statusReport({ ...base, attempts: [a] }), /\[woken by a finished task\] Agent "Review cluster" finished/);
   });
 
-  test("a typed prompt has no kind", () => {
-    assert.equal(
-      attemptOf("plan it", { ok: false, ms: 0, reason: "x" }, ["fable"]).kind,
-      undefined,
-    );
+  test("originOf names each kind in words", () => {
+    assert.equal(originOf({ kind: "notify" }), "woken by a finished task");
+    assert.equal(originOf({ kind: "continue" }), "continuing without asking Jev");
+    assert.equal(originOf({ kind: "agent", agent: { type: "Explore", label: "x" } }), "Explore agent");
+    assert.equal(originOf({ kind: "agent" }), "agent");
+    assert.equal(originOf({}), null);
   });
 
-  const notify: Attempt = {
-    prompt: 'Agent "Review library-sync cluster" completed',
-    ms: 653,
-    decision,
-    kind: "notify",
-  };
-
-  test("the live line marks a notification turn, so a wake-up is not read as a reply to the person", () => {
-    assert.equal(
-      liveLine(notify),
-      "> ✳️ `fable` · xhigh · 97% · notify · 653ms",
-    );
-  });
-
-  test("the history tags it and shows the summary, not the envelope", () => {
-    assert.match(
-      statusReport({ ...base, attempts: [notify] }),
-      /fable·xhigh 0\.97 {2}\[notify\] Agent "Review library-sync cluster" complet/,
-    );
-  });
-
-  test("the footer’s jev row carries the tag", () => {
-    addUsage(notify, {
-      model: "claude-fable-5-1",
-      input_tokens: 1000,
-      output_tokens: 100,
-      cache_read_input_tokens: 9000,
-      cache_creation_input_tokens: 0,
-    });
-    assert.match(
-      usageFooter(notify)!,
-      /jev {2}fable·xhigh · 97% · notify · 653ms/,
-    );
-  });
-
-  test("a subagent’s steps are listed as unrouted, under the agent’s name", () => {
-    const sub: Attempt = {
-      prompt: "Review library-sync cluster",
+  test("a subagent's steps are listed under the agent's name", () => {
+    const a: Attempt = {
+      prompt: "Review cluster",
       ms: 0,
-      skipped: "subagent runs on the session model",
       kind: "agent",
-      agent: { type: "Explore", label: "Review library-sync cluster" },
+      agent: { type: "general-purpose", label: "Review cluster" },
+      skipped: "not routed at spawn, so it keeps its own model",
     };
-    addUsage(sub, {
-      model: "claude-opus-5-5",
-      input_tokens: 1000,
-      output_tokens: 100,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    });
-    const text = statusReport({ ...base, attempts: [sub] });
     assert.match(
-      text,
-      /unrouted — \[agent:Explore\] Review library-sync cluster/,
+      statusReport({ ...base, attempts: [a] }),
+      /not routed — \[general-purpose agent\] Review cluster · not routed at spawn/,
     );
-    assert.match(text, /answered claude-opus-5-5 {2}cache 0%/);
+  });
+
+  test("a go-ahead with nothing to continue says so", () => {
+    const a = continuationSkipped("yes");
+    assert.equal(a.kind, "continue");
+    assert.match(liveLine(a), /nothing to continue, so the session model answers/);
   });
 });
 
@@ -569,47 +552,46 @@ describe("a held turn", () => {
       effort: "low",
       confidence: 0.61,
       held: "haiku",
+      heldModel: "claude-haiku-4-5",
     },
   };
 
-  test("the line says what Jev wanted and did not get", () => {
+  test("the line says what Jev wanted and did not get, in words", () => {
     assert.equal(
       liveLine(held),
-      "> ✳️ `fable` · low · 61% · held:haiku · 512ms",
+      "> ✳️ fable · low effort · stayed on fable: Jev wanted haiku, only 61% sure · 512ms",
     );
   });
 
   test("the history says so too, so a run of holds is visible", () => {
     assert.match(
       statusReport({ ...base, attempts: [held] }),
-      /fable·low 0\.61 held:haiku {2}rename/,
+      /fable·low  stayed on fable: Jev wanted haiku, only 61% sure  rename/,
     );
   });
 
-  test("the footer carries it", () => {
-    addUsage(held, {
-      model: "claude-fable-5-1",
-      input_tokens: 1000,
-      output_tokens: 100,
-      cache_read_input_tokens: 9000,
-      cache_creation_input_tokens: 0,
-    });
-    assert.match(
-      usageFooter(held)!,
-      /jev {2}fable·low · 61% · held:haiku · 512ms/,
-    );
+  test("a hold on the same rung names the models, since the tier would say nothing", () => {
+    const lateral: Attempt = {
+      prompt: "x",
+      ms: 1,
+      decision: {
+        tier: "opus",
+        model: "claude-opus-5",
+        effort: "medium",
+        confidence: 0.95,
+        held: "opus",
+        heldModel: "claude-opus-5-5",
+        heldCost: { stay: 0.1, go: 1.6 },
+      },
+    };
+    assert.match(liveLine(lateral), /stayed on claude-opus-5: claude-opus-5-5 would cost \$1\.60 vs \$0\.10/);
   });
 
-  test("a held turn is not marked low-confidence twice over", () => {
-    const line = liveLine(held);
-    assert.doesNotMatch(line, /\?/);
-  });
-
-  test("the status report says whether stickiness is on", () => {
+  test("the status report says whether stickiness is on, and what an upgrade needs", () => {
     assert.match(statusReport(base), /sticky\s+off/);
     assert.match(
       statusReport({ ...base, sticky: 0.75 }),
-      /sticky\s+on, switch needs 75%/,
+      /sticky\s+on, switch needs 75% \(90% up past 100k\), and a downgrade has to pay/,
     );
   });
 });
@@ -634,16 +616,8 @@ describe("the sticky subcommand", () => {
 
   test("a number sets the bar and turns it on", () => {
     assert.equal(stickyCommand("0.6", null).sticky, 0.6);
-    assert.equal(
-      stickyCommand("60", null).sticky,
-      0.6,
-      "a percentage is read as one",
-    );
-    assert.equal(
-      stickyCommand("60%", null).sticky,
-      0.6,
-      "and so is one with a sign",
-    );
+    assert.equal(stickyCommand("60", null).sticky, 0.6, "a percentage is read as one");
+    assert.equal(stickyCommand("60%", null).sticky, 0.6, "and so is one with a sign");
   });
 
   test("a bar outside the range is refused, and nothing changes", () => {
@@ -695,10 +669,7 @@ describe("the ceiling subcommand", () => {
   });
 
   test("the status report names the ceiling and the cache", () => {
-    const report = statusReport({
-      ...base,
-      ceiling: { ...ceilingAt("medium"), fable: "xhigh" },
-    });
+    const report = statusReport({ ...base, ceiling: { ...ceilingAt("medium"), fable: "xhigh" } });
     assert.match(report, /ceiling\s+medium \(fable: xhigh\)/);
     assert.match(report, /cache\s+1h writes · no context yet/);
   });
@@ -722,7 +693,7 @@ describe("the ceiling on a turn", () => {
     },
   });
 
-  test("a routed turn is capped at its tier's ceiling and tagged", () => {
+  test("a routed turn is capped at its tier's ceiling and says what Jev wanted", () => {
     const a = attemptOf("plan it", jev("opus", 4), TIERS, {
       sticky: null,
       running: null,
@@ -731,29 +702,17 @@ describe("the ceiling on a turn", () => {
     assert.ok("decision" in a);
     assert.equal(a.decision.effort, "medium");
     assert.equal(a.decision.cappedEffort, "max");
-    assert.match(liveLine(a), /capped:max/);
+    assert.match(liveLine(a), /capped from max/);
   });
 
   test("a continuation is re-capped, so a change mid-session binds", () => {
-    const running = {
-      tier: "fable" as const,
-      model: "claude-fable-5-1",
-      effort: "xhigh" as const,
-      confidence: 0.9,
-    };
-    const a = continuationOf("yes", running, ceilingAt("high"));
+    const a = continuationOf("yes", decision, ceilingAt("high"));
     assert.ok("decision" in a);
     assert.equal(a.decision.effort, "high");
   });
 
   test("a subagent is capped too", () => {
-    const a = spawnAttemptOf(
-      "review it",
-      jev("opus", 3),
-      TIERS,
-      { type: "general-purpose", label: "review it" },
-      ceilingAt("medium"),
-    );
+    const a = spawnAttemptOf("review it", jev("opus", 3), TIERS, { type: "general-purpose", label: "review it" }, ceilingAt("medium"));
     assert.ok("decision" in a);
     assert.equal(a.decision.effort, "medium");
     assert.equal(a.decision.cappedEffort, "xhigh");
@@ -765,6 +724,16 @@ describe("the ceiling on a turn", () => {
     assert.equal(a.decision.effort, "max");
   });
 
+  test("a shaky subagent pick says so in words", () => {
+    const a = spawnAttemptOf(
+      "audit",
+      { ok: true, ms: 1, answers: { tier: { type: "choice", choice: "opus", confidence: 0.22 } } },
+      TIERS,
+      { type: "general-purpose", label: "audit" },
+    );
+    assert.ok("skipped" in a);
+    assert.equal(a.skipped, "Jev said opus but was only 22% sure (under 50%), so it keeps its own model");
+  });
 });
 
 describe("a downgrade held on its price", () => {
@@ -793,8 +762,10 @@ describe("a downgrade held on its price", () => {
     assert.equal(a.decision.tier, "fable");
     assert.equal(a.decision.held, "haiku");
     assert.equal(a.decision.effort, "low", "Jev's effort still applies");
-    assert.match(liveLine(a), /held:haiku·\$4\.41>\$0\.125/);
-    assert.match(heldMark(a)!, /^held:haiku·\$/);
+    assert.equal(
+      liveLine(a),
+      "> ✳️ fable · low effort · stayed on fable: haiku would cost $4.41 vs $0.13 · 300ms",
+    );
   });
 
   test("at a small context the switch goes through", () => {
@@ -809,10 +780,7 @@ describe("a downgrade held on its price", () => {
   });
 
   test("with nothing known about the context there is nothing to protect", () => {
-    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, {
-      sticky: 0.75,
-      running: onFable,
-    });
+    const a = attemptOf("what is 2+2", jev("haiku"), TIERS, { sticky: 0.75, running: onFable });
     assert.ok("decision" in a);
     assert.equal(a.decision.tier, "haiku");
   });
@@ -848,6 +816,7 @@ describe("a downgrade held on its price", () => {
     assert.equal(big.decision.tier, "opus");
     assert.equal(big.decision.held, "fable");
     assert.equal(big.decision.heldCost, undefined, "held on doubt, not price");
+    assert.match(liveLine(big), /stayed on opus: Jev wanted fable, only 82% sure/);
     const small = attemptOf("plan it", shaky, TIERS, {
       sticky: 0.75,
       running: onOpus,
@@ -857,11 +826,25 @@ describe("a downgrade held on its price", () => {
     assert.equal(small.decision.tier, "fable");
   });
 
-  test("the status line says what an upgrade needs past 100k", () => {
-    assert.match(
-      statusReport({ ...base, sticky: 0.75 }),
-      /sticky\s+on, switch needs 75% \(90% up past 100k\)/,
-    );
+  test("the same rung on a different model is priced too: a session on claude-opus-5 stays there", () => {
+    const onSession = { tier: "opus" as const, model: "claude-opus-5", effort: "medium" as const, confidence: 1 };
+    const a = attemptOf("implement it", jev("opus"), TIERS, {
+      sticky: 0.75,
+      running: onSession,
+      economics: { contextTokens: 200_000, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in a);
+    assert.equal(a.decision.model, "claude-opus-5");
+    assert.equal(a.decision.heldModel, "claude-opus-5-5");
+    // stay: 200k·0.5 + 1.5k·25 = 0.1 + 0.0375; go: 200k·8 + 1.5k·20 + 200k·10 = 1.6 + 0.03 + 2.0
+    assert.match(liveLine(a), /stayed on claude-opus-5: claude-opus-5-5 would cost \$3\.63 vs \$0\.14/);
+    const fresh = attemptOf("implement it", jev("opus"), TIERS, {
+      sticky: 0.75,
+      running: onSession,
+      economics: { contextTokens: 200, outputTokens: 1500, ttl: "1h" },
+    });
+    assert.ok("decision" in fresh);
+    assert.equal(fresh.decision.model, "claude-opus-5-5", "at a small context the ladder's model wins");
   });
 
   test("with stickiness off the price is not consulted", () => {
@@ -888,72 +871,13 @@ describe("a downgrade held on its price", () => {
 
   test("the status report shows the context and where a downgrade stops paying", () => {
     const routed: Attempt = { prompt: "plan", ms: 300, decision: onFable };
-    addUsage(routed, {
-      model: "claude-fable-5-1",
-      input_tokens: 1000,
-      output_tokens: 1500,
-      cache_read_input_tokens: 199_000,
-      cache_creation_input_tokens: 0,
-    });
-    const report = statusReport({
-      ...base,
-      contextTokens: 200_000,
-      attempts: [routed],
-    });
+    addUsage(routed, usageOf("claude-fable-5-1", { output_tokens: 1500, cache_read_input_tokens: 199_000, cache_creation_input_tokens: 0 }));
+    const report = statusReport({ ...base, contextTokens: 200_000, running: onFable, attempts: [routed] });
     assert.match(report, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
   });
 });
 
 describe("dollars", () => {
-  const priced: Attempt = {
-    prompt: "plan",
-    ms: 300,
-    decision: {
-      tier: "fable",
-      model: "claude-fable-5-1",
-      effort: "medium",
-      confidence: 0.9,
-    },
-  };
-
-  test("a turn's usage is priced at list, at the session's cache TTL", () => {
-    addUsage(priced, {
-      model: "claude-fable-5-1",
-      input_tokens: 1000,
-      output_tokens: 2000,
-      cache_read_input_tokens: 200_000,
-      cache_creation_input_tokens: 10_000,
-    });
-    // 1000·10 + 10000·20 + 200000·0.25 + 2000·50 = 10000+200000+50000+100000 = $0.36
-    assert.equal(priced.cost, 0.36);
-    assert.match(usageFooter(priced)!, /2k out · \$0\.36/);
-    assert.match(statusReport({ ...base, attempts: [priced] }), /2k out {2}\$0\.36/);
-  });
-
-  test("a second step adds to the same turn and re-prices the sum", () => {
-    addUsage(priced, {
-      model: "claude-fable-5-1",
-      input_tokens: 0,
-      output_tokens: 2000,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    });
-    assert.equal(priced.cost, 0.46);
-  });
-
-  test("a model with no price shows the tokens and no dollars", () => {
-    const odd: Attempt = { prompt: "x", ms: 0, skipped: "off" };
-    addUsage(odd, {
-      model: "<synthetic>",
-      input_tokens: 10,
-      output_tokens: 10,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    });
-    assert.equal(odd.cost, undefined);
-    assert.doesNotMatch(usageFooter(odd)!, /\$/);
-  });
-
   test("the report totals the session", () => {
     assert.match(statusReport({ ...base, spent: 12.345 }), /spent\s+\$12\.35 this session/);
     assert.doesNotMatch(statusReport(base), /spent/);

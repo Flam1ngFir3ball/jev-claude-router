@@ -101,7 +101,9 @@ describe("pricing", () => {
 
   test("dollars read at the precision a turn needs", () => {
     assert.equal(usd(4.408), "$4.41");
-    assert.equal(usd(0.125), "$0.125");
+    assert.equal(usd(0.36), "$0.36");
+    assert.equal(usd(0.125), "$0.13");
+    assert.equal(usd(0.0235), "$0.024");
     assert.equal(usd(0.0035), "$0.0035");
   });
 });

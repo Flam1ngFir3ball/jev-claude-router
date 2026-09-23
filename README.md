@@ -16,7 +16,7 @@ Context    you type a prompt
 turn.start    ask Jev  →  tier: fable   effort: 3
               ↓
 turn.step     next({ ...e, model: 'claude-fable-5-1', effort: 'xhigh' })
-              first text chunk ← '> ✳️ `fable` · xhigh · 97% · 641ms\n\n---\n\n' + text
+              first text chunk ← '> ✳️ fable · xhigh effort · Jev 97% sure · 641ms\n\n---\n\n' + text
               ↓
 /jev          the full history, with reasons for anything unrouted
 ```
@@ -97,72 +97,75 @@ surface, so this always works:
 jev-router
   routing   on
   surface   desktop
-  provider  typesafe · TYPESAFE_API_KEY is set
+  provider  typesafe · TYPESAFE_API_KEY is set · jev-latest
   budget    1500ms
-  sticky    on, switch needs 75%, and a downgrade has to pay
+  sticky    on, switch needs 75% (90% up past 100k), and a downgrade has to pay
   ceiling   medium (fable: xhigh)
+  session   claude-opus-5, running on fable
   cache     1h writes · 201k context · fable→haiku pays below 3k
   tiers     haiku, sonnet, opus, fable
   announce  on, a line per turn
   spent     $4.12 this session
 
   Recent turns, newest first:
-   653ms  fable·medium 0.61  [notify] Agent "Review library-sync cluster" com…
-          answered claude-fable-5-1 ✓  cache 98%  45k in  1k out  $0.061
-     0ms  unrouted — [agent:general-purpose] Review library-sync cluster
-          answered claude-opus-5-5  cache 82%  22k in  0k out
-   641ms  fable·medium 0.97  help me plan the architecture
-          answered claude-fable-5-1 ✓  cache 91%  130k in  2k out
-   402ms  haiku·medium 0.75  rename the variable foo to bar
-          answered claude-haiku-4-5 ✓  cache 4%  128k in  0k out
-    12ms  unrouted — gateway said HTTP 403 (customer_verification_required)
+   653ms  fable·medium  Jev 61% sure  [woken by a finished task] Agent "Review library-sync…
+          answered by claude-fable-5-1 ✓ · $0.061 · 45k in, 98% cached · 1k out
+     0ms  not routed — [general-purpose agent] Review library-sync cluster · not routed at spawn…
+          answered by claude-opus-5-5 · $0.023 · 22k in, 82% cached · 0k out
+   641ms  fable·medium  Jev 97% sure; capped from xhigh  help me plan the architecture
+          answered by claude-fable-5-1 ✓ · $0.14 · 130k in, 91% cached · 2k out
+   352ms  fable·low  stayed on fable: haiku would cost $1.02 vs $0.02  what is 2+2
+          answered by claude-fable-5-1 ✓ · $0.02 · 47k in, 99% cached · 0k out
+    12ms  not routed — gateway said HTTP 403 (customer_verification_required)
 ```
+
+Everything here is in words. `Jev 61% sure` is Jev's confidence in the tier;
+`only` appears under 50%. What follows the confidence is why the turn did not
+run exactly as Jev asked: `stayed on fable: haiku would cost $1.02 vs $0.02`
+is a downgrade the price held (see below), `stayed on fable: Jev wanted
+haiku, only 61% sure` one the bar held, `capped from xhigh` the ceiling,
+`as you asked` a tier the prompt named, `medium runs as high on a first
+request` an engine quirk (see *Commands and switches*).
 
 Not every turn is you typing, and the history says which are not. A prompt
 that spawns background agents produces more turns than replies: each agent
 that finishes wakes the main loop with a `<task-notification>`, and the engine
-starts a fresh turn with that XML as its text. Those are tagged `[notify]`,
-with the notification's summary in place of the envelope, and the same tag
-rides in the route line and footer of the reply they produce (`· notify ·`).
-Without it, one prompt that dispatched three reviewers reads as one reply that
-changed model three times.
+starts a fresh turn with that XML as its text. Those rows say `[woken by a
+finished task]`, with the notification's summary in place of the envelope.
+The engine's own nudge ("The user hasn't heard from you in a while") is a
+turn too; it continues the last decision without asking Jev, is listed as
+`[nudged by the engine, continuing]`, and writes nothing into the reply.
 
-The agents themselves are the `[agent:type]` rows. A subagent's loop gets no
+The agents themselves are the `[type agent]` rows. A subagent's loop gets no
 `turn.start`; it is routed at `agent.spawn` instead, where its task is in
 hand as text (see *Subagents* below). The row shows the tier Jev picked, or
-why it was left alone (`under the 0.5 bar`, a timeout), with the model that
-answered it, so the requests one prompt really caused are all on the screen.
-Nothing is written into a subagent's reply: that text is a tool result its
-parent reads.
+why it was left alone (`Jev said sonnet but was only 22% sure (under 50%)`,
+a timeout), with the model that answered it, so the requests one prompt
+really caused are all on the screen. Nothing is written into a subagent's
+reply: that text is a tool result its parent reads.
 
-The same `answered` information is under each reply as it happens, in the
-footer below; `/jev` is where you go to see it across turns.
+`answered by` is the API's own report, taken from the `usage` on each step's
+`stop` chunk: which model actually answered, and what the turn's requests
+carried. The route line is what the mod asked for; this is what it got. `✓`
+means they agree (a dated id such as `claude-opus-5-5-20260901` still
+counts); `answered by claude-opus-5 — asked for claude-fable-5-1` means
+something else answered, which is the one case worth looking into. There is
+no need to proxy traffic or force a bogus model id to check the rewrite
+lands.
 
-An unrouted turn says why. That matters because the router fails open, so a
-dead provider and a missing plugin look identical from the outside.
-
-The `answered` line under each turn is the API's own report, taken from the
-`usage` on each step's `stop` chunk: which model actually answered, and what
-the turn's requests carried. The route line above it is what the mod asked
-for; this is what it got. `✓` means they agree (a dated id such as
-`claude-opus-5-5-20260901` still counts); `≠ claude-opus-5-5` means something else
-answered, which is the one case worth looking into. There is no need to proxy
-traffic or force a bogus model id to check the rewrite lands.
-
-`cache` is the share of the turn's input read from the prompt cache. The
-cache is per model, so the turn after a switch runs cold: `cache 4%` on the
-haiku turn above is the price of leaving fable. The dollars at the end of the
-line are the turn at Anthropic's list price (`hooks/pricing.ts`, checked
-2026-09-23), with cache writes billed at the one-hour rate Claude Code uses;
-`spent` in the header is the session's total. Watch both to see whether
-switches are eating what cheaper tiers save — at a working context they do,
-which is what the hold below is for.
+The dollars are the turn at Anthropic's list price (`hooks/pricing.ts`,
+checked 2026-09-23, and checked live against the engine's own
+`total_cost_usd`: $0.497 against $0.4967), with cache writes billed at the
+one-hour rate Claude Code uses; `spent` in the header is the session's
+total, routed turns and not. `98% cached` is the share of the turn's input
+read from the prompt cache; the cache is per model, so the turn after a
+switch runs cold, and that is what the hold below is for.
 
 **The first line of every reply.** The route is written into the reply's
 own text, as the first text chunk streams through `turn.step`:
 
 ```markdown
-> ✳️ `opus` · high · 98% · 555ms
+> ✳️ opus · high effort · Jev 98% sure · 555ms
 
 ---
 
@@ -171,64 +174,66 @@ Here is the implementation...
 
 Markdown, because the line rides in the reply's text and that is what the
 transcript renders, so it is the only styling available. The blockquote sets
-it off from prose with a rail and dimmer text; the tier is inline code,
-which the theme colours. The blank line before `---` is load-bearing: a
-rule on the line directly after text is a setext heading underline, and the
-route would render as a heading.
+it off from prose with a rail and dimmer text. The blank line before `---`
+is load-bearing: a rule on the line directly after text is a setext heading
+underline, and the route would render as a heading.
 
-An unrouted turn opens with `> ⚠️ \`unrouted\` · reason`. A `?` after the
-percentage means Jev was under 50% sure.
+An unrouted turn opens with `> ⚠️ not routed · <why> · the session model
+answers`. A held or capped turn says so in the same words as `/jev`:
 
-**The footer under every finished reply**, which is the same information
-settled. The top line is what the router asked for, before the reply exists;
-the footer is what the API says it got, and it can only be written once the
-response is whole:
-
-```
-──────────────────────────────────────────────────────
-jev  fable·xhigh · 97% · 641ms
-api  claude-fable-5-1 ✓ · cache 90% · 130k in · 1k out
+```markdown
+> ✳️ fable · low effort · stayed on fable: haiku would cost $1.02 vs $0.02 · 352ms
 ```
 
-`api` is read off the `usage` on the step's stop chunk, so `✓` is the API's
-own confirmation that the model rewrite landed — no proxy, no bogus model id.
-A dated id such as `claude-fable-5-1-20260901` still counts as a match; a real
-mismatch reads `claude-opus-5-5 ≠ claude-fable-5-1`.
-
-`cache` is the share of the turn's input read from the prompt cache. The cache
-is per model, so the turn after a switch runs cold:
+**The summary under every finished reply**, once, however many turns the
+reply spanned. The top line is what the router asked for, before the reply
+exists; the summary is what the API says it got, and it can only be written
+once the response is whole:
 
 ```
-─────────────────────────────────────────────────────
-jev  haiku·medium · 75% · 402ms
-api  claude-haiku-4-5 ✓ · cache 4% · 128k in · 0k out
+──────────────────────────────────────────────────────────────────────────
+Model  answered by claude-fable-5-1 ✓ at xhigh effort · Jev 97% sure, 641ms
+Cost   $0.14 · 130k in, 91% cached · 2k out
 ```
 
-That `4%` is the price of leaving fable, and the dollars on the `api` line
-say what it came to. `npm run measure-switch-cost` prints the same sum for
-every pair of tiers across a range of contexts.
+A reply that spawned background work is several turns — the one you typed,
+then one per task that finished and woke the loop — and a block under each
+read as one reply changing model three times. So the summary waits until no
+background agent is still running, then covers the lot:
 
-The footer is fenced because markdown collapses leading whitespace and joins
-consecutive lines: unfenced, the rule and the two rows render as one run-on
-paragraph. `<details>` was tried first, for a fold; the desktop app renders it
-as raw tags.
+```
+─────────────────────────────────────────────────────────────────────
+Model  3 turns: fable·xhigh ✓, opus·high ✓, fable·xhigh ✓ (2 woken by finished tasks)
+Agents Explore on haiku ($0.02), general-purpose on opus ($0.31)
+Cost   $28.10 · 7.4M in, 99% cached · 61k out
+Note   turn 2: stayed on fable: haiku would cost $4.41 vs $0.13
+```
+
+`Note` rows say what did not run exactly as Jev asked, in the same words as
+everywhere else. A mid-turn compaction is not the end of a reply (it was
+taken for one once, and wrote a second summary under the same reply).
+
+The summary is fenced because markdown collapses leading whitespace and
+joins consecutive lines: unfenced, the rule and the rows render as one
+run-on paragraph. `<details>` was tried first, for a fold; the desktop app
+renders it as raw tags.
 
 It is emitted as a chunk the hook built rather than one the engine streamed,
 at **one past the last text block's index**, and only on a step whose stop
 reason ends the turn — a `tool_use` step is mid-reply. The index is
 load-bearing: a chunk yielded at an index the engine has already streamed is
 dropped silently. Probed live, a chunk at `lastTextIndex` never reached the
-transcript and one at `lastTextIndex + 1` did, so the footer opens a block of
-its own and the reply above it is untouched.
+transcript and one at `lastTextIndex + 1` did, so the summary opens a block
+of its own and the reply above it is untouched.
 
 Note that `claude -p` shows only the *last* text block in its `result`, so the
-reply looks like it vanished when the footer lands. It has not:
+reply looks like it vanished when the summary lands. It has not:
 `--output-format stream-json --verbose` shows both blocks whole.
 
-`/jev quiet` drops both the line and the footer without turning routing off;
-`/jev loud` brings them back. Both ride in the reply's recorded text, so the
-model sees them on its own past replies; that is the standing cost of a marker
-on a surface that draws neither render sites nor `ui.log`.
+`/jev quiet` drops both the line and the summary without turning routing
+off; `/jev loud` brings them back. Both ride in the reply's recorded text, so
+the model sees them on its own past replies; that is the standing cost of a
+marker on a surface that draws neither render sites nor `ui.log`.
 
 The line is part of the recorded message, so the model sees its own past
 replies open with it. That is the cost of a marker that reaches the desktop
@@ -281,7 +286,7 @@ model, which this mod does not touch — the rewrite happens per request, in
   one tier, `/jev ceiling off` lifts every cap (which is `max`; the engine has
   no rung above it). **The default is `medium` on every tier.** A turn Jev
   wanted higher is cut to the ceiling and the route line says
-  `capped:xhigh` for what it wanted.
+  `capped from xhigh` for what it wanted.
 - `JEV_ROUTER_CEILING=xhigh`, or `fable:xhigh,opus:high` for some tiers,
   seeds the ceiling; the command overrides it from then on. Two engine facts,
   measured 2026-09-23 on Claude Code 2.1.280 by the transcript's
@@ -333,13 +338,13 @@ So a switch has to clear two bars, and `/jev sticky off` lifts both:
 Held either way, the turn runs on the tier already loaded, and says so:
 
 ```
-> ✳️ `fable` · low · 61% · held:haiku · 512ms
-> ✳️ `fable` · low · 99% · held:haiku·$4.41>$0.125 · 301ms
+> ✳️ fable · low effort · stayed on fable: Jev wanted haiku, only 61% sure · 512ms
+> ✳️ fable · low effort · stayed on fable: haiku would cost $4.41 vs $0.13 · 301ms
 ```
 
 The first: Jev wanted haiku, was 61% sure, and the bar is 75%. The second:
-Jev was sure, and going ($4.41) cost more than staying ($0.125). The same tag
-appears in the footer and in `/jev`, because a hold nobody can see is
+Jev was sure, and going ($4.41) cost more than staying ($0.13). The same
+words appear in the summary and in `/jev`, because a hold nobody can see is
 indistinguishable from a router that is not running; `/jev` also prints the
 context it is pricing against and where the cheapest downgrade stops paying
 (`fable→haiku pays below 3k`), so a hold is never a surprise.
@@ -352,7 +357,21 @@ on the tier already warm (a trivial question on fable at `low` is a few cents;
 the same question after a detour to haiku is dollars), moving **up** when a
 task needs it, and routing **subagents**, which start with an empty
 conversation and so have no cache to lose. A compaction empties the cache and
-the context both, so the hold is dropped and the next turn starts from Jev.
+the context both, so the hold is dropped and the next turn starts from Jev;
+so does `/clear`.
+
+A session the router did not route from the start is still running on
+something. On `claude --resume` the engine says what (`classic.SessionStart`:
+the model, the context, and whether the cache has likely expired), and the
+first routed turn is priced against that model's warm cache — `/jev on` after
+a stretch off, or a plugin loaded into a live session, seeds the same from
+`$.session.model()` when the engine reports context. A session on a model
+off the ladder (`claude-opus-5`, say) that Jev keeps on the same rung is a
+switch too, to `claude-opus-5-5` and a cold cache, and is priced like a
+downgrade: at 200k it stays, and the line says `stayed on claude-opus-5:
+claude-opus-5-5 would cost $3.63 vs $0.14`. `/model` mid-session moves what
+the next routed turn is priced against. `/jev` shows all of this on its
+`session` line.
 
 Only the model is held, on Opus and Haiku. There the effort Jev asked for is
 applied either way, since the engine sends it per request and it costs no
@@ -361,7 +380,7 @@ Sonnet is the exception, measured 2026-09-22: an effort change there rewrites
 everything after the system block, about half the prefix. So a turn that
 stays on Sonnet also holds its effort unless Jev's confidence in the effort
 score (a separate number from the tier's, and usually the shakier) clears the
-same bar; the footer says `held-effort:xhigh` for what Jev wanted.
+same bar; the line says `kept medium effort: Jev wanted xhigh, only 49% sure`.
 
 What the next turn holds to is the tier actually running, not the one Jev
 named. Three shaky haiku calls in a row will not creep the session onto haiku
@@ -463,12 +482,12 @@ as it would without the mod:
 The only cost of a failure is the latency spent waiting, capped at the timeout.
 
 Low confidence is not a failure. The pick is used and the line marks it, so
-`> ✳️ \`opus\` · high · 40%?` means Jev was under 50% sure of the tier.
+`> ✳️ opus · high effort · Jev only 40% sure` means Jev was under 50% sure of the tier.
 
 An unrouted turn announces itself too, with the reason:
 
 ```
-> ⚠️ `unrouted` · gateway said HTTP 403 (customer_verification_required)
+> ⚠️ not routed · gateway said HTTP 403 (customer_verification_required) · the session model answers
 ```
 
 ## Layout
@@ -481,7 +500,7 @@ hooks/policy.ts     the tiers, the criteria, answers → model and effort,
                     the ceiling, what a hold is
 hooks/pricing.ts    Anthropic's list prices; what a turn cost, what a switch
                     would cost
-hooks/label.ts      decision → footer string
+hooks/label.ts      decision → SessionMode label
 hooks/status.ts     the per-turn line, what /jev prints, usage per turn
 tests/              node:test suites; register.test.ts drives the real hooks
                     with a fake engine and asserts the stream transform

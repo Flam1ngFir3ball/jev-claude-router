@@ -25,6 +25,8 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
   let fetches = 0;
   let lastState: string | undefined;
   let contextTokens: number | null = 1_000;
+  let agentStatus = "completed";
+  let sessionModel = "claude-opus-5-5";
 
   // Most register tests assume sticky off; production defaults sticky on.
   // Pass `JEV_ROUTER_STICKY: undefined` to exercise the real default.
@@ -58,6 +60,7 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
     command: { register: async () => {} },
     session: {
       surface: async () => "test",
+      model: async () => sessionModel,
       /** The engine's count of what the last response carried; settable per test. */
       usage: async () =>
         contextTokens === null ? undefined : { context: { tokens: contextTokens } },
@@ -70,7 +73,7 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
             id: "agent-1",
             type: "general-purpose",
             description: "Review library-sync cluster",
-            status: "running",
+            status: agentStatus,
           },
         ];
       },
@@ -97,6 +100,14 @@ function load(env: Record<string, string | undefined> = { AI_GATEWAY_API_KEY: "g
     /** What `$.session.usage()` reports the context to be, or null for nothing yet. */
     setContext: (tokens: number | null) => {
       contextTokens = tokens;
+    },
+    /** What `$.agent.list()` says the one agent is doing. */
+    setAgentStatus: (status: string) => {
+      agentStatus = status;
+    },
+    /** What `$.session.model()` returns. */
+    setSessionModel: (model: string) => {
+      sessionModel = model;
     },
   };
 }
@@ -162,7 +173,7 @@ describe("register: the route in the reply", () => {
     // The latency is wall-clock, so it is matched loosely.
     assert.match(
       texts[0]!,
-      /^> ✳️ `opus` · medium · 91% · capped:high · \d+ms\n\n---\n\nHello$/,
+      /^> ✳️ opus · medium effort · Jev 91% sure · capped from high · \d+ms\n\n---\n\nHello$/,
     );
     assert.equal(texts[1], " there.");
     assert.equal(
@@ -188,7 +199,7 @@ describe("register: the route in the reply", () => {
 
     const first = await run(0);
     const second = await run(1);
-    assert.match(first.find((c) => c.kind === "text")!.text, /^> ✳️ `opus`/);
+    assert.match(first.find((c) => c.kind === "text")!.text, /^> ✳️ opus/);
     assert.equal(second.find((c) => c.kind === "text")!.text, "reply");
   });
 
@@ -211,7 +222,7 @@ describe("register: the route in the reply", () => {
     );
     assert.equal(
       chunks.find((c) => c.kind === "text")!.text,
-      "> ⚠️ `unrouted` · no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY\n\n---\n\nreply",
+      "> ⚠️ not routed · no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY · the session model answers\n\n---\n\nreply",
     );
   });
 
@@ -233,7 +244,7 @@ describe("register: the route in the reply", () => {
       ),
     );
     assert.equal(chunks[0]!.text, "hmm", "thinking is not where the line goes");
-    assert.match(chunks[1]!.text, /^> ✳️ `opus`.*\n\n---\n\nanswer$/);
+    assert.match(chunks[1]!.text, /^> ✳️ opus.*\n\n---\n\nanswer$/);
   });
 
   test("/jev quiet keeps routing but drops the line", async () => {
@@ -281,8 +292,8 @@ describe("register: the route in the reply", () => {
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /claude-opus-5-5 ✓/);
-    assert.match(out.text, /cache 90%/);
+    assert.match(out.text, /answered by claude-opus-5-5 ✓/);
+    assert.match(out.text, /90% cached/);
   });
 
   test("a turn of two steps sums both requests", async () => {
@@ -323,7 +334,7 @@ describe("register: the route in the reply", () => {
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /claude-haiku-4-5 ≠ claude-opus-5/);
+    assert.match(out.text, /answered by claude-haiku-4-5 — asked for claude-opus-5-5/);
   });
 
   test("a stop chunk for a turn we never saw is left alone", async () => {
@@ -351,8 +362,8 @@ describe("register: the route in the reply", () => {
 
     const texts = chunks.filter((c) => c.kind === "text");
     const footer = texts.at(-1)!.text;
-    assert.match(footer, /```\n─+\njev {2}opus·medium/);
-    assert.match(footer, /api {2}claude-opus-5-5 ✓/);
+    assert.match(footer, /```\n─+\nModel  answered by claude-opus-5-5 ✓ at medium effort · Jev 91% sure/);
+    assert.match(footer, /Cost   \$/);
     assert.equal(
       chunks.at(-1)!.kind,
       "stop",
@@ -387,7 +398,7 @@ describe("register: the route in the reply", () => {
         .filter((c) => c.kind === "text")
         .map((c) => c.text)
         .join(""),
-      /jev {2}opus/,
+      /Model  answered by/,
     );
 
     const last = await collect(
@@ -397,7 +408,7 @@ describe("register: the route in the reply", () => {
     );
     assert.match(
       last.filter((c) => c.kind === "text").at(-1)!.text,
-      /jev {2}opus·medium/,
+      /Model  answered by claude-opus-5-5 ✓ at medium effort/,
     );
   });
 
@@ -479,12 +490,13 @@ describe("register: the route in the reply", () => {
       ),
     );
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
-    assert.match(texts[0]!, /^> ✳️ `opus` · medium · 91% · capped:high · notify · 0ms/);
-    assert.match(texts.at(-1)!, /jev {2}opus·medium · 91% · capped:high · notify · 0ms/);
+    assert.match(texts[0]!, /^> ✳️ opus · medium effort · Jev 91% sure · capped from high · woken by a finished task · 0ms/);
+    assert.match(texts.at(-1)!, /Model  answered by claude-opus-5-5 ✓ at medium effort · Jev 91% sure, 0ms/);
+    assert.match(texts.at(-1)!, /Note   capped from high/);
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /\[notify\] Agent "reviewer" completed/);
+    assert.match(out.text, /\[woken by a finished task\] Agent "reviewer" completed/);
   });
 
   test("a subagent’s step, which no turn.start announced, is recorded unrouted with what ran it", async () => {
@@ -519,9 +531,9 @@ describe("register: the route in the reply", () => {
     });
     assert.match(
       out.text,
-      /unrouted — \[agent:general-purpose\] Review library-sync cluster/,
+      /not routed — \[general-purpose agent\] Review library-sync cluster/,
     );
-    assert.match(out.text, /answered claude-opus-5/);
+    assert.match(out.text, /answered by claude-opus-5/);
     assert.equal(listCalls(), 1);
   });
 
@@ -544,7 +556,7 @@ describe("register: the route in the reply", () => {
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.equal(out.text.match(/unrouted — \[agent/g)?.length, 1);
+    assert.equal(out.text.match(/not routed — \[general-purpose agent\]/g)?.length, 1);
     assert.match(out.text, /22k in/);
     assert.equal(listCalls(), 1);
   });
@@ -561,10 +573,10 @@ describe("register: the route in the reply", () => {
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
-    assert.match(out.text, /unrouted — \[agent\] agent-unknown-xyz/);
+    assert.match(out.text, /not routed — \[agent\] agent-unknown-xyz/);
   });
 
-  test("a main-loop step never touches the agent list", async () => {
+  test("a main-loop step reads the agent list once, at its end, to know whether the reply is over", async () => {
     const { hooks, $, listCalls } = load();
     await hooks.get("turn.start")!(
       $,
@@ -576,7 +588,7 @@ describe("register: the route in the reply", () => {
         answeredBy("claude-opus-5-5"),
       ),
     );
-    assert.equal(listCalls(), 0);
+    assert.equal(listCalls(), 1);
   });
 });
 
@@ -641,7 +653,7 @@ describe("register: stickiness", () => {
       "claude-opus-5-5",
       "held on the first turn’s tier",
     );
-    assert.match(second.text, /held:haiku/);
+    assert.match(second.text, /stayed on opus: Jev wanted haiku/);
   });
 
   test("a confident switch still goes through with the flag on", async () => {
@@ -895,7 +907,7 @@ describe("register: a tier named in the prompt", () => {
     assert.equal(second.sent.model, "claude-opus-5-5");
     assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "forced skips Jev");
-    assert.match(second.text, /`opus` · medium · 0% · forced/);
+    assert.match(second.text, /opus · medium effort · as you asked/);
     assert.doesNotMatch(second.text, /held/);
   });
 
@@ -906,7 +918,7 @@ describe("register: a tier named in the prompt", () => {
     const t = await turn(hooks, $, "f3", "switch to haiku");
     assert.equal(t.sent.model, "claude-haiku-4-5");
     assert.equal(fetches(), asked, "Jev is not called");
-    assert.match(t.text, /`haiku` · medium · 0% · forced/);
+    assert.match(t.text, /haiku · medium effort · as you asked/);
   });
 
   test("cannot name a tier the environment excluded", async () => {
@@ -914,7 +926,7 @@ describe("register: a tier named in the prompt", () => {
     setTier("opus", 0.9);
     const t = await turn(hooks, $, "f4", "use fable and plan it");
     assert.equal(t.sent.model, "claude-opus-5-5", "Jev’s pick stands");
-    assert.doesNotMatch(t.text, /forced/);
+    assert.doesNotMatch(t.text, /as you asked/);
   });
 
   test("a forced Sonnet turn skips Jev and says forced", async () => {
@@ -928,8 +940,8 @@ describe("register: a tier named in the prompt", () => {
     const t = await turn(hooks, $, "fs2", "use sonnet for this");
     assert.equal(t.sent.effort, "medium", "forced defaults effort");
     assert.equal(fetches(), asked, "Jev is not asked");
-    assert.match(t.text, /forced/);
-    assert.doesNotMatch(t.text, /held-effort/);
+    assert.match(t.text, /as you asked/);
+    assert.doesNotMatch(t.text, /kept .* effort/);
   });
 });
 
@@ -984,7 +996,7 @@ describe("register: a bare go-ahead", () => {
     // request ran as high; the go-ahead carries what Jev asked, medium.
     assert.equal(second.sent.effort, "medium");
     assert.equal(fetches(), asked, "no round trip for a go-ahead");
-    assert.match(second.text, /`fable` · medium · 90% · continue · 0ms/);
+    assert.match(second.text, /fable · medium effort · Jev 90% sure · continuing without asking Jev · 0ms/);
   });
 
   test("does not carry a hold tag over from the turn it continues", async () => {
@@ -993,11 +1005,11 @@ describe("register: a bare go-ahead", () => {
     await turn(hooks, $, "g3", "plan it");
     setTier("haiku", 0.4);
     const held = await turn(hooks, $, "g4", "now the tests");
-    assert.match(held.text, /held:haiku/);
+    assert.match(held.text, /stayed on fable: Jev wanted haiku/);
     const go = await turn(hooks, $, "g5", "ok");
     assert.equal(go.sent.model, "claude-fable-5-1");
-    assert.doesNotMatch(go.text, /held/);
-    assert.match(go.text, /continue/);
+    assert.doesNotMatch(go.text, /stayed on/);
+    assert.match(go.text, /continuing without asking Jev/);
   });
 
   test("on the first turn there is nothing to continue, so the session model stays", async () => {
@@ -1006,7 +1018,7 @@ describe("register: a bare go-ahead", () => {
     const t = await turn(hooks, $, "g6", "yes");
     assert.equal(fetches(), 0, "Jev is not asked; it would clear sticky");
     assert.equal(t.sent.model, undefined, "left on the session model");
-    assert.match(t.text, /unrouted/);
+    assert.match(t.text, /not routed/);
     assert.match(t.text, /nothing to continue/);
   });
 
@@ -1100,7 +1112,7 @@ describe("register: effort on Sonnet", () => {
     const t = await turn(hooks, $, "s2");
     assert.equal(t.sent.model, "claude-sonnet-5");
     assert.equal(t.sent.effort, "medium", "the previous effort, not xhigh");
-    assert.match(t.text, /`sonnet` · medium · 90% · held-effort:xhigh/);
+    assert.match(t.text, /sonnet · medium effort · Jev 90% sure · kept medium effort: Jev wanted xhigh, only 49% sure/);
   });
 
   test("the bar is the session’s, so /jev sticky 0.3 lowers it here too", async () => {
@@ -1144,7 +1156,7 @@ describe("register: effort on Sonnet", () => {
     setTier("sonnet", 0.9, 3, 0.49);
     const t = await turn(hooks, $, "s10");
     assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /capped:xhigh/);
+    assert.match(t.text, /capped from xhigh/);
   });
 });
 
@@ -1217,9 +1229,9 @@ describe("register: a spawned subagent", () => {
     const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
       args: "",
     });
-    assert.match(out.text, /haiku·medium 0\.98 +\[agent:Explore\] Count hook files/);
+    assert.match(out.text, /haiku·medium  Jev 98% sure  \[Explore agent\] Count hook files/);
     assert.equal(
-      out.text.split("\n").filter((l: string) => /\[agent:Explore\]/.test(l)).length,
+      out.text.split("\n").filter((l: string) => /\[Explore agent\]/.test(l)).length,
       1,
       "recorded at the spawn only; its steps join that row, not open another",
     );
@@ -1234,7 +1246,7 @@ describe("register: a spawned subagent", () => {
     const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
       args: "",
     });
-    assert.match(out.text, /unrouted — .*sonnet at 0\.22, under the 0\.5 bar/);
+    assert.match(out.text, /not routed — .*Jev said sonnet but was only 22% sure \(under 50%\)/);
   });
 
   test("a call that named a model is the caller’s decision", async () => {
@@ -1261,7 +1273,7 @@ describe("register: a spawned subagent", () => {
     const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {
       args: "",
     });
-    assert.match(out.text, /unrouted — .*gateway responded 500|unrouted — .*500/);
+    assert.match(out.text, /not routed — .*500/);
   });
 
   test("the parent’s tier is not a hold: no cache to keep warm", async () => {
@@ -1406,7 +1418,7 @@ describe("register: a downgrade priced against the context", () => {
     const t = await turn(hooks, $, "p2", "what is 2+2");
     assert.equal(t.sent.model, "claude-fable-5-1");
     assert.equal(t.sent.effort, "low", "Jev's effort still applies");
-    assert.match(t.text, /held:haiku·\$\d+\.\d+>\$\d/);
+    assert.match(t.text, /stayed on fable: haiku would cost \$\d+\.\d+ vs \$\d/);
   });
 
   test("at a small context the same pick goes through", async () => {
@@ -1431,7 +1443,7 @@ describe("register: a downgrade priced against the context", () => {
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "r2", "2+2");
     assert.equal(t.sent.model, "claude-fable-5-1");
-    assert.match(t.text, /held:haiku·\$/);
+    assert.match(t.text, /stayed on fable: haiku would cost \$/);
   });
 
   test("an upgrade is not priced: a fable pick from haiku goes through at any context", async () => {
@@ -1462,10 +1474,10 @@ describe("register: a downgrade priced against the context", () => {
       setTier("haiku", 0.99, 0);
       return (await turn(hooks, $, "t2", "2+2")).sent.model;
     };
-    // 3k output at 8k context: pays on the five-minute cache (break-even
-    // ~10k), not on the hour's (~6k).
-    assert.equal(await at("5m", 8_000), "claude-haiku-4-5");
-    assert.equal(await at(undefined, 8_000), "claude-fable-5-1");
+    // The output is taken as the last turn's or 1.5k, whichever is smaller, so
+    // 1.5k at 4k context: pays on the five-minute cache (break-even ~5k), not on the hour's (~3k).
+    assert.equal(await at("5m", 4_000), "claude-haiku-4-5");
+    assert.equal(await at(undefined, 4_000), "claude-fable-5-1");
   });
 
   test("/jev shows the context and the break-even, and the session's dollars", async () => {
@@ -1476,7 +1488,7 @@ describe("register: a downgrade priced against the context", () => {
     const status = await run(hooks, $, "");
     assert.match(status.text, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
     assert.match(status.text, /spent\s+\$0\.\d+ this session/);
-    assert.match(status.text, /3k out {2}\$0\.\d+/);
+    assert.match(status.text, /answered by claude-fable-5-1 ✓ · \$0\.\d+ · 10k in, 90% cached · 3k out/);
   });
 
   test("a compaction forgets what was running, so the next turn starts from Jev", async () => {
@@ -1540,7 +1552,7 @@ describe("register: the ceiling subcommand", () => {
     setTier("fable", 0.9, 3);
     const t = await turn(hooks, $, "c0");
     assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /capped:xhigh/);
+    assert.match(t.text, /capped from xhigh/);
     assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
   });
 
@@ -1626,9 +1638,9 @@ describe("register: a conversation's first request", () => {
     setTier("fable", 0.9, 1);
     const first = await turn(hooks, $, "f1");
     assert.equal(first.sent.effort, "high");
-    assert.match(first.text, /`fable` · high · 90% · \d+ms/);
+    assert.match(first.text, /fable · high effort · Jev 90% sure · medium runs as high on a first request · \d+ms/);
     const status = await hooks.get('command.run:{"command":"jev"}')!($, { args: "" });
-    assert.match(status.text, /fable·high 0\.90/);
+    assert.match(status.text, /fable·high  Jev 90% sure; medium runs as high on a first request/);
   });
 
   test("the turn after starts from the medium Jev asked for", async () => {
@@ -1651,7 +1663,7 @@ describe("register: a conversation's first request", () => {
     setTier("fable", 0.9, 1);
     const t = await turn(hooks, $, "f4");
     assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /`fable` · medium/);
+    assert.match(t.text, /fable · medium effort/);
   });
 
   test("a compaction makes the next request a first one again", async () => {
@@ -1689,5 +1701,222 @@ describe("register: a conversation's first request", () => {
     };
     assert.equal(await step("a1"), "high");
     assert.equal(await step("a2"), "medium");
+  });
+});
+
+describe("register: one summary per reply", () => {
+  const started = async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const notice =
+    '<task-notification><task-id>abc</task-id><summary>Agent "reviewer" completed</summary></task-notification>';
+
+  async function turn(
+    hooks: Map<string, Function>,
+    $: unknown,
+    id: string,
+    text: string,
+    stopReason = "end_turn",
+  ) {
+    await hooks.get("turn.start")!($, { text, turnId: id }, async (e: unknown) => e);
+    const chunks = await collect(
+      hooks.get("turn.step")!($, { turnId: id, index: 0 }, (e: { model: string }) =>
+        answeredBy(e.model, stopReason),
+      ),
+    );
+    return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+  }
+
+  test("a reply that spawned background work gets its summary when the work is done, once", async () => {
+    const { hooks, $, setAgentStatus } = await started();
+    setAgentStatus("running");
+    const first = await turn(hooks, $, "r1", "review everything");
+    assert.doesNotMatch(first, /Model  /, "an agent is still running, so the reply is not over");
+    setAgentStatus("completed");
+    const woken = await turn(hooks, $, "r2", notice);
+    assert.match(woken, /Model  2 turns: opus·medium ✓, opus·medium ✓ \(1 woken by finished tasks\)/);
+    assert.match(woken, /Cost   \$/);
+    assert.equal(woken.match(/Model  /g)?.length, 1);
+    // The summary was written; the next typed prompt starts a new reply.
+    const next = await turn(hooks, $, "r3", "and now this");
+    assert.match(next, /Model  answered by claude-opus-5-5 ✓/);
+    assert.doesNotMatch(next, /2 turns/);
+  });
+
+  test("a compaction mid-turn is not the end of the reply", async () => {
+    const { hooks, $ } = await started();
+    const mid = await turn(hooks, $, "c1", "long task", "compaction");
+    assert.doesNotMatch(mid, /Model  /);
+  });
+
+  test("the engine's nudge continues the last decision without asking Jev, and writes nothing", async () => {
+    const { hooks, $, setTier, fetches } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "n1", "plan the migration");
+    const asked = fetches();
+    setTier("haiku", 1, 0);
+    let sent: { model?: string; effort?: string } = {};
+    await hooks.get("turn.start")!(
+      $,
+      {
+        text: "The user hasn't heard from you in a while — say in a few words what you're doing, then continue.",
+        turnId: "n2",
+      },
+      async (e: unknown) => e,
+    );
+    const chunks = await collect(
+      hooks.get("turn.step")!($, { turnId: "n2", index: 0 }, (e: { model: string; effort: string }) => {
+        sent = e;
+        return answeredBy(e.model);
+      }),
+    );
+    assert.equal(fetches(), asked, "Jev is not asked about the nudge");
+    assert.equal(sent.model, "claude-fable-5-1", "continues on the last decision");
+    assert.equal(sent.effort, "medium");
+    assert.equal(
+      chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""),
+      "reply",
+      "no line, no summary: the engine prodded, the person did not ask",
+    );
+    const status = await hooks.get('command.run:{"command":"jev"}')!($, { args: "" });
+    assert.match(status.text, /\[nudged by the engine, continuing\]/);
+  });
+
+  test("a nudge with nothing to continue leaves the session model alone, and Jev unasked", async () => {
+    const { hooks, $, fetches } = await started();
+    const nudged = await turn(hooks, $, "n3", "The user hasn't heard from you in a while — say what you're doing.");
+    assert.equal(fetches(), 0);
+    assert.equal(nudged, "reply");
+  });
+
+  test("a nudge inside a reply that is still open is counted in its summary", async () => {
+    const { hooks, $, setTier, setAgentStatus } = await started();
+    setAgentStatus("running");
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "o1", "review everything");
+    await turn(hooks, $, "o2", "The user hasn't heard from you in a while — say what you're doing, then continue.");
+    setAgentStatus("completed");
+    const woken = await turn(hooks, $, "o3", notice);
+    assert.match(woken, /Model  3 turns: fable·medium ✓, fable·medium ✓, fable·medium ✓ \(1 woken by finished tasks, 1 nudged by the engine\)/);
+  });
+});
+
+describe("register: a session that was already running", () => {
+  const started = async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string, text = "implement it") {
+    await hooks.get("turn.start")!($, { text, turnId: id }, async (e: unknown) => e);
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!($, { turnId: id, index: 0 }, (e: { model: string; effort: string }) => {
+        sent = e;
+        return answeredBy(e.model);
+      }),
+    );
+    return { sent, text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join("") };
+  }
+
+  test("a resumed session's first routed turn is priced against the session model's warm cache", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(200_000);
+    await hooks.get("classic.SessionStart")!(
+      $,
+      { source: "resume", model: "claude-opus-5", context_tokens: 200_000, prompt_cache_likely_expired: false },
+      async (e: unknown) => e,
+    );
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "s1", "what is 2+2");
+    assert.equal(t.sent.model, "claude-opus-5", "stays on the model with the warm cache");
+    assert.match(t.text, /stayed on opus: haiku would cost \$/);
+  });
+
+  test("the same rung on the ladder's own model is a switch too, and priced", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(200_000);
+    await hooks.get("classic.SessionStart")!(
+      $,
+      { source: "resume", model: "claude-opus-5", context_tokens: 200_000, prompt_cache_likely_expired: false },
+      async (e: unknown) => e,
+    );
+    setTier("opus", 0.99, 1);
+    const t = await turn(hooks, $, "s2");
+    assert.equal(t.sent.model, "claude-opus-5");
+    assert.match(t.text, /stayed on claude-opus-5: claude-opus-5-5 would cost \$/);
+    assert.match((await run(hooks, $, "")).text, /session\s+claude-opus-5-5, running on opus/);
+  });
+
+  test("an expired cache on resume is nothing to protect", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setContext(200_000);
+    await hooks.get("classic.SessionStart")!(
+      $,
+      { source: "resume", model: "claude-opus-5", context_tokens: 200_000, prompt_cache_likely_expired: true },
+      async (e: unknown) => e,
+    );
+    setTier("haiku", 0.99, 0);
+    // Nothing seeded by the event; the turn itself seeds from the session
+    // model since the engine reports context, and that model's cache is
+    // assumed warm — the conservative side (a hold costs cents, a detour dollars).
+    const t = await turn(hooks, $, "s3", "what is 2+2");
+    assert.equal(t.sent.model, "claude-opus-5-5");
+  });
+
+  test("/jev on after a stretch off prices the first routed turn against the session model", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });
+    kit.setSessionModel("claude-opus-5");
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const { hooks, $, setTier, setContext } = kit;
+    await run(hooks, $, "off");
+    setContext(150_000);
+    await run(hooks, $, "on");
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "s4", "what is 2+2");
+    assert.equal(t.sent.model, "claude-opus-5");
+    assert.match(t.text, /stayed on opus: haiku would cost/);
+  });
+
+  test("/model mid-session moves what the next routed turn is priced against", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "m1", "plan it");
+    await hooks.get("classic.PostModelSwitch")!(
+      $,
+      { from_model: "claude-opus-5-5", to_model: "claude-sonnet-5", source: "user" },
+      async (e: unknown) => e,
+    );
+    setContext(150_000);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "m2", "what is 2+2");
+    assert.equal(t.sent.model, "claude-sonnet-5", "the new session model's cache is what is warm");
+    assert.match((await run(hooks, $, "")).text, /session\s+claude-sonnet-5, still on it/);
+  });
+
+  test("/clear forgets what was running", async () => {
+    const { hooks, $, setTier, setContext } = await started();
+    setTier("fable", 0.9, 3);
+    await turn(hooks, $, "s5", "plan it");
+    await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
+    setContext(null);
+    setTier("haiku", 0.99, 0);
+    const t = await turn(hooks, $, "s6", "2+2");
+    assert.equal(t.sent.model, "claude-haiku-4-5", "nothing to hold to");
+  });
+
+  test("what the session spends is counted while routing is off", async () => {
+    const { hooks, $ } = await started();
+    await run(hooks, $, "off");
+    await collect(
+      hooks.get("turn.step")!($, { turnId: "s7", index: 0 }, () => answeredBy("claude-opus-5-5")),
+    );
+    await run(hooks, $, "on");
+    assert.match((await run(hooks, $, "")).text, /spent\s+\$0\.\d+ this session/);
   });
 });

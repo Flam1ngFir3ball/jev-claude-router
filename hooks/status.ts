@@ -1,7 +1,12 @@
 /**
- * What `/jev` prints. This is the router's only guaranteed-visible surface:
- * a command's output row draws on every surface, where a footer label may
- * not, so anything you need to be sure of belongs here.
+ * What `/jev` prints, the line at the top of a reply, and the summary under
+ * it. `/jev` is the router's only guaranteed-visible surface: a command's
+ * output row draws on every surface, where a footer label may not, so
+ * anything you need to be sure of belongs here.
+ *
+ * Everything shown to the person is in plain words. `held:haiku·$4.41>$0.125`
+ * was exact and unreadable; "stayed on fable: haiku would cost $4.41 vs
+ * $0.13" says the same thing to someone who has never opened this file.
  */
 
 import type { JevResult } from "./jev.ts";
@@ -29,6 +34,8 @@ import {
 import {
   breakEvenTokens,
   isDowngrade,
+  PRICE,
+  priceOfModel,
   switchVerdict,
   usageCost,
   usd,
@@ -69,9 +76,11 @@ export type Attempt = {
    * its model was settled at `agent.spawn`, and its steps carry that. Without
    * this, one prompt that spawned three reviewers read as one reply that
    * changed model three times. `continue`: a bare go-ahead ("yes"), which
-   * ran on the previous turn's decision without asking Jev.
+   * ran on the previous turn's decision without asking Jev. `nudge`: the
+   * engine's own "say what you are doing, then continue", the same way, and
+   * announced nowhere but here.
    */
-  kind?: "notify" | "agent" | "continue";
+  kind?: "notify" | "agent" | "continue" | "nudge";
   /** For `kind: 'agent'`: which subagent, as `$.agent.list()` describes it. */
   agent?: AgentTag;
 } & ({ decision: Decision } | { skipped: string });
@@ -87,40 +96,54 @@ export type AgentTag = {
   label: string;
 };
 
+/** Percent, rounded, for a confidence. */
+const pct = (n: number) => `${Math.round(n * 100)}%`;
+
 /**
- * The tags for a turn that did not run exactly as Jev asked: held on its
- * previous tier (`held:haiku`, with the two prices when it was the price
- * that held it: `held:haiku·$0.47>$0.06`), held on its previous Sonnet
- * effort (`held-effort:low`), forced to a tier the prompt named (`forced`),
- * and/or capped at the tier's ceiling (`capped:xhigh`). Stacked when more
- * than one applies.
+ * Why a turn did not run exactly as Jev asked, in plain words: held on its
+ * previous tier for doubt or for price, held on its previous Sonnet effort,
+ * forced to a tier the prompt named, capped at the ceiling, or sent the
+ * effort a first request runs. Empty when it ran as asked.
  */
-export function heldMark(attempt: Attempt): string | null {
-  if (!("decision" in attempt)) return null;
-  const { held, heldCost, heldEffort, forced, cappedEffort } =
-    attempt.decision;
-  const tags: string[] = [];
-  if (held !== undefined) {
-    tags.push(
-      heldCost === undefined
-        ? `held:${held}`
-        : `held:${held}·${usd(heldCost.go)}>${usd(heldCost.stay)}`,
+export function reasonsOf(attempt: Attempt): string[] {
+  if (!("decision" in attempt)) return [];
+  const d = attempt.decision;
+  const out: string[] = [];
+  if (d.held !== undefined) {
+    // Same rung, different model: a session model off the ladder.
+    const wanted =
+      d.heldModel !== undefined && d.held === d.tier ? d.heldModel : d.held;
+    const kept = d.held === d.tier ? d.model : d.tier;
+    out.push(
+      d.heldCost !== undefined
+        ? `stayed on ${kept}: ${wanted} would cost ${usd(d.heldCost.go)} vs ${usd(d.heldCost.stay)}`
+        : `stayed on ${kept}: Jev wanted ${wanted}, only ${pct(d.confidence)} sure`,
     );
   }
-  if (heldEffort !== undefined) tags.push(`held-effort:${heldEffort}`);
-  if (forced) tags.push("forced");
-  if (cappedEffort !== undefined) tags.push(`capped:${cappedEffort}`);
-  return tags.length > 0 ? tags.join(" · ") : null;
+  if (d.heldEffort !== undefined) {
+    out.push(
+      `kept ${d.effort} effort: Jev wanted ${d.heldEffort}, only ${pct(d.effortConfidence ?? 0)} sure, and a change re-caches on Sonnet`,
+    );
+  }
+  if (d.forced) out.push("as you asked");
+  // A first request that runs the capped effort as the one Jev wanted has
+  // not been capped in any way that matters.
+  if (d.cappedEffort !== undefined && d.cappedEffort !== d.effort)
+    out.push(`capped from ${d.cappedEffort}`);
+  if (d.askedEffort !== undefined)
+    out.push(`${d.askedEffort} runs as ${d.effort} on a first request`);
+  return out;
 }
 
-/** The short tag for a turn nobody typed: `notify`, `agent:Explore`, `agent`, `continue`. */
-export function kindMark(
+/** What started a turn nobody typed, in plain words; null for a typed prompt. */
+export function originOf(
   attempt: Pick<Attempt, "kind" | "agent">,
 ): string | null {
-  if (attempt.kind === "notify") return "notify";
-  if (attempt.kind === "continue") return "continue";
+  if (attempt.kind === "notify") return "woken by a finished task";
+  if (attempt.kind === "continue") return "continuing without asking Jev";
+  if (attempt.kind === "nudge") return "nudged by the engine, continuing";
   if (attempt.kind === "agent")
-    return attempt.agent?.type ? `agent:${attempt.agent.type}` : "agent";
+    return attempt.agent?.type ? `${attempt.agent.type} agent` : "agent";
   return null;
 }
 
@@ -170,10 +193,7 @@ export function addUsage(
  * this is the cost-relevant measure, since reads bill at a tenth.
  */
 export function cacheRatio(usage: Usage): number {
-  const carried =
-    usage.input_tokens +
-    usage.cache_read_input_tokens +
-    usage.cache_creation_input_tokens;
+  const carried = carriedOf(usage);
   return carried === 0 ? 0 : usage.cache_read_input_tokens / carried;
 }
 
@@ -199,6 +219,10 @@ export type Status = {
   ttl: Ttl;
   /** The context size the next turn would carry, or null before the first reply. */
   contextTokens: number | null;
+  /** The main loop's model as `/model` shows it, or null when unknown. */
+  sessionModel: string | null;
+  /** What the main loop is running on, as the router last saw it; null when nothing yet. */
+  running: Decision | null;
   offered: readonly Tier[];
   excluded: readonly Tier[];
   announce: boolean;
@@ -277,20 +301,29 @@ export function attemptOf(
     const running = hold.running;
     const downgrade =
       running !== null && isDowngrade(running.tier, decision.tier);
+    // The same rung on a different model — a session on `claude-opus-5`
+    // that Jev keeps on opus — is a switch to a cold cache too, and priced
+    // like a downgrade; there is no doubt to weigh, Jev agreed on the tier.
+    const lateral =
+      running !== null &&
+      running.tier === decision.tier &&
+      running.model !== decision.model;
     const verdict =
-      downgrade && hold.economics !== undefined
+      (downgrade || lateral) && running !== null && hold.economics !== undefined
         ? switchVerdict(
             running.tier,
             decision.tier,
             hold.economics.contextTokens,
             hold.economics.outputTokens,
             hold.economics.ttl,
+            priceOfModel(running.model) ?? PRICE[running.tier],
           )
         : null;
     // An upgrade writes the whole context to the dearer tier; past 100k it
-    // has to be surer than the bar. A downgrade is priced instead.
-    const bar =
-      !downgrade && hold.economics !== undefined
+    // has to be surer than the bar.
+    const bar = lateral
+      ? 0
+      : !downgrade && hold.economics !== undefined
         ? upgradeBar(hold.sticky, hold.economics.contextTokens)
         : hold.sticky;
     decision = stickyDecision(decision, running, bar, verdict);
@@ -347,7 +380,7 @@ export function continuationSkipped(text: string): Attempt {
     prompt: text,
     ms: 0,
     kind: "continue",
-    skipped: "go-ahead with nothing to continue; left on session model",
+    skipped: "nothing to continue, so the session model answers",
   };
 }
 
@@ -380,7 +413,7 @@ export function spawnAttemptOf(
     return {
       ...head,
       ms: result.ms,
-      skipped: `${fresh.tier} at ${fresh.confidence.toFixed(2)}, under the ${SUBAGENT_CONFIDENCE} bar; left on its own model`,
+      skipped: `Jev said ${fresh.tier} but was only ${pct(fresh.confidence)} sure (under ${pct(SUBAGENT_CONFIDENCE)}), so it keeps its own model`,
     };
   }
   return { ...head, ms: result.ms, decision: capTo(decision, ceiling) };
@@ -394,114 +427,176 @@ function shorten(text: string, width = 44): string {
   return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
 }
 
+/** `Jev 57% sure`, or `Jev only 24% sure` under the mark; empty when Jev was not asked. */
+function sureOf(d: Decision): string {
+  if (d.forced && d.confidence === 0) return "";
+  return `Jev ${d.confidence < LOW_CONFIDENCE ? "only " : ""}${pct(d.confidence)} sure`;
+}
+
 function attemptLine(attempt: Attempt): string {
   const when = `${String(attempt.ms).padStart(4)}ms`;
-  const mark = kindMark(attempt);
-  const what = `${mark ? `[${mark}] ` : ""}${shorten(attempt.prompt)}`;
+  const origin = originOf(attempt);
+  const what = `${origin ? `[${origin}] ` : ""}${shorten(attempt.prompt)}`;
   if ("skipped" in attempt) {
     // A subagent's row names the agent first, then why: "under the bar"
     // and "Jev timed out" are different stories.
     return attempt.kind === "agent"
-      ? `  ${when}  unrouted — ${what} · ${attempt.skipped}`
-      : `  ${when}  unrouted — ${attempt.skipped}`;
+      ? `  ${when}  not routed — ${what} · ${attempt.skipped}`
+      : `  ${when}  not routed — ${attempt.skipped}`;
   }
-  const { tier, effort, confidence } = attempt.decision;
-  // A held turn is low-confidence by construction, so saying both is noise;
-  // the hold is the more useful of the two.
-  const held = heldMark(attempt);
-  const doubt = held ?? (confidence < LOW_CONFIDENCE ? "(low confidence)" : "");
-  return `  ${when}  ${tier}·${effort} ${confidence.toFixed(2)}${doubt ? ` ${doubt}` : ""}  ${what}`;
+  const d = attempt.decision;
+  // A held turn's reason carries the confidence; saying it twice is noise.
+  const notes = [
+    ...(d.held === undefined ? [sureOf(d)] : []),
+    ...reasonsOf(attempt),
+  ].filter((n) => n !== "");
+  return `  ${when}  ${d.tier}·${d.effort}  ${notes.join("; ")}  ${what}`;
 }
 
-/** Thousands, rounded, for token counts: 130k, 2k, 0k. */
+/** Thousands or millions, rounded, for token counts: 130k, 2k, 3.3M. */
 function kOf(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   return `${Math.round(n / 1000)}k`;
 }
 
-/** `cache 83% · 214k in · 2k out · $0.14`, the dollars when the model has a price. */
-function costOf(attempt: Attempt, sep: string): string {
+/**
+ * `answered by claude-fable-5-1 ✓`: the model the API says answered, and
+ * whether it is the one the router asked for. A dated id
+ * (`claude-opus-5-20260901`) still confirms `claude-opus-5`. A different
+ * model is the one case worth looking at, and is spelled out.
+ */
+function answeredBy(attempt: Attempt): string {
   const usage = attempt.usage!;
-  const parts = [
-    `cache ${Math.round(cacheRatio(usage) * 100)}%`,
-    `${kOf(carriedOf(usage))} in`,
+  if (!("decision" in attempt)) return `answered by ${usage.model}`;
+  const asked = attempt.decision.model;
+  const matches = usage.model === asked || usage.model.startsWith(`${asked}-`);
+  return matches
+    ? `answered by ${usage.model} ✓`
+    : `answered by ${usage.model} — asked for ${asked}`;
+}
+
+/** `$0.50 · 47k in, 49% cached · 0k out`. */
+function costPhrase(usage: Usage, cost: number | undefined): string {
+  const parts = [];
+  if (cost !== undefined) parts.push(usd(cost));
+  parts.push(
+    `${kOf(carriedOf(usage))} in, ${Math.round(cacheRatio(usage) * 100)}% cached`,
     `${kOf(usage.output_tokens)} out`,
-  ];
-  if (attempt.cost !== undefined) parts.push(usd(attempt.cost));
-  return parts.join(sep);
+  );
+  return parts.join(" · ");
 }
 
 /**
- * The line under a turn saying what the API reports actually answered, and
- * what the requests carried. This is the intrinsic check: the route line is
- * what we asked for; this is what we got.
- *
- * A dated id (`claude-opus-5-20260901`) still confirms `claude-opus-5`. A
- * different model is marked `≠`, which is the one case worth looking at.
+ * The line under a turn in /jev saying what the API reports actually
+ * answered, and what the requests carried. This is the intrinsic check: the
+ * route line is what we asked for; this is what we got.
  */
 function usageLine(attempt: Attempt): string | null {
-  const usage = attempt.usage;
-  if (!usage) return null;
-
-  let verdict = "";
-  if ("decision" in attempt) {
-    const asked = attempt.decision.model;
-    const matches =
-      usage.model === asked || usage.model.startsWith(`${asked}-`);
-    verdict = matches ? " ✓" : ` ≠ ${asked}`;
-  }
-
-  return `          answered ${usage.model}${verdict}  ${costOf(attempt, "  ")}`;
+  if (!attempt.usage) return null;
+  return `          ${answeredBy(attempt)} · ${costPhrase(attempt.usage, attempt.cost)}`;
 }
 
 /**
- * The footer put at the end of a completed reply: what was asked for, and
- * what the API says answered.
+ * The summary under a finished reply: one block for everything the reply
+ * took, however many turns it spanned. A reply that spawns background work
+ * is several turns — the one you typed, then one per task that finished and
+ * woke the loop — and a block under each read as one reply changing model
+ * three times. So the turns are gathered and written once, at the end.
  *
- * It goes at the end because `usage` only exists once the response is whole —
- * the stop chunk carries it. The route line at the top of the reply is the
- * immediate signal; this is the settled one.
- *
- * Fenced, because markdown collapses leading whitespace and joins consecutive
- * lines into one paragraph: unfenced, the rule and the two lines would render
- * as a single run-on. A fence keeps the alignment and reads as data, not prose.
+ * Fenced, because markdown collapses leading whitespace and joins
+ * consecutive lines into one paragraph: unfenced, the rule and the rows
+ * would render as a single run-on. A fence keeps the alignment and reads as
+ * data, not prose.
  */
-export function usageFooter(attempt: Attempt): string | null {
-  const usage = attempt.usage;
-  if (!usage) return null;
+export function replySummary(turns: readonly Attempt[]): string | null {
+  const main = turns.filter((t) => t.kind !== "agent");
+  const agents = turns.filter((t) => t.kind === "agent");
+  const priced = turns.filter((t) => t.usage !== undefined);
+  if (main.length === 0 || priced.length === 0) return null;
 
-  const cost = costOf(attempt, " · ");
+  const rows: string[] = [];
 
-  let jev: string;
-  let api: string;
-
-  if ("decision" in attempt) {
-    const { tier, effort, confidence, model: asked } = attempt.decision;
-    const matches =
-      usage.model === asked || usage.model.startsWith(`${asked}-`);
-    const tags = [heldMark(attempt), kindMark(attempt)].filter(
-      (t) => t !== null,
-    );
-    jev =
-      `${tier}·${effort} · ${Math.round(confidence * 100)}%` +
-      `${tags.map((t) => ` · ${t}`).join("")} · ${attempt.ms}ms`;
-    api = `${usage.model}${matches ? " ✓" : ` ≠ ${asked}`} · ${cost}`;
+  // Model: what answered.
+  if (main.length === 1) {
+    const only = main[0]!;
+    if ("decision" in only) {
+      const d = only.decision;
+      const who = only.usage ? answeredBy(only) : `${d.model}`;
+      const how = [sureOf(d), `${only.ms}ms`].filter((s) => s !== "").join(", ");
+      rows.push(`Model  ${who} at ${d.effort} effort · ${how}`);
+    } else {
+      rows.push(
+        `Model  ${only.usage ? answeredBy(only) : "the session model"} · not routed: ${only.skipped}`,
+      );
+    }
   } else {
-    jev = `unrouted — ${attempt.skipped}`;
-    api = `${usage.model} · ${cost}`;
+    const legs = main.map((t) =>
+      "decision" in t
+        ? `${t.decision.tier}·${t.decision.effort}${t.usage ? (answeredBy(t).endsWith("✓") ? " ✓" : " !") : ""}`
+        : "session model",
+    );
+    const woken = main.filter((t) => t.kind === "notify").length;
+    const nudged = main.filter((t) => t.kind === "nudge").length;
+    const because = [
+      ...(woken > 0 ? [`${woken} woken by finished tasks`] : []),
+      ...(nudged > 0 ? [`${nudged} nudged by the engine`] : []),
+    ];
+    rows.push(
+      `Model  ${main.length} turns: ${legs.join(", ")}` +
+        (because.length > 0 ? ` (${because.join(", ")})` : ""),
+    );
   }
 
-  const rows = [`jev  ${jev}`, `api  ${api}`];
+  // Agents: what they ran on and cost.
+  if (agents.length > 0) {
+    const legs = agents.map((a) => {
+      const name = a.agent?.type ?? "agent";
+      const on =
+        "decision" in a ? a.decision.tier : `its own model`;
+      return `${name} on ${on}${a.cost !== undefined ? ` (${usd(a.cost)})` : ""}`;
+    });
+    rows.push(`Agents ${legs.join(", ")}`);
+  }
+
+  // Cost: the whole reply.
+  const sum = priced.reduce(
+    (acc, t) => {
+      const u = t.usage!;
+      acc.input += u.input_tokens;
+      acc.read += u.cache_read_input_tokens;
+      acc.write += u.cache_creation_input_tokens;
+      acc.output += u.output_tokens;
+      if (t.cost !== undefined) acc.cost += t.cost;
+      else acc.unpriced = true;
+      return acc;
+    },
+    { input: 0, read: 0, write: 0, output: 0, cost: 0, unpriced: false },
+  );
+  const carried = sum.input + sum.read + sum.write;
+  const cached = carried === 0 ? 0 : Math.round((100 * sum.read) / carried);
+  rows.push(
+    `Cost   ${sum.unpriced ? "" : `${usd(sum.cost)} · `}${kOf(carried)} in, ${cached}% cached · ${kOf(sum.output)} out`,
+  );
+
+  // Notes: anything that did not run exactly as Jev asked.
+  const notes: string[] = [];
+  main.forEach((t, i) => {
+    const why = reasonsOf(t).filter((r) => r !== "as you asked");
+    const origin =
+      t.kind === "continue" || t.kind === "nudge" ? originOf(t) : null;
+    const all = [...why, ...(origin ? [origin] : [])];
+    if (all.length === 0) return;
+    notes.push(`${main.length > 1 ? `turn ${i + 1}: ` : ""}${all.join("; ")}`);
+  });
+  for (const note of notes) rows.push(`Note   ${note}`);
+
   // Count code points: the separators and check marks are multi-byte, and a
   // rule measured in UTF-16 units would overshoot the text it sits above.
   const width = Math.max(...rows.map((r) => [...r].length));
   return ["```", "─".repeat(width), ...rows, "```"].join("\n");
 }
 
-/**
- * `medium for all`, or `medium (opus: xhigh, fable: xhigh)`: the effort most
- * tiers share, then the exceptions in ladder order. A tie goes to the lower
- * tier's effort, so the line reads from the bottom of the ladder up.
- */
+/** `medium for all`, or `medium (opus: xhigh, fable: xhigh)`. */
 export function ceilingLine(ceiling: Ceiling): string {
   const counts = new Map<string, number>();
   for (const tier of TIERS)
@@ -546,12 +641,13 @@ export function statusReport(status: Status): string {
     `  sticky    ${
       status.sticky === null
         ? "off (JEV_ROUTER_STICKY=0)"
-        : `on, switch needs ${Math.round(status.sticky * 100)}% ` +
-          `(${Math.round(upgradeBar(status.sticky, UPGRADE_CONTEXT_TOKENS) * 100)}% up past ` +
+        : `on, switch needs ${pct(status.sticky)} ` +
+          `(${pct(upgradeBar(status.sticky, UPGRADE_CONTEXT_TOKENS))} up past ` +
           `${kOf(UPGRADE_CONTEXT_TOKENS)}), and a downgrade has to pay`
     }`,
   );
   lines.push(`  ceiling   ${ceilingLine(status.ceiling)}`);
+  lines.push(`  session   ${sessionLine(status)}`);
   lines.push(`  cache     ${cacheLine(status)}`);
   lines.push(`  tiers     ${status.offered.join(", ")}`);
   lines.push(
@@ -578,6 +674,15 @@ export function statusReport(status: Status): string {
   return lines.join("\n");
 }
 
+/** `claude-opus-5, running on fable` — the session's model and what is warm. */
+function sessionLine(status: Status): string {
+  const model = status.sessionModel ?? "unknown";
+  if (status.running === null) return `${model}, nothing routed yet`;
+  return status.running.model === model
+    ? `${model}, still on it`
+    : `${model}, running on ${status.running.tier}`;
+}
+
 /**
  * `1h writes · 201k context · fable→haiku pays below 6k`: which cache the
  * session writes, what the next turn carries, and where the cheapest
@@ -587,12 +692,16 @@ function cacheLine(status: Status): string {
   const parts = [`${status.ttl} writes`];
   if (status.contextTokens === null) return `${parts[0]} · no context yet`;
   parts.push(`${kOf(status.contextTokens)} context`);
-  const running = status.attempts.find((a) => "decision" in a);
-  if (running !== undefined && "decision" in running) {
-    const from = running.decision.tier;
+  const running = status.running;
+  if (running !== null) {
+    const from = running.tier;
     const to = TIERS.find((t) => isDowngrade(from, t));
     if (to !== undefined) {
-      const out = running.usage?.output_tokens ?? TYPICAL_OUTPUT_TOKENS;
+      const last = status.attempts.find((a) => "decision" in a && a.usage);
+      const out = Math.min(
+        last?.usage?.output_tokens ?? TYPICAL_OUTPUT_TOKENS,
+        TYPICAL_OUTPUT_TOKENS,
+      );
       const be = breakEvenTokens(from, to, out, status.ttl);
       parts.push(
         be === 0
@@ -616,24 +725,27 @@ export function toggleReply(enabled: boolean): string {
  *
  * Markdown, because the line rides in the reply's own text and that is what
  * the transcript renders. A blockquote sets it off from prose with a rail
- * and dimmer text; the tier is inline code, which the theme colours. Neither
- * a render hook nor `$.ui.log` drew anything in the desktop app, so this is
- * the styling that is actually available.
+ * and dimmer text. Neither a render hook nor `$.ui.log` drew anything in the
+ * desktop app, so this is the styling that is actually available.
+ *
+ *   > ✳️ fable · xhigh effort · Jev 57% sure · 324ms
+ *   > ✳️ fable · low effort · stayed on fable: haiku would cost $1.02 vs $0.02 · 352ms
+ *   > ⚠️ not routed · typesafe said HTTP 401 · the session model answers
  */
 export function liveLine(attempt: Attempt): string {
   if ("skipped" in attempt) {
-    return `> ⚠️ \`unrouted\` · ${attempt.skipped}`;
+    return `> ⚠️ not routed · ${attempt.skipped} · the session model answers`;
   }
-
-  const { tier, effort, confidence } = attempt.decision;
-  const held = heldMark(attempt);
-  const doubt = held === null && confidence < LOW_CONFIDENCE ? "?" : "";
-  const pct = Math.round(confidence * 100);
-  const tags = [held, kindMark(attempt)].filter((t) => t !== null);
-  return (
-    `> ✳️ \`${tier}\` · ${effort} · ${pct}${"%"}${doubt}` +
-    `${tags.map((t) => ` · ${t}`).join("")} · ${attempt.ms}ms`
-  );
+  const d = attempt.decision;
+  const parts = [
+    d.tier,
+    `${d.effort} effort`,
+    ...(d.held === undefined ? [sureOf(d)] : []),
+    ...reasonsOf(attempt),
+    ...(originOf(attempt) ? [originOf(attempt)!] : []),
+    `${attempt.ms}ms`,
+  ].filter((p) => p !== "");
+  return `> ✳️ ${parts.join(" · ")}`;
 }
 
 /**
@@ -645,7 +757,7 @@ export function liveLine(attempt: Attempt): string {
 export const REPLY_SEPARATOR = "\n\n---\n\n";
 
 /**
- * What sits between the reply's last text and the footer. A blank line, so
+ * What sits between the reply's last text and the summary. A blank line, so
  * the fence opens a block of its own instead of joining the last paragraph.
  */
 export const FOOTER_SEPARATOR = "\n\n";
@@ -700,7 +812,7 @@ export function stickyCommand(
 
 function stuckAt(bar: number): string {
   return (
-    `Holding the tier until Jev is ${Math.round(bar * 100)}% sure of a switch, ` +
+    `Holding the tier until Jev is ${pct(bar)} sure of a switch, ` +
     "and holding a downgrade that costs more than it saves. " +
     "/jev sticky off to switch freely."
   );
@@ -750,7 +862,7 @@ export function ceilingCommand(
 function ceilingReply(ceiling: Ceiling): string {
   return (
     `Effort ceiling: ${ceilingLine(ceiling)}. Jev's pick above it is capped ` +
-    "and tagged capped:<what it wanted>. /jev ceiling xhigh raises every " +
+    "and the line says what it wanted. /jev ceiling xhigh raises every " +
     "tier, /jev ceiling xhigh fable one, /jev ceiling off lifts them."
   );
 }

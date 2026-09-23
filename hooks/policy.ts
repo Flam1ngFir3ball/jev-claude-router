@@ -6,7 +6,7 @@
  * `node` in tests.
  */
 
-import type { SwitchVerdict } from "./pricing.ts";
+import { tierOfModel, type SwitchVerdict } from "./pricing.ts";
 
 export type Tier = "haiku" | "sonnet" | "opus" | "fable";
 
@@ -34,6 +34,13 @@ export type Decision = {
    * from a router that is not running.
    */
   held?: Tier;
+  /**
+   * The model Jev's tier would have run on, when held. Usually implied by
+   * `held`; it differs when the session runs a model off the ladder
+   * (`claude-opus-5`) and Jev named the same tier (`claude-opus-5-5`): the
+   * same rung, a different cache.
+   */
+  heldModel?: string;
   /**
    * The two prices a held downgrade was decided between, when it was the
    * cost of the switch and not Jev's doubt that held it. Absent otherwise.
@@ -317,7 +324,9 @@ export function stickyDecision(
   verdict: SwitchVerdict | null = null,
 ): Decision {
   if (previous === null) return fresh;
-  if (fresh.tier === previous.tier) return fresh;
+  // The model, not the tier: a session on `claude-opus-5` that Jev keeps on
+  // opus is still a switch, to `claude-opus-5-5` and a cold cache.
+  if (fresh.model === previous.model) return fresh;
   const shaky = fresh.confidence < threshold;
   const unprofitable = verdict !== null && verdict.hold;
   if (!shaky && !unprofitable) return fresh;
@@ -333,10 +342,35 @@ export function stickyDecision(
       ? { probabilities: fresh.probabilities }
       : {}),
     held: fresh.tier,
+    heldModel: fresh.model,
     ...(unprofitable
       ? { heldCost: { stay: verdict.stay, go: verdict.go } }
       : {}),
   };
+}
+
+/**
+ * The decision a session is already running on, for the turns the router
+ * did not route: a resumed session, `/jev on` after a stretch off, a plugin
+ * loaded into a live session. Its cache is what the first routed turn's
+ * switch is priced against. Null for a model off the ladder.
+ */
+export function sessionDecision(model: string): Decision | null {
+  const tier = tierOfModel(model);
+  if (tier === null) return null;
+  return { tier, model, effort: "medium", confidence: 1 };
+}
+
+/**
+ * A turn the engine started, not the person: its "say what you are doing,
+ * then continue" nudge when a turn has run long without a reply. Jev would
+ * grade the nudge's text (opus at 46%, measured 2026-09-23) and move the
+ * model under a task that is mid-flight; the turn continues instead.
+ */
+const NUDGE = /^\s*The user hasn't heard from you in a while/i;
+
+export function isEngineNudge(text: string): boolean {
+  return NUDGE.test(text);
 }
 
 /**

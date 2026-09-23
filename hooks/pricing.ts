@@ -64,6 +64,20 @@ export function priceOfModel(model: string): Price | null {
   return null;
 }
 
+/**
+ * The rung a model id or alias sits on: `claude-opus-5` and `opus` are both
+ * opus-class, whatever the session runs. Null for a model off the ladder.
+ */
+export function tierOfModel(model: string): Tier | null {
+  if (typeof model !== "string") return null;
+  const id = model.toLowerCase();
+  if (id.includes("haiku")) return "haiku";
+  if (id.includes("sonnet")) return "sonnet";
+  if (id.includes("opus")) return "opus";
+  if (id.includes("fable") || id.includes("mythos")) return "fable";
+  return null;
+}
+
 /** Token counts as the engine's `TurnUsage` carries them. */
 export type Tokens = {
   input_tokens: number;
@@ -131,13 +145,19 @@ export function switchVerdict(
   contextTokens: number,
   outputTokens: number,
   ttl: Ttl = "1h",
+  /**
+   * The running model's own price when it is not the ladder's model for its
+   * tier: a session on `claude-opus-5` reads its cache at $0.50, not the
+   * $0.20 of the opus tier's `claude-opus-5-5`.
+   */
+  fromPrice: Price = PRICE[from],
 ): SwitchVerdict {
-  const write = (t: Tier) =>
-    ttl === "1h" ? PRICE[t].write1h : PRICE[t].write5m;
+  const write = (p: Price) => (ttl === "1h" ? p.write1h : p.write5m);
   const ctx = contextTokens / 1e6;
   const out = outputTokens / 1e6;
-  const stay = ctx * PRICE[from].read + out * PRICE[from].output;
-  const go = ctx * write(to) + out * PRICE[to].output + ctx * write(from);
+  const stay = ctx * fromPrice.read + out * fromPrice.output;
+  const go =
+    ctx * write(PRICE[to]) + out * PRICE[to].output + ctx * write(fromPrice);
   return { stay, go, hold: go >= stay };
 }
 
@@ -162,9 +182,9 @@ export function breakEvenTokens(
   return Math.floor((outputTokens * perOut) / perCtx);
 }
 
-/** `$0.0123` style, with enough places to show a small turn. */
+/** `$4.41`, `$0.36`, `$0.024`, `$0.0035`: enough places to show a small turn. */
 export function usd(n: number): string {
-  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.1) return `$${n.toFixed(2)}`;
   if (n >= 0.01) return `$${n.toFixed(3)}`;
   return `$${n.toFixed(4)}`;
 }

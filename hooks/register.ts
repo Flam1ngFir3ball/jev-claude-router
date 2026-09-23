@@ -13,17 +13,19 @@ import {
   excludedTiers,
   firstTurnEffort,
   isContinuation,
+  isEngineNudge,
   notifyContinueOf,
   offeredTiers,
   overrideAllowedOf,
   parseOverride,
+  sessionDecision,
   stickyOf,
   thresholdOf,
   type Ceiling,
   type Decision,
   type Tier,
 } from "./policy.ts";
-import { ttlOf, type Ttl } from "./pricing.ts";
+import { ttlOf, usageCost, type Ttl } from "./pricing.ts";
 import { providerOf, type ProviderResult } from "./provider.ts";
 import {
   addUsage,
@@ -38,12 +40,12 @@ import {
   FOOTER_SEPARATOR,
   REPLY_SEPARATOR,
   notificationOf,
+  replySummary,
   spawnAttemptOf,
   statusReport,
   stickyCommand,
   toggleReply,
   TYPICAL_OUTPUT_TOKENS,
-  usageFooter,
   type AgentTag,
   type Attempt,
 } from "./status.ts";
@@ -62,9 +64,16 @@ const CACHE_LIMIT = 32;
 
 /**
  * Stop reasons that mean the turn continues: the engine will step again, so
- * the footer would land in the middle of a reply. Every other reason ends it.
+ * a summary would land in the middle of a reply. `tool_use` and `pause_turn`
+ * are the usual two; `compaction` is the engine compacting mid-turn and
+ * carrying on, which wrote a second summary under one reply when it was
+ * taken for an end (seen 2026-09-23). Every other reason ends the turn.
  */
-const MID_TURN: ReadonlySet<string> = new Set(["tool_use", "pause_turn"]);
+const MID_TURN: ReadonlySet<string> = new Set([
+  "tool_use",
+  "pause_turn",
+  "compaction",
+]);
 
 /**
  * Everything the router reads from the environment, read once. None of it
@@ -162,6 +171,26 @@ async function contextTokensOf($: {
   }
 }
 
+/** The main loop's model as `/model` shows it, or null when the engine has none. */
+async function sessionModelOf($: {
+  session: { model: () => Promise<string> };
+}): Promise<string | null> {
+  try {
+    const model = await $.session.model();
+    return typeof model === "string" && model !== "" ? model : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True while any background agent is still running: the reply is not over. */
+async function agentsRunning($: {
+  agent: { list: () => Promise<readonly { status: string }[]> };
+}): Promise<boolean> {
+  const rows = await $.agent.list().catch(() => []);
+  return rows.some((r) => r.status === "running");
+}
+
 /**
  * Names the subagent a step runs in, from the session's agent list. A row may
  * not be there yet for a loop that only just started; then the id stands in,
@@ -212,11 +241,21 @@ export function register(on: On) {
    * reported to the right turn. The same objects as in `attempts`.
    */
   const byTurn = new Map<string, Attempt>();
+  /**
+   * Every turn since the last one the person typed, agents included: what
+   * one reply took, written under it once, at the end. A reply that spawns
+   * background work is several turns — the typed one, then one per task
+   * that finished and woke the loop — and a block under each read as one
+   * reply changing model three times.
+   */
+  let reply: Attempt[] = [];
   let latest: Decision | null = null;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
   /** What that turn carried and produced, for pricing the next switch. */
   let lastUsage: { context: number; output: number } | null = null;
+  /** The main loop's model as `/model` shows it, read when first needed. */
+  let sessionModel: string | null = null;
   /**
    * What a bare go-ahead continues. Cleared on an unrouted turn: that turn
    * ran on the session model, so re-applying the older routed decision would
@@ -282,8 +321,9 @@ export function register(on: On) {
 
   /**
    * Forget what the main loop was running on. After `/jev off` the session
-   * model answers, and after a compaction the cache the hold was protecting
-   * is gone either way, so the next routed turn starts from Jev's word.
+   * model answers, and after a compaction or `/clear` the cache the hold was
+   * protecting is gone either way, so the next routed turn starts from Jev's
+   * word.
    */
   const clearRouting = () => {
     decisions.clear();
@@ -300,6 +340,7 @@ export function register(on: On) {
   const record = (attempt: Attempt) => {
     attempts.unshift(attempt);
     attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
+    reply.push(attempt);
   };
 
   on("session.start", async ($, e, next) => {
@@ -309,6 +350,29 @@ export function register(on: On) {
     });
     surface = await $.session.surface();
     settings = await seedSettings($, settings);
+    sessionModel = await sessionModelOf($);
+    return next(e);
+  });
+
+  // A resumed session is already running on something, with a cache the
+  // first routed turn's switch should be priced against — unless the engine
+  // says that cache has expired, in which case there is nothing to protect.
+  // `/clear` starts a new conversation: nothing is running.
+  on("classic.SessionStart", async ($, e, next) => {
+    if (e.source === "clear") clearRouting();
+    if (
+      (e.source === "resume" || e.source === "fork") &&
+      running === null &&
+      !e.prompt_cache_likely_expired &&
+      typeof e.context_tokens === "number" &&
+      e.context_tokens > 0 &&
+      typeof e.model === "string"
+    ) {
+      running = sessionDecision(e.model);
+      if (running !== null) {
+        lastUsage = { context: e.context_tokens, output: TYPICAL_OUTPUT_TOKENS };
+      }
+    }
     return next(e);
   });
 
@@ -316,6 +380,16 @@ export function register(on: On) {
   // context is small again, so switches are cheap: start over from Jev.
   on("session.compact", async ($, e, next) => {
     if (e.trigger !== "precompute") clearRouting();
+    return next(e);
+  });
+
+  // `/model` moved the main loop: what was running is not any more, and the
+  // next routed turn is priced against the new model, which the turn seeds
+  // from the session when the engine reports context.
+  on("classic.PostModelSwitch", async ($, e, next) => {
+    if (typeof e.to_model === "string") sessionModel = e.to_model;
+    running = null;
+    continueFrom = null;
     return next(e);
   });
 
@@ -353,7 +427,9 @@ export function register(on: On) {
     }
 
     if (surface === null) surface = await $.session.surface();
-    const contextTokens = (await contextTokensOf($)) ?? lastUsage?.context ?? null;
+    if (sessionModel === null) sessionModel = await sessionModelOf($);
+    const contextTokens =
+      (await contextTokensOf($)) ?? lastUsage?.context ?? null;
     return {
       text: statusReport({
         enabled,
@@ -364,6 +440,8 @@ export function register(on: On) {
         ceiling: settings.ceiling,
         ttl: settings.ttl,
         contextTokens,
+        sessionModel,
+        running,
         offered: settings.offered,
         excluded: settings.excluded,
         announce,
@@ -379,44 +457,67 @@ export function register(on: On) {
     if (surface === null) surface = await $.session.surface();
     const { offered, ceiling } = settings;
 
+    // A turn the person typed starts a reply; one the engine started — a
+    // finished task's notification, its own nudge — continues the last one,
+    // and its summary folds into that reply's.
+    const notification = notificationOf(e.text) !== null;
+    const nudge = isEngineNudge(e.text);
+    if (!notification && !nudge) reply = [];
+
     // A bare go-ahead continues the previous turn's work on the previous
     // turn's decision, without a round trip: Jev is confidently wrong about
     // these (it grades the text, which is trivial, not the task, which is
-    // whatever was just proposed). When there is nothing to continue (first
-    // turn, or the previous turn left the session model), still do not ask
-    // Jev — that would clear sticky with a ~1.00 haiku pick.
+    // whatever was just proposed). The engine's nudge is the same: the task
+    // is mid-flight, and grading the nudge's text would move the model
+    // under it. When there is nothing to continue (first turn, or the
+    // previous turn left the session model), still do not ask Jev — that
+    // would clear sticky with a ~1.00 haiku pick.
     const forced = settings.allowOverride
       ? parseOverride(e.text, offered)
       : null;
     const softNotify =
-      settings.notifyContinue &&
-      notificationOf(e.text) !== null &&
-      continueFrom !== null;
+      settings.notifyContinue && notification && continueFrom !== null;
 
     let attempt: Attempt;
-    if (isContinuation(e.text) || softNotify) {
+    if (isContinuation(e.text) || nudge || softNotify) {
       attempt =
         continueFrom !== null
           ? continuationOf(e.text, continueFrom, ceiling)
           : continuationSkipped(e.text);
+      if (nudge) attempt.kind = "nudge";
     } else {
       // What a downgrade is priced against: the engine's count of what the
-      // last response carried, or ours from its usage; the last output, or a
-      // typical one. Nothing known means nothing to protect, so no hold.
+      // last response carried, or ours from its usage; the last output, or
+      // a typical one, whichever is smaller — a downgrade is weighed exactly
+      // when the coming prompt looks trivial, so a long last output would
+      // overstate it, and overstating output is the side that pays for a
+      // switch it should not have made. Nothing known means nothing to
+      // protect, so no hold.
       const reported = await contextTokensOf($);
       const context = reported ?? lastUsage?.context ?? 0;
+      // A session already running on something the router did not route —
+      // resumed without the resume event, `/jev on` after a stretch off, a
+      // plugin loaded into a live session — has a warm cache on its model,
+      // and that is what the first routed switch is priced against.
+      if (running === null && context > 0) {
+        if (sessionModel === null) sessionModel = await sessionModelOf($);
+        if (sessionModel !== null) running = sessionDecision(sessionModel);
+      }
       const economics =
         context > 0
           ? {
               contextTokens: context,
-              outputTokens: lastUsage?.output ?? TYPICAL_OUTPUT_TOKENS,
+              outputTokens: Math.min(
+                lastUsage?.output ?? TYPICAL_OUTPUT_TOKENS,
+                TYPICAL_OUTPUT_TOKENS,
+              ),
               ttl: settings.ttl,
             }
           : undefined;
       attempt = attemptOf(
         e.text,
         forced !== null
-          ? { ok: false, reason: "forced override; Jev not asked", ms: 0 }
+          ? { ok: false, reason: "you named the tier, so Jev was not asked", ms: 0 }
           : await classify($, e.text, offered, settings),
         offered,
         {
@@ -431,9 +532,10 @@ export function register(on: On) {
       // (FIRST_TURN_EFFORT). The engine has no count of a response yet
       // exactly when there has been none: a fresh session, or one just
       // compacted. A resumed session reports its context, and the engine
-      // honours the ask there. The route line and the request say what will
-      // run; `running`, below, keeps what Jev asked.
-      if (reported === null && "decision" in attempt) {
+      // honours the ask there. An engine without the count is read the
+      // same way from our own record. The route line and the request say
+      // what will run; `running`, below, keeps what Jev asked.
+      if (reported === null && lastUsage === null && "decision" in attempt) {
         attempt.decision = firstTurnEffort(attempt.decision);
       }
     }
@@ -446,8 +548,11 @@ export function register(on: On) {
 
     // The line goes into the reply's own text, in turn.step below. Render
     // hooks and $.ui.log both drew nothing in the desktop app; the model's
-    // text is the one channel that reaches every surface.
-    if (announce) {
+    // text is the one channel that reaches every surface. The engine's nudge
+    // gets no line and no summary: it is the engine prodding a task that is
+    // mid-flight, not a reply to the person, and a block under it was the
+    // middle of the three that stacked under one reply (seen 2026-09-23).
+    if (announce && !nudge) {
       pending.add(e.turnId);
       trimSet(pending);
     }
@@ -471,23 +576,30 @@ export function register(on: On) {
   });
 
   // turn.step streams, so it is an async generator. The model rewrite goes
-  // down in `e`; the label comes back up in the first text chunk of the turn,
+  // down in `e`; the line comes back up in the first text chunk of the turn,
   // and the `stop` chunk's usage, which names the model the API says answered,
   // is kept on the turn. That is the check on the rewrite: the route line is
-  // what was asked for, /jev shows what was got.
+  // what was asked for, the summary and /jev show what was got.
   //
   // Text chunks concatenate per block, so prefixing the first one puts the
   // line at the top of the reply. This is the recorded text too, so the model
   // sees its past replies open with the line; that is the price of a marker
   // that reaches a surface which draws neither render sites nor ui.log.
   on("turn.step", async function* ($, e, next) {
+    settings = await seedSettings($, settings);
+
     // Routing off is authoritative for every step, including subagents whose
-    // spawn decision was cached before /jev off.
+    // spawn decision was cached before /jev off. What the session spends is
+    // still counted, or `spent` would say less than the truth.
     if (!enabled) {
-      for await (const chunk of next(e)) yield chunk;
+      for await (const chunk of next(e)) {
+        if (chunk.kind === "stop" && chunk.usage) {
+          spent += usageCost(chunk.usage.model, chunk.usage, settings.ttl) ?? 0;
+        }
+        yield chunk;
+      }
       return;
     }
-    settings = await seedSettings($, settings);
 
     // A subagent's loop gets no turn.start (probed live: its steps arrive
     // with agentId set and nothing in byTurn), so its turn is first seen
@@ -518,7 +630,7 @@ export function register(on: On) {
         attempt = {
           prompt: agent.label,
           ms: 0,
-          skipped: "not routed at spawn; on its own model",
+          skipped: "not routed at spawn, so it keeps its own model",
           kind: "agent",
           agent,
         };
@@ -546,8 +658,8 @@ export function register(on: On) {
       ? next({ ...e, model: decision.model, effort: decision.effort })
       : next(e);
 
-    // The block the footer joins, so it lands at the end of the reply's text
-    // rather than opening a block of its own.
+    // The block the summary joins, so it lands at the end of the reply's
+    // text rather than opening a block of its own.
     let lastTextIndex = 0;
 
     for await (const chunk of step) {
@@ -578,31 +690,39 @@ export function register(on: On) {
           }
         }
 
-        // The index must be one past the last text block, and this is
-        // load-bearing. A chunk yielded at an index the engine already
-        // streamed is dropped on the floor, silently: probed live, a chunk
-        // at `lastTextIndex` never reached the transcript, one at
-        // `lastTextIndex + 1` did. It opens a block of its own, which is
-        // what a footer wants anyway — the reply above it stays untouched.
+        // The summary goes under the reply once it is over: this step ends
+        // the turn, and no background task is still running that will wake
+        // the loop and add to it. The index must be one past the last text
+        // block, and this is load-bearing. A chunk yielded at an index the
+        // engine already streamed is dropped on the floor, silently: probed
+        // live, a chunk at `lastTextIndex` never reached the transcript,
+        // one at `lastTextIndex + 1` did. It opens a block of its own,
+        // which is what a summary wants anyway — the reply above it stays
+        // untouched.
         //
         // No `ref`, because the engine's handle belongs to a chunk the
         // engine streamed; one a hook built has none and is taken at its
         // word. It goes before the stop chunk, the last thing the engine
-        // expects to see.
-        // Not in a subagent's reply: that is a tool result its parent reads.
+        // expects to see. Not in a subagent's reply: that is a tool result
+        // its parent reads.
         if (
           attempt &&
           announce &&
+          e.agentId === undefined &&
           attempt.kind !== "agent" &&
-          !MID_TURN.has(chunk.stopReason ?? "")
+          attempt.kind !== "nudge" &&
+          !MID_TURN.has(chunk.stopReason ?? "") &&
+          !(await agentsRunning($))
         ) {
-          const footer = usageFooter(attempt);
-          if (footer !== null) {
+          const summary = replySummary(reply);
+          if (summary !== null) {
             yield {
               kind: "text" as const,
               index: lastTextIndex + 1,
-              text: `${FOOTER_SEPARATOR}${footer}`,
+              text: `${FOOTER_SEPARATOR}${summary}`,
             };
+            // Written once; what comes after is a new reply's worth.
+            reply = [];
           }
         }
       }
