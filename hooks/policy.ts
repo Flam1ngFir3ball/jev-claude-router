@@ -8,7 +8,7 @@
 
 export type Tier = "haiku" | "sonnet" | "opus" | "fable";
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export type Decision = {
   tier: Tier;
@@ -44,8 +44,8 @@ export type Decision = {
    */
   forced?: true;
   /**
-   * The effort Jev named, when xhigh (and above) was blocked for this tier
-   * and the turn was capped to `high`. Absent when the cap did not apply.
+   * The effort Jev named, when a ceiling toggle capped this turn. Absent
+   * when no cap applied.
    */
   cappedEffort?: Effort;
 };
@@ -58,6 +58,7 @@ export const EFFORTS: readonly Effort[] = [
   "high",
   "xhigh",
   "max",
+  "ultra",
 ];
 
 /** Model ids as the engine names them. */
@@ -96,6 +97,7 @@ export const EFFORT_CRITERIA: readonly string[] = [
   "Real thinking. Several steps, or a choice worth weighing.",
   "Hard thinking. Many interacting parts, or a subtle failure to chase down.",
   "As hard as it gets. Open-ended, ambiguous, or the cost of being wrong is high.",
+  "Beyond max. The rare case that needs every token of reasoning available.",
 ];
 
 /** Tiers dropped from the question entirely, lowercase, from the env var. */
@@ -408,12 +410,11 @@ export function subagentDecision(
 }
 
 /**
- * Effort at or above xhigh. Both `xhigh` and `max` are blocked together:
- * max is the rung above xhigh, and turning off the expensive thinking
- * without max would leave the costlier option open.
+ * Effort at or above xhigh: xhigh, max, and ultra. Blocked together when
+ * xhigh is off.
  */
 export function isXhighOrAbove(effort: Effort): boolean {
-  return effort === "xhigh" || effort === "max";
+  return effort === "xhigh" || effort === "max" || effort === "ultra";
 }
 
 /** The ceiling when xhigh is off: everything above becomes `high`. */
@@ -436,13 +437,67 @@ export function capXhigh(
   };
 }
 
+/** Effort at or above max: max and ultra. */
+export function isMaxOrAbove(effort: Effort): boolean {
+  return effort === "max" || effort === "ultra";
+}
+
+/** The ceiling when max is off: everything above becomes `xhigh`. */
+export const MAX_CAP: Effort = "xhigh";
+
 /**
- * Effort above medium: high, xhigh, and max. Blocked together when medium
- * is off, same idea as xhigh+max — leaving a higher rung open would undo
- * the cheaper ceiling.
+ * Caps a decision's effort to `xhigh` when max+ is blocked for its tier.
+ * Only bites when xhigh itself is still allowed.
+ */
+export function capMax(
+  decision: Decision,
+  blocked: ReadonlySet<Tier>,
+): Decision {
+  if (!blocked.has(decision.tier)) return decision;
+  if (!isMaxOrAbove(decision.effort)) return decision;
+  return {
+    ...decision,
+    effort: MAX_CAP,
+    cappedEffort: decision.effort,
+  };
+}
+
+/** Effort at ultra — the rung above max. */
+export function isUltra(effort: Effort): boolean {
+  return effort === "ultra";
+}
+
+/** The ceiling when ultra is off: ultra becomes `max`. */
+export const ULTRA_CAP: Effort = "max";
+
+/**
+ * Caps a decision's effort to `max` when ultra is blocked for its tier.
+ * Only bites when max itself is still allowed.
+ */
+export function capUltra(
+  decision: Decision,
+  blocked: ReadonlySet<Tier>,
+): Decision {
+  if (!blocked.has(decision.tier)) return decision;
+  if (!isUltra(decision.effort)) return decision;
+  return {
+    ...decision,
+    effort: ULTRA_CAP,
+    cappedEffort: decision.effort,
+  };
+}
+
+/**
+ * Effort above medium: high, xhigh, max, and ultra. Blocked together when
+ * medium is off.
  */
 export function isAboveMedium(effort: Effort): boolean {
-  return effort === "high" || effort === "xhigh" || effort === "max";
+  return (
+    effort === "high" ||
+    effort === "xhigh" ||
+    effort === "max" ||
+    effort === "ultra"
+  );
 }
 
 /** The ceiling when medium is off: everything above becomes `medium`. */
@@ -466,15 +521,15 @@ export function capMedium(
 }
 
 /**
- * Effort above low: medium, high, xhigh, and max. Blocked together when
- * low is off.
+ * Effort above low: medium through ultra. Blocked together when low is off.
  */
 export function isAboveLow(effort: Effort): boolean {
   return (
     effort === "medium" ||
     effort === "high" ||
     effort === "xhigh" ||
-    effort === "max"
+    effort === "max" ||
+    effort === "ultra"
   );
 }
 
@@ -500,10 +555,10 @@ export function capLow(
 
 /**
  * Shared reader for `JEV_ROUTER_*_OFF` block lists. When `defaultAll` is
- * true, unset/empty blocks every tier (medium/xhigh defaults); when false,
- * unset means nothing blocked (low is opt-in). `0`/`false`/`off`/`no`/`none`
- * clears the block; `1`/`all`/`true`/`yes`/`on` blocks every tier; otherwise
- * a comma list of tier names.
+ * true, unset/empty blocks every tier (medium/xhigh/max/ultra defaults);
+ * when false, unset means nothing blocked (low is opt-in).
+ * `0`/`false`/`off`/`no`/`none` clears the block; `1`/`all`/`true`/`yes`/`on`
+ * blocks every tier; otherwise a comma list of tier names.
  */
 export function tierBlockOf(
   raw: string | undefined,
@@ -543,6 +598,24 @@ export function tierBlockOf(
  * `0`/`false`/`off`/`no`/`none`.
  */
 export function xhighOffOf(raw: string | undefined): Set<Tier> {
+  return tierBlockOf(raw, true);
+}
+
+/**
+ * Reads `JEV_ROUTER_MAX_OFF`. Default (unset/empty) blocks every tier so
+ * max+ caps at `xhigh`. Opt in with `0`/`false`/`off`/`no`/`none`. Only
+ * matters once xhigh itself is allowed.
+ */
+export function maxOffOf(raw: string | undefined): Set<Tier> {
+  return tierBlockOf(raw, true);
+}
+
+/**
+ * Reads `JEV_ROUTER_ULTRA_OFF`. Default (unset/empty) blocks every tier so
+ * ultra caps at `max`. Opt in with `0`/`false`/`off`/`no`/`none`. Only
+ * matters once max itself is allowed.
+ */
+export function ultraOffOf(raw: string | undefined): Set<Tier> {
   return tierBlockOf(raw, true);
 }
 

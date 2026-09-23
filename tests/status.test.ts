@@ -8,6 +8,8 @@ import {
   stickyCommand,
   lowCommand,
   mediumCommand,
+  maxCommand,
+  ultraCommand,
   xhighCommand,
   liveLine,
   REPLY_SEPARATOR,
@@ -52,6 +54,8 @@ const base: Status = {
   lowOff: [],
   mediumOff: [],
   xhighOff: [],
+  maxOff: [],
+  ultraOff: [],
   offered: ["haiku", "sonnet", "opus", "fable"],
   excluded: [],
   announce: true,
@@ -712,6 +716,7 @@ describe("the xhigh subcommand", () => {
     assert.match(statusReport(base), /low\s+on \(JEV_ROUTER_LOW_OFF=1\)/);
     assert.match(statusReport(base), /medium\s+on \(JEV_ROUTER_MEDIUM_OFF=0\)/);
     assert.match(statusReport(base), /xhigh\s+on \(JEV_ROUTER_XHIGH_OFF=0\)/);
+    assert.match(statusReport(base), /max\s+on \(JEV_ROUTER_MAX_OFF=0\)/);
     assert.match(
       statusReport({ ...base, lowOff: [...TIERS] }),
       /low\s+off for all/,
@@ -732,6 +737,94 @@ describe("the xhigh subcommand", () => {
       statusReport({ ...base, xhighOff: [...TIERS] }),
       /xhigh\s+off for all/,
     );
+    assert.match(
+      statusReport({ ...base, maxOff: [...TIERS] }),
+      /max\s+off for all/,
+    );
+    assert.match(
+      statusReport({ ...base, ultraOff: [...TIERS] }),
+      /ultra\s+off for all/,
+    );
+  });
+});
+
+describe("the max subcommand", () => {
+  test("bare reports whether max is allowed", () => {
+    const r = maxCommand("", new Set());
+    assert.equal(r.maxOff.size, 0);
+    assert.match(r.text, /max allowed/);
+  });
+
+  test("off with no tier blocks every tier", () => {
+    const r = maxCommand("off", new Set());
+    assert.equal(r.maxOff.size, TIERS.length);
+    assert.match(r.text, /caps at xhigh/);
+  });
+
+  test("attemptOf caps max at xhigh when the hold says so", () => {
+    const attempt = attemptOf(
+      "plan it",
+      {
+        ok: true,
+        ms: 10,
+        answers: {
+          tier: { type: "choice", choice: "fable", confidence: 0.9 },
+          effort: { type: "score", score: 4, confidence: 0.8 },
+        },
+      },
+      TIERS,
+      {
+        sticky: null,
+        running: null,
+        xhighOff: new Set(),
+        maxOff: new Set(["fable"]),
+      },
+    );
+    assert.equal("decision" in attempt && attempt.decision.effort, "xhigh");
+    assert.equal("decision" in attempt && attempt.decision.cappedEffort, "max");
+    assert.equal(heldMark(attempt), "capped:max");
+  });
+});
+
+describe("the ultra subcommand", () => {
+  test("bare reports whether ultra is allowed", () => {
+    const r = ultraCommand("", new Set());
+    assert.equal(r.ultraOff.size, 0);
+    assert.match(r.text, /ultra allowed/);
+  });
+
+  test("off with no tier blocks every tier", () => {
+    const r = ultraCommand("off", new Set());
+    assert.equal(r.ultraOff.size, TIERS.length);
+    assert.match(r.text, /caps at max/);
+  });
+
+  test("attemptOf caps ultra at max when the hold says so", () => {
+    const attempt = attemptOf(
+      "plan it",
+      {
+        ok: true,
+        ms: 10,
+        answers: {
+          tier: { type: "choice", choice: "fable", confidence: 0.9 },
+          effort: { type: "score", score: 5, confidence: 0.8 },
+        },
+      },
+      TIERS,
+      {
+        sticky: null,
+        running: null,
+        xhighOff: new Set(),
+        maxOff: new Set(),
+        ultraOff: new Set(["fable"]),
+      },
+    );
+    assert.equal("decision" in attempt && attempt.decision.effort, "max");
+    assert.equal(
+      "decision" in attempt && attempt.decision.cappedEffort,
+      "ultra",
+    );
+    assert.equal(heldMark(attempt), "capped:ultra");
   });
 });
 

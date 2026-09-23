@@ -103,6 +103,8 @@ jev-router
   low       on (JEV_ROUTER_LOW_OFF=1)
   medium    off for all · capped at medium
   xhigh     off for all · capped at high
+  max       off for all · capped at xhigh
+  ultra     off for all · capped at max
   tiers     haiku, sonnet, opus, fable
 
   Recent turns, newest first:
@@ -266,11 +268,11 @@ model, which this mod does not touch — the rewrite happens per request, in
 - `JEV_ROUTER_STICKY=1` and `JEV_ROUTER_STICKY_CONFIDENCE=0.6` set the same
   thing for a session before it starts, for a project that always wants it.
   The command overrides them from then on.
-- `/jev low off` blocks effort above low (medium through max) on every tier
+- `/jev low off` blocks effort above low (medium through ultra) on every tier
   and caps those turns at `low`; `/jev low off opus` for one tier;
   `/jev low on` turns it back on. Opt-in — unset leaves medium allowed.
 - `JEV_ROUTER_LOW_OFF=1` (or `all`) seeds the low ceiling; `0`/`off` clears it.
-- `/jev medium off` blocks effort above medium (high, xhigh, and max) on
+- `/jev medium off` blocks effort above medium (high through ultra) on
   every tier and caps those turns at `medium`; `/jev medium off opus` for one
   tier; `/jev medium on` / `/jev medium on fable` turn it back on. The route
   line says `capped:high` (or `capped:xhigh`) when a turn was cut down.
@@ -278,13 +280,21 @@ model, which this mod does not touch — the rewrite happens per request, in
 - `JEV_ROUTER_MEDIUM_OFF=0` (or `off`/`false`/`none`) allows high;
   unset/`1`/`all` keeps the default medium ceiling; `opus,fable` for named
   ones. The command overrides.
-- `/jev xhigh on` allows effort at or above xhigh (xhigh and max) on every
-  tier; `/jev xhigh on fable` for one tier; `/jev xhigh off` / `/jev xhigh off opus`
-  block it again and cap those turns at `high`. Also **off by default** —
-  raise the ceiling with `/jev medium on` then `/jev xhigh on`.
+- `/jev xhigh on` allows effort at or above xhigh (xhigh, max, and ultra) on
+  every tier; `/jev xhigh on fable` for one tier; `/jev xhigh off` /
+  `/jev xhigh off opus` block it again and cap those turns at `high`. Also
+  **off by default** — raise the ceiling with `/jev medium on` then
+  `/jev xhigh on`.
 - `JEV_ROUTER_XHIGH_OFF=0` (or `off`/`false`/`none`) allows xhigh everywhere;
   unset/`1`/`all` keeps the default block; `opus,fable` blocks only named
   ones. The command overrides.
+- `/jev max on` allows max and ultra (caps at xhigh when off). Separate from
+  ultra. **Off by default**; only matters once xhigh is allowed.
+- `JEV_ROUTER_MAX_OFF=0` allows max; unset/`1`/`all` keeps the default block.
+- `/jev ultra on` allows ultra — the rung above max — and caps at max when
+  off. Separate from max. **Off by default**; only matters once max is
+  allowed. If the engine does not accept `ultra`, it may silently downgrade.
+- `JEV_ROUTER_ULTRA_OFF=0` allows ultra; unset/`1`/`all` keeps the default block.
 
 ## Holding a shaky switch
 

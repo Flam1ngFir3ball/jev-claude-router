@@ -17,6 +17,8 @@ import {
   stickyOf,
   thresholdOf,
   TIERS,
+  maxOffOf,
+  ultraOffOf,
   xhighOffOf,
   type Decision,
   type Tier,
@@ -38,6 +40,8 @@ import {
   stickyCommand,
   lowCommand,
   mediumCommand,
+  maxCommand,
+  ultraCommand,
   xhighCommand,
   usageFooter,
   type AgentTag,
@@ -147,6 +151,34 @@ async function seedLow(
 }
 
 /**
+ * Seeds the max block list from `JEV_ROUTER_MAX_OFF` once per session.
+ */
+async function seedMax(
+  $: Engine,
+  state: { maxOff: Set<Tier>; maxReady: boolean },
+): Promise<{ maxOff: Set<Tier>; maxReady: boolean }> {
+  if (state.maxReady) return state;
+  return {
+    maxOff: maxOffOf(await $.env.get("JEV_ROUTER_MAX_OFF")),
+    maxReady: true,
+  };
+}
+
+/**
+ * Seeds the ultra block list from `JEV_ROUTER_ULTRA_OFF` once per session.
+ */
+async function seedUltra(
+  $: Engine,
+  state: { ultraOff: Set<Tier>; ultraReady: boolean },
+): Promise<{ ultraOff: Set<Tier>; ultraReady: boolean }> {
+  if (state.ultraReady) return state;
+  return {
+    ultraOff: ultraOffOf(await $.env.get("JEV_ROUTER_ULTRA_OFF")),
+    ultraReady: true,
+  };
+}
+
+/**
  * Names the subagent a step runs in, from the session's agent list. A row may
  * not be there yet for a loop that only just started; then the id stands in,
  * which still says "not the main loop", the part that matters.
@@ -211,6 +243,18 @@ export function register(on: On) {
    */
   let xhighOff = new Set<Tier>(TIERS);
   let xhighReady = false;
+  /**
+   * Tiers for which max+ is blocked (cap at xhigh). Defaults to every
+   * tier; only matters once xhigh is allowed.
+   */
+  let maxOff = new Set<Tier>(TIERS);
+  let maxReady = false;
+  /**
+   * Tiers for which ultra is blocked (cap at max). Defaults to every
+   * tier; only matters once max is allowed.
+   */
+  let ultraOff = new Set<Tier>(TIERS);
+  let ultraReady = false;
   /**
    * Tiers for which high+ effort is blocked (cap at medium). Defaults to
    * every tier (session default ceiling is medium); `JEV_ROUTER_MEDIUM_OFF`
@@ -304,7 +348,8 @@ export function register(on: On) {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "jev",
-      description: "Jev routing: status, on/off, sticky, low, medium, xhigh.",
+      description:
+        "Jev routing: status, on/off, sticky, low, medium, xhigh, max, ultra.",
     });
     surface = await $.session.surface();
     ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
@@ -314,6 +359,8 @@ export function register(on: On) {
       mediumReady,
     }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
+    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
+    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
     return next(e);
   });
 
@@ -369,6 +416,22 @@ export function register(on: On) {
       return { text: result.text };
     }
 
+    if (sub === "max" || sub.startsWith("max ")) {
+      ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
+      const result = maxCommand(sub.slice("max".length), maxOff);
+      maxOff = result.maxOff;
+      maxReady = true;
+      return { text: result.text };
+    }
+
+    if (sub === "ultra" || sub.startsWith("ultra ")) {
+      ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
+      const result = ultraCommand(sub.slice("ultra".length), ultraOff);
+      ultraOff = result.ultraOff;
+      ultraReady = true;
+      return { text: result.text };
+    }
+
     ({ sticky, stickyReady } = await seedSticky($, { sticky, stickyReady }));
     ({ lowOff, lowReady } = await seedLow($, { lowOff, lowReady }));
     ({ mediumOff, mediumReady } = await seedMedium($, {
@@ -376,6 +439,8 @@ export function register(on: On) {
       mediumReady,
     }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
+    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
+    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
     if (surface === null) surface = await $.session.surface();
     const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
     const provider = providerOf({
@@ -394,6 +459,8 @@ export function register(on: On) {
         lowOff: [...lowOff],
         mediumOff: [...mediumOff],
         xhighOff: [...xhighOff],
+        maxOff: [...maxOff],
+        ultraOff: [...ultraOff],
         offered: offeredTiers(excluded),
         excluded: [...excluded],
         announce,
@@ -412,6 +479,8 @@ export function register(on: On) {
       mediumReady,
     }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
+    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
+    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
     if (surface === null) surface = await $.session.surface();
 
     const offered = offeredTiers(
@@ -426,7 +495,15 @@ export function register(on: On) {
     // Jev — that would clear sticky with a ~1.00 haiku pick.
     const attempt = isContinuation(e.text)
       ? continueFrom !== null
-        ? continuationOf(e.text, continueFrom, xhighOff, mediumOff, lowOff)
+        ? continuationOf(
+            e.text,
+            continueFrom,
+            xhighOff,
+            mediumOff,
+            lowOff,
+            maxOff,
+            ultraOff,
+          )
         : continuationSkipped(e.text)
       : attemptOf(e.text, await classify($, e.text, offered), offered, {
           sticky,
@@ -435,6 +512,8 @@ export function register(on: On) {
           lowOff,
           mediumOff,
           xhighOff,
+          maxOff,
+          ultraOff,
         });
 
     // One place where the turn's outcome is settled, so the report and the
@@ -607,6 +686,8 @@ export function register(on: On) {
       mediumReady,
     }));
     ({ xhighOff, xhighReady } = await seedXhigh($, { xhighOff, xhighReady }));
+    ({ maxOff, maxReady } = await seedMax($, { maxOff, maxReady }));
+    ({ ultraOff, ultraReady } = await seedUltra($, { ultraOff, ultraReady }));
     const offered = offeredTiers(
       excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")),
     );
@@ -618,6 +699,8 @@ export function register(on: On) {
       xhighOff,
       mediumOff,
       lowOff,
+      maxOff,
+      ultraOff,
     );
     record(attempt);
 

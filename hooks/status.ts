@@ -16,6 +16,8 @@ import {
   subagentDecision,
   capLow,
   capMedium,
+  capMax,
+  capUltra,
   capXhigh,
   TIERS,
   type Decision,
@@ -158,6 +160,10 @@ export type Status = {
   mediumOff: readonly Tier[];
   /** Tiers for which xhigh (and max) effort is blocked. */
   xhighOff: readonly Tier[];
+  /** Tiers for which max+ effort is blocked (cap at xhigh). */
+  maxOff: readonly Tier[];
+  /** Tiers for which ultra effort is blocked (cap at max). */
+  ultraOff: readonly Tier[];
   offered: readonly Tier[];
   excluded: readonly Tier[];
   announce: boolean;
@@ -169,8 +175,8 @@ export type Status = {
  * switch must clear, or null when switches are free; `running` what the last
  * routed turn ran on; `forced` a tier the prompt itself named, which takes
  * the tier question away from Jev and from stickiness both; `lowOff` /
- * `mediumOff` / `xhighOff` the tiers whose effort is capped at low / medium /
- * high.
+ * `mediumOff` / `xhighOff` / `maxOff` / `ultraOff` the tiers whose effort is capped at
+ * low / medium / high / xhigh / max.
  */
 export type Hold = {
   sticky: number | null;
@@ -179,6 +185,8 @@ export type Hold = {
   lowOff?: ReadonlySet<Tier>;
   mediumOff?: ReadonlySet<Tier>;
   xhighOff?: ReadonlySet<Tier>;
+  maxOff?: ReadonlySet<Tier>;
+  ultraOff?: ReadonlySet<Tier>;
 };
 
 /**
@@ -237,6 +245,8 @@ export function attemptOf(
   decision = capLow(decision, hold.lowOff ?? new Set());
   decision = capMedium(decision, hold.mediumOff ?? new Set());
   decision = capXhigh(decision, hold.xhighOff ?? new Set());
+  decision = capMax(decision, hold.maxOff ?? new Set());
+  decision = capUltra(decision, hold.ultraOff ?? new Set());
   return { ...head, ms: result.ms, decision };
 }
 
@@ -252,21 +262,29 @@ export function continuationOf(
   xhighOff: ReadonlySet<Tier> = new Set(),
   mediumOff: ReadonlySet<Tier> = new Set(),
   lowOff: ReadonlySet<Tier> = new Set(),
+  maxOff: ReadonlySet<Tier> = new Set(),
+  ultraOff: ReadonlySet<Tier> = new Set(),
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
   return {
     prompt: text,
     ms: 0,
     kind: "continue",
-    decision: capXhigh(
-      capMedium(
-        capLow(
-          { tier, model, effort, confidence, effortConfidence },
-          lowOff,
+    decision: capUltra(
+      capMax(
+        capXhigh(
+          capMedium(
+            capLow(
+              { tier, model, effort, confidence, effortConfidence },
+              lowOff,
+            ),
+            mediumOff,
+          ),
+          xhighOff,
         ),
-        mediumOff,
+        maxOff,
       ),
-      xhighOff,
+      ultraOff,
     ),
   };
 }
@@ -301,6 +319,8 @@ export function spawnAttemptOf(
   xhighOff: ReadonlySet<Tier> = new Set(),
   mediumOff: ReadonlySet<Tier> = new Set(),
   lowOff: ReadonlySet<Tier> = new Set(),
+  maxOff: ReadonlySet<Tier> = new Set(),
+  ultraOff: ReadonlySet<Tier> = new Set(),
 ): Attempt {
   const head = { prompt: description, kind: "agent" as const, agent };
   if (!result.ok) return { ...head, ms: result.ms, skipped: result.reason };
@@ -323,9 +343,12 @@ export function spawnAttemptOf(
   return {
     ...head,
     ms: result.ms,
-    decision: capXhigh(
-      capMedium(capLow(decision, lowOff), mediumOff),
-      xhighOff,
+    decision: capUltra(
+      capMax(
+        capXhigh(capMedium(capLow(decision, lowOff), mediumOff), xhighOff),
+        maxOff,
+      ),
+      ultraOff,
     ),
   };
 }
@@ -474,6 +497,8 @@ export function statusReport(status: Status): string {
   lines.push(`  low       ${lowStatusLine(status.lowOff)}`);
   lines.push(`  medium    ${mediumStatusLine(status.mediumOff)}`);
   lines.push(`  xhigh     ${xhighStatusLine(status.xhighOff)}`);
+  lines.push(`  max       ${maxStatusLine(status.maxOff)}`);
+  lines.push(`  ultra     ${ultraStatusLine(status.ultraOff)}`);
   lines.push(`  tiers     ${status.offered.join(", ")}`);
   lines.push(
     `  announce  ${status.announce ? "on, a line per turn" : "off (/jev loud)"}`,
@@ -617,6 +642,18 @@ function xhighStatusLine(off: readonly Tier[]): string {
   return `off for ${off.join(", ")} · capped at high`;
 }
 
+function maxStatusLine(off: readonly Tier[]): string {
+  if (off.length === 0) return "on (JEV_ROUTER_MAX_OFF=0)";
+  if (off.length === TIERS.length) return "off for all · capped at xhigh";
+  return `off for ${off.join(", ")} · capped at xhigh`;
+}
+
+function ultraStatusLine(off: readonly Tier[]): string {
+  if (off.length === 0) return "on (JEV_ROUTER_ULTRA_OFF=0)";
+  if (off.length === TIERS.length) return "off for all · capped at max";
+  return `off for ${off.join(", ")} · capped at max`;
+}
+
 /** Shared on/off/per-tier parser for effort-ceiling commands. */
 function effortBlockCommand(
   name: string,
@@ -756,8 +793,9 @@ export function xhighCommand(
 function xhighReply(off: ReadonlySet<Tier>): string {
   if (off.size === 0) {
     return (
-      "xhigh allowed on every tier. /jev xhigh off blocks it (and max) " +
-      "everywhere; /jev xhigh off opus blocks one tier."
+      "xhigh allowed on every tier (max/ultra still have their own switches). " +
+      "/jev xhigh off blocks xhigh and above everywhere; " +
+      "/jev xhigh off opus blocks one tier."
     );
   }
   if (off.size === TIERS.length) {
@@ -769,5 +807,68 @@ function xhighReply(off: ReadonlySet<Tier>): string {
   return (
     `xhigh off for ${[...off].join(", ")} — those cap at high. ` +
     "/jev xhigh on clears every block."
+  );
+}
+
+/**
+ * Reads `/jev max`, `/jev max off`, `/jev max on`, `/jev max off opus`.
+ * Turns off (or back on) max and ultra — caps at xhigh.
+ */
+export function maxCommand(
+  rest: string,
+  current: ReadonlySet<Tier>,
+): { maxOff: Set<Tier>; text: string } {
+  const { next, text } = effortBlockCommand("max", rest, current, maxReply);
+  return { maxOff: next, text };
+}
+
+function maxReply(off: ReadonlySet<Tier>): string {
+  if (off.size === 0) {
+    return (
+      "max allowed on every tier (ultra still has /jev ultra). " +
+      "/jev max off blocks max and ultra everywhere and caps at xhigh; " +
+      "/jev max off opus blocks one tier."
+    );
+  }
+  if (off.size === TIERS.length) {
+    return (
+      "max off for all tiers — caps at xhigh. /jev max on to allow " +
+      "max again, or /jev max on fable for one tier."
+    );
+  }
+  return (
+    `max off for ${[...off].join(", ")} — those cap at xhigh. ` +
+    "/jev max on clears every block."
+  );
+}
+
+/**
+ * Reads `/jev ultra`, `/jev ultra off`, `/jev ultra on`, `/jev ultra off opus`.
+ * Turns off (or back on) ultra — the rung above max — capping at max.
+ */
+export function ultraCommand(
+  rest: string,
+  current: ReadonlySet<Tier>,
+): { ultraOff: Set<Tier>; text: string } {
+  const { next, text } = effortBlockCommand("ultra", rest, current, ultraReply);
+  return { ultraOff: next, text };
+}
+
+function ultraReply(off: ReadonlySet<Tier>): string {
+  if (off.size === 0) {
+    return (
+      "ultra allowed on every tier. /jev ultra off blocks ultra everywhere " +
+      "and caps at max; /jev ultra off opus blocks one tier."
+    );
+  }
+  if (off.size === TIERS.length) {
+    return (
+      "ultra off for all tiers — caps at max. /jev ultra on to allow " +
+      "ultra again, or /jev ultra on fable for one tier."
+    );
+  }
+  return (
+    `ultra off for ${[...off].join(", ")} — those cap at max. ` +
+    "/jev ultra on clears every block."
   );
 }

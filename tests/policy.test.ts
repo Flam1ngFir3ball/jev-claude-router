@@ -11,6 +11,8 @@ import {
   isAboveLow,
   isAboveMedium,
   isContinuation,
+  isMaxOrAbove,
+  isUltra,
   isXhighOrAbove,
   MODEL_OF,
   offeredTiers,
@@ -22,13 +24,19 @@ import {
   thresholdOf,
   TIERS,
   capLow,
+  capMax,
   capMedium,
+  capUltra,
   capXhigh,
   lowOffOf,
+  maxOffOf,
   mediumOffOf,
+  ultraOffOf,
   xhighOffOf,
   LOW_CAP,
+  MAX_CAP,
   MEDIUM_CAP,
+  ULTRA_CAP,
   XHIGH_CAP,
   type Decision,
   type Effort,
@@ -57,11 +65,12 @@ describe("policy", () => {
     assert.equal(effortOf(2.4), "high");
     assert.equal(effortOf(2.6), "xhigh");
     assert.equal(effortOf(4), "max");
+    assert.equal(effortOf(5), "ultra");
   });
 
   test("a score outside the ladder clamps instead of throwing", () => {
     assert.equal(effortOf(-3), "low");
-    assert.equal(effortOf(99), "max");
+    assert.equal(effortOf(99), "ultra");
   });
 
   test("a missing or unusable score falls back to medium", () => {
@@ -640,5 +649,84 @@ describe("low cap", () => {
     d = capXhigh(d, new Set(TIERS));
     assert.equal(d.effort, "low");
     assert.equal(d.cappedEffort, "xhigh");
+  });
+});
+
+describe("max cap", () => {
+  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+    tier,
+    model: MODEL_OF[tier],
+    effort,
+    confidence: 0.9,
+  });
+
+  test("max and ultra are both above xhigh", () => {
+    assert.equal(isMaxOrAbove("max"), true);
+    assert.equal(isMaxOrAbove("ultra"), true);
+    assert.equal(isMaxOrAbove("xhigh"), false);
+  });
+
+  test("a blocked tier caps max to xhigh", () => {
+    const d = capMax(at("fable", "max"), new Set(["fable"]));
+    assert.equal(d.effort, MAX_CAP);
+    assert.equal(d.cappedEffort, "max");
+  });
+
+  test("a blocked tier also caps ultra to xhigh", () => {
+    const d = capMax(at("fable", "ultra"), new Set(["fable"]));
+    assert.equal(d.effort, MAX_CAP);
+    assert.equal(d.cappedEffort, "ultra");
+  });
+
+  test("the env defaults to all-off; 0 turns it back on", () => {
+    assert.deepEqual([...maxOffOf(undefined)].sort(), [...TIERS].sort());
+    assert.deepEqual([...maxOffOf("0")], []);
+    assert.deepEqual([...maxOffOf("1")].sort(), [...TIERS].sort());
+  });
+
+  test("max cap only applies when xhigh is still allowed", () => {
+    let d = capXhigh(at("fable", "max"), new Set());
+    d = capMax(d, new Set(TIERS));
+    assert.equal(d.effort, "xhigh");
+    assert.equal(d.cappedEffort, "max");
+  });
+});
+
+describe("ultra cap", () => {
+  const at = (tier: Decision["tier"], effort: Effort): Decision => ({
+    tier,
+    model: MODEL_OF[tier],
+    effort,
+    confidence: 0.9,
+  });
+
+  test("only ultra is the ultra rung", () => {
+    assert.equal(isUltra("ultra"), true);
+    assert.equal(isUltra("max"), false);
+  });
+
+  test("a blocked tier caps ultra to max", () => {
+    const d = capUltra(at("fable", "ultra"), new Set(["fable"]));
+    assert.equal(d.effort, ULTRA_CAP);
+    assert.equal(d.cappedEffort, "ultra");
+  });
+
+  test("the env defaults to all-off; 0 turns it back on", () => {
+    assert.deepEqual([...ultraOffOf(undefined)].sort(), [...TIERS].sort());
+    assert.deepEqual([...ultraOffOf("0")], []);
+    assert.deepEqual([...ultraOffOf("1")].sort(), [...TIERS].sort());
+  });
+
+  test("ultra cap only applies when max is still allowed", () => {
+    let d = capMax(at("fable", "ultra"), new Set());
+    d = capUltra(d, new Set(TIERS));
+    assert.equal(d.effort, "max");
+    assert.equal(d.cappedEffort, "ultra");
+  });
+
+  test("xhigh still covers ultra", () => {
+    assert.equal(isXhighOrAbove("ultra"), true);
+    assert.equal(isAboveMedium("ultra"), true);
+    assert.equal(isAboveLow("ultra"), true);
   });
 });
