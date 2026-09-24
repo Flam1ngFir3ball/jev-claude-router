@@ -829,6 +829,9 @@ export function register(on: On) {
       spent = 0;
       answered = false;
       savedOnce = false;
+      // Compaction cache: the next turn starts fresh, so any previous prune
+      // score is invalid.
+      prunedCache = null;
     }
     // A resume or fork into a different session, in a process already
     // running one: the old session's routing must not carry over. Its state
