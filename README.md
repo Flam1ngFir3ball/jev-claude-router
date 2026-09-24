@@ -298,8 +298,10 @@ never in the agent's own reply, which its parent reads as a tool result.
 
 When a conversation fills its context, Claude Code compacts it into a
 summary and detail is lost. With this plugin, a compaction asks Jev about
-every tool call in the transcript instead, in one request: does this call
-still matter, and does its full output still need to be there?
+every tool call in the transcript instead — one request for a typical
+conversation, split into a few (at most two in flight at once) once there
+are enough calls to outgrow one request's budget: does this call still
+matter, and does its full output still need to be there?
 
 | Jev's answer | What happens |
 | --- | --- |
@@ -508,11 +510,12 @@ backends. This fork keeps that design and adds:
 - **[fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)**
   by [tamaratran](https://github.com/tamaratran): the idea of scoring every
   tool call with Jev and keeping the conversation verbatim, and the scoring
-  library itself. Its `src/` (commit `e3f262a7f4d4`) is vendored unchanged
-  under `hooks/compaction/`, with its MIT licence in
-  [LICENSE-fast-jev-compaction](LICENSE-fast-jev-compaction). This fork adds
-  the wiring to its provider and settings, the toggle, the fallback rules,
-  the reuse across the engine's two compaction passes, and the `/jev`
+  library itself. Its `src/` (commit `e3f262a7f4d4`) is vendored under
+  `hooks/compaction/`, with its MIT licence in
+  [LICENSE-fast-jev-compaction](LICENSE-fast-jev-compaction) — unchanged
+  apart from a batch-concurrency cap added on top in `compact.ts`. This fork
+  adds the wiring to its provider and settings, the toggle, the fallback
+  rules, the reuse across the engine's two compaction passes, and the `/jev`
   reporting.
 - **[Jev](https://docs.typesafe.ai)** by TypeSafe: the decision model behind
   every route and every compaction.

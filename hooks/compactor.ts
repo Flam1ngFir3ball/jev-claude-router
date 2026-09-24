@@ -1,6 +1,8 @@
 /**
  * Compaction by Jev: instead of the engine's summary, every tool call in the
- * transcript is scored in one Jev request and the stale ones are dropped or
+ * transcript is scored — one Jev request for a typical conversation, split
+ * into a few (capped at 2 in flight at once) once there are enough calls to
+ * outgrow one request's token budget — and the stale ones are dropped or
  * cut, so what stays is the conversation itself, verbatim. The scoring is
  * the vendored fast-jev-compaction library (hooks/compaction/); this file is
  * what ties it to the plugin's provider, its settings and `/jev`.

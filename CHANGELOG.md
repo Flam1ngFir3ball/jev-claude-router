@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+Fixes found by two rounds of fresh audits after 1.0.0 shipped:
+
+- **Session spend total.** A step whose model couldn't be priced (a
+  synthetic or unrecognized model) either subtracted a previous step's
+  already-billed cost from the session total, or — if it was the *first*
+  step of a turn — caused every later priced step in that turn to add
+  nothing, dropping the whole turn from `/jev`'s spend figure.
+- **Negation parsing.** `parseOverride` recognized `shouldn't`/`wouldn't`/
+  `couldn't`/`won't` but not their spaced equivalents (`should not`,
+  `would not`, `could not`, `will not`); a sentence like "we should not use
+  haiku for this" forced the very tier it refused.
+- **Streamed route-line stripping.** A route line the model copied from its
+  own past reply, with no blank line before its `---` rule, could desync
+  from the streaming filter's wait check at the very first `-` character
+  and leak the tail of the rule into the real reply.
+- **Turn-claim collision.** Two different, unrelated warm sessions that
+  happened to report the same context-token count for the same short
+  prompt within the 60-second claim window would cede to each other,
+  leaving one of them unrouted. The session id is now always part of the
+  claim key.
+- **Compaction batch concurrency.** A concurrency-limiting helper added to
+  cap parallel Jev calls during compaction had a bookkeeping bug that let
+  it grow unbounded after the first batch settled — measured at 7 of 8
+  batches in flight instead of 2.
+- **Decision confidence.** Clamped to 0–1 at the source; an out-of-range
+  value from the provider would previously route live and then have the
+  whole cached decision silently dropped on the next reload, since restore
+  validation (rightly) rejects one outside that range.
+- Removed `docs/HANDOFF-CLAUDE-TESTING.md` (internal testing notes that had
+  leaked into the public release) and cleared the compaction prune cache on
+  `/clear` (a stale score from the previous conversation could otherwise be
+  reused).
+
+420+ tests as of this entry (see `npm test` for the live count — it moves
+faster than this file does).
+
 ## 1.0.0 — 2026-09-23
 
 The first release of this fork of

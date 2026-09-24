@@ -1,6 +1,7 @@
 // Vendored from fast-jev-compaction (https://github.com/tamaratran/fast-jev-compaction)
 // commit e3f262a7f4d4, MIT licensed; see LICENSE-fast-jev-compaction. Imports
-// renamed to .ts; otherwise unchanged.
+// renamed to .ts. `concurrentMap` (below) was added on top of the vendored
+// source to cap batch concurrency; everything else in this file is unchanged.
 
 import { noulAnswer } from "./request.ts";
 import { collectToolCalls, estimateTokens, fitState } from "./state.ts";
