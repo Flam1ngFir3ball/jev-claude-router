@@ -1,6 +1,6 @@
 {
   "name": "jev-claude-router",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Routes each Claude Code turn to the model and effort TypeSafe's Jev picks, weighed against what a switch costs, and compacts with Jev instead of a lossy summary.",
   "author": {
     "name": "Andrew Parrish (fork of Satvik Sinha's jev-model-router)"

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 — 2026-09-24
 
 Fixes found by two rounds of fresh audits after 1.0.0 shipped:
 
@@ -35,8 +35,7 @@ Fixes found by two rounds of fresh audits after 1.0.0 shipped:
   `/clear` (a stale score from the previous conversation could otherwise be
   reused).
 
-420+ tests as of this entry (see `npm test` for the live count — it moves
-faster than this file does).
+428 tests, up from 417 at 1.0.0.
 
 ## 1.0.0 — 2026-09-23
 
