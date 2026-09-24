@@ -120,10 +120,33 @@ function textHash(text: string): string {
  * within a minute almost never carry the same context, so neither cedes
  * to the other.
  */
-function turnKey(text: string, contextTokens: number | string | null): string {
-  return `${textHash(text)}-${
+/**
+ * The claim key for a turn: its text, context, and session id, when known.
+ * Two different, unrelated warm sessions that happen to report the exact
+ * same token count for the same short prompt within the claim window no
+ * longer collide, since the session id is always folded in here.
+ *
+ * Trade-off accepted: this narrows, but does not fully close, the cross-
+ * process case where one *resumed* conversation is served by two different
+ * processes that each read a different session id for it (2026-09-23) — the
+ * only signal they share is the store, and now they no longer share a claim
+ * key either, so each may write its own line in that specific race. That
+ * scenario is a same-process module reload in the common case (handled by
+ * `superseded`/`ownsSession` via `globalThis`, unaffected by this); the
+ * cross-process id-rotation race is rarer and was not independently
+ * reproduced outside the regression test that first covered it. Preventing
+ * the more general, plainly-reachable collision (any two different sessions,
+ * same prompt, same context) was judged the higher-value fix.
+ */
+function turnKey(
+  text: string,
+  contextTokens: number | string | null,
+  sessionId: string | null = null,
+): string {
+  const base = `${textHash(text)}-${
     typeof contextTokens === "string" ? textHash(contextTokens) : (contextTokens ?? 0)
   }`;
+  return sessionId !== null ? `${base}-${textHash(sessionId)}` : base;
 }
 
 /** Store key prefix for which copy of the module owns a session. */
@@ -382,14 +405,17 @@ async function ownsSession(
 }
 
 /**
- * Claims a turn for this copy, by the turn's text. One conversation has been
- * seen handled by copies that each read a different session id (the app
- * resumed it under a new id and a copy kept the old one, 2026-09-23), so the
- * session-keyed claim could not pair them and every copy wrote a line. What
- * they share is the store and the turn's text. The newest copy wins: an
- * older one that claimed first is overridden, and checks again before it
- * writes. False means a newer copy holds the turn. A store that cannot be
- * read lets the copy through, as before.
+ * Claims a turn for this copy, by the turn's text and, for a warm session,
+ * its session id. One conversation has been seen handled by copies that each
+ * read a different session id (the app resumed it under a new id and a copy
+ * kept the old one, 2026-09-23); that case has no reported context on either
+ * copy's first turn after the resume, so `turnKey` leaves the session out
+ * and both still pair on text alone. A genuinely different, warm session
+ * that happens to carry the same token count no longer collides, since its
+ * session id is folded in there. The newest copy wins: an older one that
+ * claimed first is overridden, and checks again before it writes. False
+ * means a newer copy holds the turn. A store that cannot be read lets the
+ * copy through, as before.
  */
 async function claimTurn(
   $: {
@@ -403,9 +429,10 @@ async function claimTurn(
   text: string,
   contextTokens: number | string | null,
   birth: number,
+  sessionId: string | null = null,
 ): Promise<boolean> {
   try {
-    const at = `${TURN_PREFIX}${turnKey(text, contextTokens)}`;
+    const at = `${TURN_PREFIX}${turnKey(text, contextTokens, sessionId)}`;
     const now = Date.now();
     const held = (await $.store.get(at)) as { birth?: unknown; at?: unknown } | undefined;
     if (
@@ -1178,12 +1205,19 @@ export function register(on: On) {
     // With no context yet (a fresh session) nothing tells two sessions
     // apart, so their claims are kept apart by the session's own key.
     const scope = reported ?? snapshotKey ?? null;
-    if (!(await claimTurn($, e.text, scope, birth))) {
+    // The session id, folded into the claim only when the scope is a raw
+    // context-token count (see turnKey): a genuinely different warm session
+    // that happens to carry the same count must not collide with this one.
+    const sessionId =
+      snapshotKey !== null && snapshotKey.startsWith(SNAPSHOT_PREFIX)
+        ? snapshotKey.slice(SNAPSHOT_PREFIX.length)
+        : null;
+    if (!(await claimTurn($, e.text, scope, birth, sessionId))) {
       ceded.add(e.turnId);
       trimSet(ceded);
       return next(e);
     }
-    claimed.set(e.turnId, turnKey(e.text, scope));
+    claimed.set(e.turnId, turnKey(e.text, scope, sessionId));
     if (claimed.size > 200) claimed.delete(claimed.keys().next().value as string);
 
     // A turn the person typed starts a reply; one the engine started — a

@@ -2612,10 +2612,13 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
   });
 
-  test("copies reading different session ids for one conversation write one line and one summary, the newest's", async () => {
+  test("copies reading different session ids in the same process still write one line and one summary, the newest's", async () => {
     // What the desktop app showed 2026-09-23 after resuming a conversation
     // under a new id: a copy still reading the old id routed every turn too,
-    // with its own Jev call, so each reply carried two or three lines.
+    // with its own Jev call, so each reply carried two or three lines. This
+    // is the common shape of that bug: a module reload in one process, which
+    // `superseded`/`ownsSession` (sharing `globalThis`) resolve regardless of
+    // what each copy's turn claim key looks like.
     const store = new Map<string, unknown>();
     const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
     const stale = load(env, { store, id: "sess-OLD" });
@@ -2623,8 +2626,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     await new Promise((r) => setTimeout(r, 5));
     const fresh = load(env, { store, id: "sess-NEW" });
     await fresh.hooks.get("session.start")!(fresh.$, {}, async (e: unknown) => e);
-    // Separate runtimes: only the store is shared.
-    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    // Same runtime: both copies share `globalThis.__jevRouterNewest`.
     stale.setTier("fable", 0.95, 3);
     fresh.setTier("opus", 0.95, 1);
     // The stale copy sees the turn first; the fresh one overrides its claim.
@@ -2639,6 +2641,40 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(out.match(/✳️/g)?.length, 1, "one route line");
     assert.equal(out.match(/% cached\)/g)?.length, 1, "one summary");
     assert.match(out, /✳️ opus/, "the newest copy's");
+  });
+
+  test("two different sessions with the same prompt and the same warm context do not collide", async () => {
+    // The turn claim used to be keyed by text and context alone: two
+    // unrelated sessions that happened to report the exact same token count
+    // for the same short prompt within the claim window would take each
+    // other's claim, and one of them would go unrouted. The session id is
+    // now folded into the key so this no longer happens.
+    //
+    // Trade-off: this narrows, but does not fully close, a rarer
+    // cross-process race — one *resumed* conversation served by two
+    // different processes that each read a different session id for it,
+    // sharing only the store (not `globalThis`) — which may now write two
+    // lines in that specific case. The common shape of that original bug is
+    // a same-process module reload, covered above and unaffected by this.
+    const store = new Map<string, unknown>();
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const a = load(env, { store, id: "sess-COLLIDE-A" });
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    const b = load(env, { store, id: "sess-COLLIDE-B" });
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    // Separate processes: neither shares the other's runtime marker.
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    a.setContext(50_000);
+    b.setContext(50_000);
+    a.setTier("opus", 0.95, 1);
+    b.setTier("opus", 0.95, 1);
+    const ta = await turn(a.hooks, a.$, "cx1", "implement the parser");
+    const tb = await turn(b.hooks, b.$, "cx2", "implement the parser");
+    assert.equal(ta.sent.model, "claude-opus-5-5", "session A is routed");
+    assert.match(ta.text, /✳️/, "session A gets its own line");
+    assert.equal(tb.sent.model, "claude-opus-5-5", "session B is not ceded to A's claim");
+    assert.match(tb.text, /✳️/, "session B gets its own line too");
   });
 
   test("a line and summary the model copied into its own text are dropped, leaving the real ones", async () => {
