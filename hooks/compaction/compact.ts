@@ -136,6 +136,46 @@ async function askBatch(
   );
 }
 
+/**
+ * Runs up to `concurrency` promises in parallel, ensuring the rest wait their turn.
+ * Useful for controlling resource use when scoring large transcript fragments.
+ * If the signal aborts, no new work starts, pending work is cancelled, and
+ * any in-flight calls already sent to Jev will complete but be ignored.
+ */
+async function concurrentMap<T, U>(
+  items: readonly T[],
+  fn: (item: T) => Promise<U>,
+  concurrency: number = 2,
+  signal?: AbortSignal,
+): Promise<U[]> {
+  if (signal?.aborted) throw new Error("aborted");
+  const results: U[] = [];
+  const active = new Set<Promise<void>>();
+  const abortPromise = new Promise<never>((_, reject) => {
+    signal?.addEventListener("abort", () => reject(new Error("aborted")));
+  });
+  for (const item of items) {
+    if (signal?.aborted) throw new Error("aborted");
+    const work = (async () => {
+      results.push(await fn(item));
+    })();
+    const wrapped = Promise.resolve().then(() => work);
+    active.add(wrapped.finally(() => active.delete(wrapped)));
+    if (active.size >= concurrency) {
+      await Promise.race([Promise.race(active), abortPromise]);
+    }
+  }
+  try {
+    await Promise.race([Promise.all(active), abortPromise]);
+  } catch (err) {
+    // If abort was triggered, wait for remaining active work to settle
+    // so they don't create unhandled rejections, then throw
+    await Promise.all(active).catch(() => undefined);
+    throw err;
+  }
+  return results;
+}
+
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
   if (text.length <= headChars + 120) return text;
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : '';
@@ -276,8 +316,14 @@ export async function compact(
     const state = fitState(messages, calls, resolved);
     fitted = state;
     batches = batchCalls(candidates, state.tokens, resolved);
-    const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch)),
+    // Limit batch concurrency to 2 to avoid overwhelming the provider or local
+    // resources when scoring large transcripts. If the timeout (enforced outside
+    // this function) triggers an abort signal, any in-flight Jev calls continue
+    // to completion but their responses are discarded.
+    const answered = await concurrentMap(
+      batches,
+      (batch) => askBatch(asker, state.state, batch),
+      2,
     );
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }
