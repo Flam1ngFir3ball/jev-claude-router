@@ -220,13 +220,29 @@ export function notificationTaskOf(text: string): string | null {
  * Folds one step's usage into its turn: counts sum, the model is the last
  * step's, as the engine defines a turn's usage, and the dollars are re-priced
  * from the sum. Mutates, because the same object sits in the history and in
- * the by-turn lookup.
+ * the by-turn lookup. Returns this one step's own cost (0 when it cannot be
+ * priced), for the caller's running session total — which must count every
+ * step's real cost regardless of whether the *row's* total stays presentable
+ * (see below).
+ *
+ * `attempt.cost` is the row's own field, for display, and is deliberately
+ * `undefined` — not "however much we could price" — the moment any one of
+ * the turn's steps cannot be priced (a synthetic or unknown model): a partial
+ * dollar figure with a $ sign in front of it reads as the whole turn's cost,
+ * which it is not. That is a display choice; it must not double as the
+ * accounting for money actually spent. An earlier version conflated the two
+ * by having the caller diff `attempt.cost` before and after this call: the
+ * moment `attempt.cost` was cleared (this step or an earlier one lacked a
+ * price), the diff went negative and silently subtracted a step already
+ * billed, or if the *first* step was unpriced, `attempt.cost` stayed
+ * `undefined` forever and every later step's real cost added `0 - 0` —
+ * missing the whole turn from the session total.
  */
 export function addUsage(
   attempt: Attempt,
   usage: Usage,
   ttl: Ttl = "1h",
-): void {
+): number {
   const prior = attempt.usage;
   attempt.usage = {
     model: usage.model,
@@ -244,6 +260,7 @@ export function addUsage(
   if (step === null || (prior !== undefined && attempt.cost === undefined))
     delete attempt.cost;
   else attempt.cost = (attempt.cost ?? 0) + step;
+  return step ?? 0;
 }
 
 /**

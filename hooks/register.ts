@@ -1579,9 +1579,13 @@ export function register(on: On) {
         if (chunk.usage) {
           const usage = normalUsage(chunk.usage);
           if (attempt) {
-            const before = attempt.cost ?? 0;
-            addUsage(attempt, usage, settings.ttl);
-            spent += (attempt.cost ?? 0) - before;
+            // addUsage's return, not a before/after diff of attempt.cost:
+            // that field is cleared to undefined the moment any one step of
+            // the turn is unpriced (a display choice, so a partial total
+            // never reads as the whole), and diffing across that clear
+            // either double-subtracted a step already billed or dropped an
+            // entire turn from the total. See addUsage's own note.
+            spent += addUsage(attempt, usage, settings.ttl);
           } else {
             // A step whose turn.start this copy never saw still cost money.
             spent += usageCost(usage.model, usage, settings.ttl) ?? 0;

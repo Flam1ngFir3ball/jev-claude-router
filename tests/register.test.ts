@@ -2912,6 +2912,37 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match((await run(hooks, $, "")).text, /spent\s+\$0\.0\d+ this session/);
   });
 
+  test("an unpriced step in a turn does not erase a priced step's dollars from the session total", async () => {
+    // addUsage clears the row's own displayed cost to undefined the moment
+    // any step of the turn can't be priced (a display choice: a partial
+    // total must not read as the whole). A prior version diffed that field
+    // before and after to find each step's cost for the session total, so
+    // the moment it cleared, the diff went negative and subtracted a step
+    // already billed.
+    const { hooks, $, setTier } = await boot();
+    setTier("opus", 0.95, 1);
+    await hooks.get("turn.start")!($, { text: "implement it", turnId: "mix1" }, async (e: unknown) => e);
+    await collect(hooks.get("turn.step")!($, { turnId: "mix1", index: 0 }, () => answeredBy("claude-opus-5-5", "tool_use")));
+    const afterPriced = Number((await run(hooks, $, "")).text.match(/spent\s+\$([\d.]+)/)?.[1]);
+    assert.ok(afterPriced > 0, "the priced step is counted");
+    await collect(hooks.get("turn.step")!($, { turnId: "mix1", index: 1 }, () => answeredBy("<synthetic>")));
+    const afterUnpriced = Number((await run(hooks, $, "")).text.match(/spent\s+\$([\d.]+)/)?.[1]);
+    assert.equal(afterUnpriced, afterPriced, "the unpriced step adds nothing, and takes nothing away");
+  });
+
+  test("a priced step after an unpriced one in the same turn is still counted", async () => {
+    // The mirror case: when the *first* step of a turn is unpriced, the
+    // row's displayed cost never gets set at all, so every later priced
+    // step's diff-against-the-row was 0 - 0 — dropping the whole turn from
+    // the session total, however many of its steps really did cost money.
+    const { hooks, $, setTier } = await boot();
+    setTier("opus", 0.95, 1);
+    await hooks.get("turn.start")!($, { text: "implement it", turnId: "mix2" }, async (e: unknown) => e);
+    await collect(hooks.get("turn.step")!($, { turnId: "mix2", index: 0 }, () => answeredBy("<synthetic>", "tool_use")));
+    await collect(hooks.get("turn.step")!($, { turnId: "mix2", index: 1 }, () => answeredBy("claude-opus-5-5")));
+    assert.match((await run(hooks, $, "")).text, /spent\s+\$0\.0\d+ this session/, "the priced step is not lost");
+  });
+
   test("only the opening of a long prompt is kept, so a session of pastes still saves", async () => {
     const shared = { store: new Map<string, unknown>(), id: "sess-LONG" };
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
