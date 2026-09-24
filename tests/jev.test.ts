@@ -134,6 +134,41 @@ describe("jev", () => {
     assert.equal(signal?.aborted, true);
   });
 
+  test("the caller's signal cancels the in-flight fetch and comes back as ceded", async () => {
+    let signal: AbortSignal | undefined;
+    const controller = new AbortController();
+    const got = await askJev({
+      ...base,
+      fetch: async (_url, init) => {
+        signal = init?.signal;
+        setTimeout(() => controller.abort(), 0);
+        return never();
+      },
+      sleep: never,
+      signal: controller.signal,
+    });
+    assert.equal(got.ok, false);
+    assert.equal(signal?.aborted, true, "the fetch's own signal follows the caller's");
+    assert.match(got.ok === false ? got.reason : "", /ceded/);
+  });
+
+  test("an already-aborted signal is not worth a request at all", async () => {
+    let called = false;
+    const controller = new AbortController();
+    controller.abort();
+    const got = await askJev({
+      ...base,
+      fetch: async () => {
+        called = true;
+        return answered({ answers: {} });
+      },
+      signal: controller.signal,
+    });
+    assert.equal(called, false);
+    assert.equal(got.ok, false);
+    assert.match(got.ok === false ? got.reason : "", /ceded/);
+  });
+
   test("a slow gateway loses the race and the turn is left alone", async () => {
     const got = await askJev({
       ...base,

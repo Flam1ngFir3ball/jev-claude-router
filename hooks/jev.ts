@@ -95,6 +95,13 @@ export type AskArgs = {
   state: string;
   offered: readonly Tier[];
   timeoutMs?: number;
+  /**
+   * Aborted by the caller when the answer is no longer wanted (the turn was
+   * ceded to a newer copy before this resolved). Wired to the same fetch
+   * signal as the timeout abort; whether it actually stops the request
+   * depends on the fetch implementation honouring it — see the note below.
+   */
+  signal?: AbortSignal;
   /** Injected so tests can measure without a real clock. */
   now?: () => number;
 };
@@ -142,10 +149,11 @@ export function requestBodyOf(state: string, offered: readonly Tier[]) {
  * caller reports the reason rather than leaving the person guessing whether
  * the router ran at all.
  *
- * On timeout the turn moves on without the answer. The engine's
+ * On timeout, or on the caller's own `signal` aborting (the turn was ceded
+ * before this resolved), the turn moves on without the answer. The engine's
  * `$.http.fetch` takes no abort signal, so the request itself runs to
- * completion and is billed (about $0.00003); the signal is passed for a
- * plain `fetch`, as the scripts use, which does honour it.
+ * completion and is billed (about $0.00003) either way; the signal is
+ * passed for a plain `fetch`, as the scripts use, which does honour it.
  */
 export async function askJev(args: AskArgs): Promise<JevResult> {
   const {
@@ -164,9 +172,21 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
   if (state.trim() === "") return { ok: false, reason: "empty prompt", ms: 0 };
   if (offered.length === 0)
     return { ok: false, reason: "no tiers offered", ms: 0 };
+  if (args.signal?.aborted) return { ok: false, reason: "ceded", ms: 0 };
 
   const TIMED_OUT = Symbol("timed-out");
+  const CEDED = Symbol("ceded");
   const controller = new AbortController();
+  // The caller's signal cancels the same in-flight request the timeout does,
+  // and resolves the race below the moment it fires.
+  let onCeded: (() => void) | undefined;
+  const ceded = new Promise<typeof CEDED>((resolve) => {
+    onCeded = () => {
+      controller.abort();
+      resolve(CEDED);
+    };
+    args.signal?.addEventListener("abort", onCeded);
+  });
 
   const body = {
     ...requestBodyOf(stateOf(state), offered),
@@ -188,7 +208,12 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     const raced = await Promise.race([
       call,
       sleep(timeoutMs).then(() => TIMED_OUT),
+      ceded,
     ]);
+    if (raced === CEDED) {
+      void call.catch(() => undefined);
+      return { ok: false, reason: "ceded", ms: since() };
+    }
     if (raced === TIMED_OUT) {
       controller.abort();
       void call.catch(() => undefined);
@@ -200,6 +225,9 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     }
     response = raced as HttpResponseLike;
   } catch (error) {
+    if (args.signal?.aborted) {
+      return { ok: false, reason: "ceded", ms: since() };
+    }
     if (controller.signal.aborted) {
       return {
         ok: false,
@@ -209,6 +237,8 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     }
     const detail = error instanceof Error ? error.message : String(error);
     return { ok: false, reason: `request failed: ${shortError(detail)}`, ms: since() };
+  } finally {
+    if (onCeded) args.signal?.removeEventListener("abort", onCeded);
   }
 
   if (!response) return { ok: false, reason: "no response", ms: since() };

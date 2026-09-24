@@ -266,12 +266,18 @@ async function seedSettings(
   };
 }
 
-/** Asks Jev about one piece of text. Top-level, for the same reason as above. */
+/**
+ * Asks Jev about one piece of text. Top-level, for the same reason as above.
+ * `signal`, when given, is aborted by the caller if the turn is ceded to a
+ * newer copy before this resolves — a saving only where the fetch honours
+ * it (see askJev's own note); harmless to pass otherwise.
+ */
 async function classify(
   $: Engine,
   text: string,
   offered: readonly Tier[],
   settings: Settings,
+  signal?: AbortSignal,
 ) {
   return askJev({
     fetch: (url, init) => $.http.fetch(url, init),
@@ -280,6 +286,7 @@ async function classify(
     state: text,
     offered,
     timeoutMs: settings.timeoutMs,
+    signal,
   });
 }
 
@@ -1187,7 +1194,9 @@ export function register(on: On) {
     // Jev is the long pole of the turn, so it is asked before anything
     // else is read. A copy that then cedes the turn drops the answer: one
     // wasted call, only when a stale copy is loaded, is cheaper than a
-    // round trip ahead of Jev on every turn.
+    // round trip ahead of Jev on every turn. `askAbort` lets a cede cancel
+    // it in flight, where the fetch honours that (see classify's note);
+    // where it does not, the call still completes and is billed regardless.
     const notification = notificationOf(e.text) !== null;
     const nudge = isEngineNudge(e.text) || e.text.trim() === "";
     // A task's notification is the engine's words, not the person's.
@@ -1197,22 +1206,24 @@ export function register(on: On) {
         : null;
     const softNotify =
       settings.notifyContinue && notification && continueFrom !== null;
+    const askAbort = new AbortController();
     const asking =
       isContinuation(e.text) || nudge || softNotify || forced !== null
         ? null
-        : classify($, e.text, offered, settings);
+        : classify($, e.text, offered, settings, askAbort.signal);
     const reported = await contextTokensOf($);
     // With no context yet (a fresh session) nothing tells two sessions
     // apart, so their claims are kept apart by the session's own key.
     const scope = reported ?? snapshotKey ?? null;
-    // The session id, folded into the claim only when the scope is a raw
-    // context-token count (see turnKey): a genuinely different warm session
-    // that happens to carry the same count must not collide with this one.
+    // The session id: always folded into the claim (see turnKey) so a
+    // genuinely different warm session that happens to carry the same
+    // context does not collide with this one.
     const sessionId =
       snapshotKey !== null && snapshotKey.startsWith(SNAPSHOT_PREFIX)
         ? snapshotKey.slice(SNAPSHOT_PREFIX.length)
         : null;
     if (!(await claimTurn($, e.text, scope, birth, sessionId))) {
+      askAbort.abort();
       ceded.add(e.turnId);
       trimSet(ceded);
       return next(e);
