@@ -2,6 +2,14 @@
 
 ## 1.0.1 — 2026-09-24
 
+### Features
+
+- **Compaction batch concurrency.** A large compaction now limits itself to
+  at most 2 Jev calls in flight at once, instead of firing every batch in
+  parallel.
+
+### Fixes
+
 - **Session spend total.** A step whose model couldn't be priced (a
   synthetic or unrecognized model) either subtracted a previous step's
   already-billed cost from the session total, or — if it was the *first*
@@ -20,16 +28,13 @@
   prompt within the 60-second claim window would cede to each other,
   leaving one of them unrouted. The session id is now always part of the
   claim key.
-- **Compaction batch concurrency.** The cap on parallel Jev calls during
-  compaction had a bookkeeping bug that let it grow unbounded after the
-  first batch settled.
 - **Decision confidence.** Clamped to 0–1 at the source, so an out-of-range
   value from the provider can no longer route live and then be silently
   dropped on the next reload.
-- Removed `docs/HANDOFF-CLAUDE-TESTING.md` (internal testing notes that had
-  leaked into the public release) and cleared the compaction prune cache on
-  `/clear` (a stale score from the previous conversation could otherwise be
-  reused).
+- **Compaction prune cache.** Cleared on `/clear`, so a stale score from the
+  previous conversation is never reused for the new one.
+- Removed `docs/HANDOFF-CLAUDE-TESTING.md`, internal testing notes that had
+  leaked into the public release.
 
 ## 1.0.0 — 2026-09-23
 
