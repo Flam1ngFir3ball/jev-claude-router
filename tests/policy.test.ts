@@ -52,6 +52,25 @@ describe("policy", () => {
     assert.equal(d?.model, "claude-fable-5-1");
   });
 
+  test("a confidence outside 0..1 is clamped, not passed through", () => {
+    // persist.ts's unpack validation rejects a Decision whose confidence is
+    // outside 0..1, so a provider that ever sent one out of range would
+    // route live on it and then have the whole Decision silently dropped
+    // the moment the session reloads. Clamped here so that can't happen.
+    assert.equal(decisionOf(choice("opus", 1.4))?.confidence, 1);
+    assert.equal(decisionOf(choice("opus", -0.2))?.confidence, 0);
+    const highEffort = decisionOf({
+      tier: { type: "choice", choice: "opus", confidence: 0.9 },
+      effort: { type: "score", score: 2, confidence: 85 },
+    });
+    assert.equal(highEffort?.effortConfidence, 1);
+    const lowEffort = decisionOf({
+      tier: { type: "choice", choice: "opus", confidence: 0.9 },
+      effort: { type: "score", score: 2, confidence: -5 },
+    });
+    assert.equal(lowEffort?.effortConfidence, 0);
+  });
+
   test("every tier maps to a model id the engine knows", () => {
     for (const tier of TIERS) {
       assert.match(MODEL_OF[tier], /^claude-(haiku|sonnet|opus|fable)-/);

@@ -2629,7 +2629,9 @@ describe("register: audit regressions (2026-09-23)", () => {
     // Same runtime: both copies share `globalThis.__jevRouterNewest`.
     stale.setTier("fable", 0.95, 3);
     fresh.setTier("opus", 0.95, 1);
-    // The stale copy sees the turn first; the fresh one overrides its claim.
+    // `turn.start` calls both, stale first — but `superseded()` catches it
+    // there before it ever reaches a turn claim, since it shares
+    // `runtime.__jevRouterNewest` with fresh and reads a higher stamp.
     for (const k of [stale, fresh])
       await k.hooks.get("turn.start")!(k.$, { text: "restarted, do another audit", turnId: "d1" }, async (e: unknown) => e);
     const outOf = async (k: typeof stale) =>

@@ -218,13 +218,20 @@ export function decisionOf(
   if (!offered.includes(choice as Tier)) return null;
 
   const effort = answers.effort as ScoreAnswer | undefined;
+  // Clamped to 0..1: a Decision's confidence is trusted as a probability
+  // everywhere it is read, and `persist.ts`'s unpack validation now rejects
+  // one that is not — a provider that ever sends something outside that
+  // range (measured possible, not measured live) would otherwise route on
+  // it live and then have the whole Decision silently dropped on restore.
   const confidenceOf = (v: unknown) =>
-    typeof v === "number" && Number.isFinite(v) ? v : 0;
+    typeof v === "number" && Number.isFinite(v)
+      ? Math.min(1, Math.max(0, v))
+      : 0;
 
   const probabilities = probabilitiesOf(tier.probabilities, offered);
   const confidence =
     typeof tier.confidence === "number" && Number.isFinite(tier.confidence)
-      ? tier.confidence
+      ? Math.min(1, Math.max(0, tier.confidence))
       : confidenceFrom(probabilities, offered.length);
 
   return {

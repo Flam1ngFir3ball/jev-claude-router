@@ -114,29 +114,36 @@ function textHash(text: string): string {
 }
 
 /**
- * The claim key for a turn: its text and the context it carries. Copies of
- * one conversation read the same engine, so they agree on both; two
- * conversations that get the same short prompt ("yes", the engine's nudge)
- * within a minute almost never carry the same context, so neither cedes
- * to the other.
- */
-/**
  * The claim key for a turn: its text, context, and session id, when known.
  * Two different, unrelated warm sessions that happen to report the exact
  * same token count for the same short prompt within the claim window no
- * longer collide, since the session id is always folded in here.
+ * longer collide, since the session id is always folded in here (closed
+ * 2026-09-24; see the audit note in CHANGELOG-worthy commits for the
+ * measured collision).
  *
- * Trade-off accepted: this narrows, but does not fully close, the cross-
- * process case where one *resumed* conversation is served by two different
- * processes that each read a different session id for it (2026-09-23) — the
- * only signal they share is the store, and now they no longer share a claim
- * key either, so each may write its own line in that specific race. That
- * scenario is a same-process module reload in the common case (handled by
- * `superseded`/`ownsSession` via `globalThis`, unaffected by this); the
- * cross-process id-rotation race is rarer and was not independently
- * reproduced outside the regression test that first covered it. Preventing
- * the more general, plainly-reachable collision (any two different sessions,
- * same prompt, same context) was judged the higher-value fix.
+ * Why this stays safe for the case the id itself was chosen to solve: on
+ * 2026-09-23, one *live* copy kept routing a resumed conversation under its
+ * old session id after the app rotated it. `turn.start` re-reads
+ * `$.session.id()` on every turn (not only at `session.start`) and follows
+ * it when it changes, so that one copy's own claim key tracks the new id
+ * from its very next turn — nothing about folding the id in here breaks
+ * that, since it is still the *same* copy computing both the old and the
+ * new key over time, one after the other, not two copies racing on
+ * different ids at once.
+ *
+ * What remains open: two genuinely *separate* copies (a same-process
+ * module reload, or two processes) that each read a *different*, and
+ * non-converging, id for what is really one conversation. A same-process
+ * reload is already handled independently of this key, by `superseded` and
+ * `ownsSession` sharing `globalThis` — the newer copy wins outright and the
+ * older never even reaches a claim. A cross-process case with no shared
+ * `globalThis` has no such fallback: each copy's turn key now differs (it
+ * did not before this change either, once one of them reports a nonzero
+ * context, which a resumed conversation typically does immediately), so
+ * both may claim and both may write a line. This was not reproduced
+ * independently of the regression test that first covered it, and closing
+ * the far more easily reached collision — any two different sessions, same
+ * prompt, same reported context — was judged the higher-value fix.
  */
 function turnKey(
   text: string,
@@ -412,17 +419,11 @@ async function ownsSession(
 }
 
 /**
- * Claims a turn for this copy, by the turn's text and, for a warm session,
- * its session id. One conversation has been seen handled by copies that each
- * read a different session id (the app resumed it under a new id and a copy
- * kept the old one, 2026-09-23); that case has no reported context on either
- * copy's first turn after the resume, so `turnKey` leaves the session out
- * and both still pair on text alone. A genuinely different, warm session
- * that happens to carry the same token count no longer collides, since its
- * session id is folded in there. The newest copy wins: an older one that
- * claimed first is overridden, and checks again before it writes. False
- * means a newer copy holds the turn. A store that cannot be read lets the
- * copy through, as before.
+ * Claims a turn for this copy, by the turn's text, context, and session id
+ * (see `turnKey` for what that key does and does not close). The newest
+ * copy wins: an older one that claimed first is overridden, and checks
+ * again before it writes. False means a newer copy holds the turn. A store
+ * that cannot be read lets the copy through, as before.
  */
 async function claimTurn(
   $: {
