@@ -788,3 +788,11 @@ describe("a tier named in pasted or quoted text is not an instruction", () => {
     assert.equal(parseOverride("use opus for this"), "opus", "plain, still works");
   });
 });
+
+describe("a tier named inside double quotes is being quoted, not asked for", () => {
+  test("straight and curly quotes", () => {
+    assert.equal(parseOverride('my colleague wrote "use opus for this" in a doc; what did they mean?'), null);
+    assert.equal(parseOverride("my colleague wrote “use opus for this” in a doc"), null);
+    assert.equal(parseOverride('use fable to explain what "use opus" means'), "fable", "own words outside the quotes still count");
+  });
+});

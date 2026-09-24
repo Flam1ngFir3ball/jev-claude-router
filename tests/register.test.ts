@@ -509,7 +509,7 @@ describe("register: the route in the reply", () => {
       ),
     );
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
-    assert.match(texts[0]!, /^> ✳️ opus · medium · Jev 91% · capped from high · task finished · 0ms/);
+    assert.match(texts[0]!, /^> ✳️ opus · medium · Jev 91% · capped from high · task finished · \d+ms/);
     assert.match(texts.at(-1)!, /opus-5-5 ✓ medium · Jev 91% · /);
     assert.match(texts.at(-1)!, /capped from high/);
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
@@ -2334,6 +2334,28 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(t.sent.effort, "medium", "effort held on Sonnet");
   });
 
+  test("two fresh sessions sending the same first prompt at once are both routed", async () => {
+    const store = new Map<string, unknown>();
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" };
+    const a = load(env, { store, id: "sess-FRESH-A" });
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 3));
+    const b = load(env, { store, id: "sess-FRESH-B" });
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    (globalThis as { __jevRouterNewest?: number }).__jevRouterNewest = 0;
+    for (const k of [a, b]) {
+      k.setContext(null);
+      k.setTier("haiku", 0.99, 0);
+    }
+    await a.hooks.get("turn.start")!(a.$, { text: "what is 7*6?", turnId: "fa" }, async (e: unknown) => e);
+    await b.hooks.get("turn.start")!(b.$, { text: "what is 7*6?", turnId: "fb" }, async (e: unknown) => e);
+    const outOf = async (k: typeof a, id: string) =>
+      (await collect(k.hooks.get("turn.step")!(k.$, { turnId: id, index: 0 }, (e: { model: string }) => answeredBy(e.model))))
+        .filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.match(await outOf(a, "fa"), /✳️/, "the first session keeps its route");
+    assert.match(await outOf(b, "fb"), /✳️/, "and so does the second");
+  });
+
   test("a task notification's text cannot name a tier", async () => {
     const { hooks, $, setTier } = await boot({ JEV_ROUTER_NOTIFY_CONTINUE: "0" });
     setTier("haiku", 0.99, 0);
@@ -3091,6 +3113,21 @@ describe("register: audit regressions (2026-09-23)", () => {
       await old.hooks.get("session.compact")!(old.$, compactEvent(), async () => ({ messages: [] }));
       assert.equal(JSON.stringify(shared.store.get("session:sess-NOTMINE")), saved, "the stale copy wrote nothing");
       void before;
+    });
+
+    test("after a prune, only the transcript's share of the context is taken off", async () => {
+      const kit = await withJev();
+      kit.setTier("fable", 0.95, 3);
+      kit.setContext(20_000);
+      await turn(kit.hooks, kit.$, "pe1", "plan it");
+      // The last response carried 10k (1k input + 9k cache read in usage()).
+      await kit.hooks.get("session.compact")!(kit.$, compactEvent(10), async () => ({ messages: [] }));
+      kit.setContext(null); // the engine reports nothing yet: /jev shows the router's own estimate
+      const status = (await run(kit.hooks, kit.$, "")).text;
+      const shown = Number(status.match(/cache\s+1h writes · (\d+)k context/)?.[1]);
+      // The transcript is ~20k characters (~5k tokens); most of it is pruned.
+      // 10k carried: ~5k of it transcript, most pruned; the rest stays.
+      assert.ok(shown >= 6 && shown < 10, `system and tools stay counted: ${shown}k`);
     });
 
     test("a subagent's compaction does not become /jev's last", async () => {

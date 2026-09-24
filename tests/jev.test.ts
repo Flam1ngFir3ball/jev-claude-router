@@ -289,3 +289,14 @@ describe("timeout", () => {
     assert.ok(MAX_TIMEOUT_MS < 10_000);
   });
 });
+
+describe("shortError", () => {
+  test("an engine fetch error comes down to a few words", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    assert.equal(
+      shortError("jev-claude-router: $.http.fetch(https://127.0.0.1:9/v1/systemone) failed: ECONNREFUSED: ECONNREFUSED: Unable to connect. Is the computer able to access the url?"),
+      "ECONNREFUSED: Unable to connect",
+    );
+    assert.ok(shortError("x".repeat(200)).length <= 60);
+  });
+});

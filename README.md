@@ -203,8 +203,8 @@ allowed.
 skips Jev, runs at medium effort and shows `your pick`. Plain mentions are
 not routes: "search for opus docs" and "I'm using opus for comparison" are
 ordinary prompts. A negation cancels the next route ("don't use haiku, use
-opus" goes to opus). Pasted content, code, quoted lines and background-task
-notifications are not read for this, so a pasted document that says "use
+opus" goes to opus). Pasted content, code, quoted lines, text in double
+quotes and background-task notifications are not read for this, so a pasted document that says "use
 opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier excluded with
 `JEV_ROUTER_EXCLUDE` cannot be named back in.
 

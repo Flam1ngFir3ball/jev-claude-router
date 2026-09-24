@@ -545,6 +545,9 @@ export function ownWords(text: string): string {
     .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, " ")
     .replace(/```[\s\S]*?(?:```|$)/g, " ")
     .replace(/`[^`\n]*`/g, " ")
+    // A phrase in double quotes is being quoted, not said: "use opus".
+    .replace(/"[^"\n]{1,200}"/g, " ")
+    .replace(/\u201c[^\u201d\n]{1,200}\u201d/g, " ")
     .replace(/^[ \t]*>.*$/gm, " ");
 }
 

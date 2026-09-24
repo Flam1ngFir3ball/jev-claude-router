@@ -45,6 +45,21 @@ export function stateOf(text: string): string {
 }
 
 /** A timeout from the environment, or the default when it is unusable. */
+/**
+ * An engine fetch error as a few words for the route line: without the
+ * engine's "<plugin>: $.http.fetch(<url>) failed:" preamble, repeats and
+ * advice, e.g. "ECONNREFUSED" or "getaddrinfo ENOTFOUND host".
+ */
+export function shortError(detail: string): string {
+  const bare = detail
+    .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "")
+    .split(/[.?!]\s/)[0]!
+    .replace(/^(\w+): \1\b:?\s*/, "$1: ")
+    .replace(/:\s*$/, "")
+    .trim();
+  return bare.length > 60 ? `${bare.slice(0, 57)}…` : bare;
+}
+
 export function timeoutOf(raw: string | undefined): number {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TIMEOUT_MS;
@@ -193,7 +208,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
       };
     }
     const detail = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: `request failed: ${detail}`, ms: since() };
+    return { ok: false, reason: `request failed: ${shortError(detail)}`, ms: since() };
   }
 
   if (!response) return { ok: false, reason: "no response", ms: since() };

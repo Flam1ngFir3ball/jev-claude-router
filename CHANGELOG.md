@@ -36,8 +36,8 @@ summary. See the [README](README.md) for how each feature works.
 - **Sonnet effort hold.** On Sonnet, where an effort change rewrites much of
   the cache, the effort is held unless Jev is sure enough of it.
 - **Named tiers.** "use opus", "switch to fable" and similar skip Jev. Plain
-  mentions, negations, pasted content, code, quoted lines and task
-  notifications are not read as instructions.
+  mentions, negations, pasted content, code, quoted lines, text in double
+  quotes and task notifications are not read as instructions.
 - **Go-aheads.** "yes", "ok", "go ahead", "lgtm" and similar continue the
   previous turn's route without asking Jev.
 - **Wake-ups.** Finished background tasks and the engine's own nudges
@@ -98,7 +98,7 @@ summary. See the [README](README.md) for how each feature works.
 ### Tooling
 
 - `check-jev`, `try-prompts`, `measure-switch-cost`, `bench-overhead`.
-- 413 tests; `claude plugin validate` in the pre-commit hook.
+- 417 tests; `claude plugin validate` in the pre-commit hook.
 
 ### Credits
 

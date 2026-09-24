@@ -120,8 +120,10 @@ function textHash(text: string): string {
  * within a minute almost never carry the same context, so neither cedes
  * to the other.
  */
-function turnKey(text: string, contextTokens: number | null): string {
-  return `${textHash(text)}-${contextTokens ?? 0}`;
+function turnKey(text: string, contextTokens: number | string | null): string {
+  return `${textHash(text)}-${
+    typeof contextTokens === "string" ? textHash(contextTokens) : (contextTokens ?? 0)
+  }`;
 }
 
 /** Store key prefix for which copy of the module owns a session. */
@@ -399,7 +401,7 @@ async function claimTurn(
     };
   },
   text: string,
-  contextTokens: number | null,
+  contextTokens: number | string | null,
   birth: number,
 ): Promise<boolean> {
   try {
@@ -886,6 +888,8 @@ export function register(on: On) {
     // leaves the engine's summary to run.
     let pruned: { messages: readonly typeof e.messages[number][] } | null = null;
     let reduction = 0;
+    // Characters removed from the transcript, for what the next turn carries.
+    let removedChars = 0;
     const transcript = Array.isArray(e.messages) ? e.messages : [];
     // `/compact <what to keep>` is an instruction to the summariser; Jev's
     // pruning has no way to follow it, so the summary runs.
@@ -917,6 +921,7 @@ export function register(on: On) {
         ms.reduce((n, m) => n + m.text.length + JSON.stringify(m.toolUses).length + JSON.stringify(m.toolResults ?? []).length, 0);
       const all = size(transcript);
       reduction = all > 0 ? cached.reduction * (1 - size(tail) / all) : cached.reduction;
+      removedChars = Math.round(reduction * all);
     } else if (
       enabled &&
       settings.compactOn &&
@@ -940,6 +945,17 @@ export function register(on: On) {
         pruned = { messages: result.messages as unknown as typeof e.messages };
         prunedCache = { handles, messages: result.messages, reduction: result.compaction.reduction };
         reduction = result.compaction.reduction;
+        removedChars = Math.round(
+          reduction *
+            transcript.reduce(
+              (n, m) =>
+                n +
+                m.text.length +
+                JSON.stringify(m.toolUses).length +
+                JSON.stringify(m.toolResults ?? []).length,
+              0,
+            ),
+        );
       }
     }
     // A copy that does not own the session leaves its state alone.
@@ -959,8 +975,11 @@ export function register(on: On) {
         // as much smaller as was removed. The hold stands; what the next
         // turn carries is scaled, so the window guard and the price checks
         // still see a large context, not none.
+        // Only the transcript shrank; the system prompt and tools did not.
+        // Characters over four is the generous side of a token count, so
+        // the estimate errs large, which holds rather than switches.
         lastUsage = {
-          context: Math.round(lastUsage.context * (1 - reduction)),
+          context: Math.max(0, Math.round(lastUsage.context - removedChars / 4)),
           output: lastUsage.output,
         };
       }
@@ -1153,12 +1172,15 @@ export function register(on: On) {
         ? null
         : classify($, e.text, offered, settings);
     const reported = await contextTokensOf($);
-    if (!(await claimTurn($, e.text, reported, birth))) {
+    // With no context yet (a fresh session) nothing tells two sessions
+    // apart, so their claims are kept apart by the session's own key.
+    const scope = reported ?? snapshotKey ?? null;
+    if (!(await claimTurn($, e.text, scope, birth))) {
       ceded.add(e.turnId);
       trimSet(ceded);
       return next(e);
     }
-    claimed.set(e.turnId, turnKey(e.text, reported));
+    claimed.set(e.turnId, turnKey(e.text, scope));
     if (claimed.size > 200) claimed.delete(claimed.keys().next().value as string);
 
     // A turn the person typed starts a reply; one the engine started — a
