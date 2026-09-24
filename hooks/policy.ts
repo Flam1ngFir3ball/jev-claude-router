@@ -514,12 +514,14 @@ const BARE_TIER_SINK =
 
 /**
  * Negation starters. Bare `\bnot` is omitted: "why not use opus" is
- * affirmative. `never mind` is omitted (`never(?!\s+mind)`). Spaced
- * `do/can/must/may not` and common `*n't` forms (curly apostrophes
- * normalized first) are included.
+ * affirmative. `never mind` is omitted (`never(?!\s+mind)`). Every modal's
+ * contracted AND spaced form is included ("shouldn't"/"should not",
+ * "won't"/"will not", ...) — a prior version had the contractions but
+ * missed the spaced form for should/would/could/will, so "we should not use
+ * haiku" read as affirmative and forced the very tier it refused.
  */
 const OVERRIDE_NEGATION_AT =
-  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|mustn'?t|couldn'?t|can(?:'?t|not|\s+not)|never(?!\s+mind)|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
+  /\b(?:do\s*n'?t|doesn'?t|didn'?t|won'?t|will\s+not|wouldn'?t|would\s+not|shouldn'?t|should\s+not|mustn'?t|couldn'?t|could\s+not|can(?:'?t|not|\s+not)|never(?!\s+mind)|avoid|stop|do\s+not|must\s+not|may\s+not)\b/gi;
 
 /**
  * Words allowed between a negation and its target. Anything else (you, what,

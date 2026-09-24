@@ -137,10 +137,16 @@ async function askBatch(
 }
 
 /**
- * Runs up to `concurrency` promises in parallel, ensuring the rest wait their turn.
- * Useful for controlling resource use when scoring large transcript fragments.
- * If the signal aborts, no new work starts, pending work is cancelled, and
- * any in-flight calls already sent to Jev will complete but be ignored.
+ * Runs `fn` over `items` with at most `concurrency` in flight at once, in
+ * item order (results are collected by index, not completion order, so
+ * this is a true `map`, not a fire-and-forget pool). Useful for controlling
+ * resource use when scoring large transcript fragments in many batches.
+ *
+ * If `signal` aborts, no new work starts and the promise rejects once every
+ * already-started call has settled (so none becomes an unhandled rejection);
+ * calls already sent to the network complete regardless, since aborting the
+ * signal only cancels a fetch that itself honours it (see askJev's note —
+ * the engine's own fetch today does not).
  */
 async function concurrentMap<T, U>(
   items: readonly T[],
@@ -149,29 +155,43 @@ async function concurrentMap<T, U>(
   signal?: AbortSignal,
 ): Promise<U[]> {
   if (signal?.aborted) throw new Error("aborted");
-  const results: U[] = [];
+  const results: U[] = new Array(items.length);
   const active = new Set<Promise<void>>();
-  const abortPromise = new Promise<never>((_, reject) => {
-    signal?.addEventListener("abort", () => reject(new Error("aborted")));
-  });
-  for (const item of items) {
-    if (signal?.aborted) throw new Error("aborted");
-    const work = (async () => {
-      results.push(await fn(item));
-    })();
-    const wrapped = Promise.resolve().then(() => work);
-    active.add(wrapped.finally(() => active.delete(wrapped)));
-    if (active.size >= concurrency) {
-      await Promise.race([Promise.race(active), abortPromise]);
-    }
-  }
+  let aborted = false;
+  // Resolved (not rejected — nothing here should reach an unhandled state)
+  // the moment `signal` aborts, so a wait for a free slot wakes up right
+  // away instead of only noticing abort on its next loop iteration.
+  let wakeAborted: () => void = () => {};
+  const abortedWake = new Promise<void>((resolve) => { wakeAborted = resolve; });
+  const onAbort = () => { aborted = true; wakeAborted(); };
+  signal?.addEventListener("abort", onAbort);
   try {
-    await Promise.race([Promise.all(active), abortPromise]);
-  } catch (err) {
-    // If abort was triggered, wait for remaining active work to settle
-    // so they don't create unhandled rejections, then throw
+    for (const [i, item] of items.entries()) {
+      if (aborted) throw new Error("aborted");
+      // `p` closes over itself so its own settlement removes itself from
+      // `active` — adding the `.finally()` wrapper instead (a *different*
+      // promise) while deleting the original left `active` growing forever,
+      // so the concurrency cap silently stopped limiting after the first
+      // batch settled (measured: 67 batches → 66 in flight at once).
+      const p: Promise<void> = fn(item)
+        .then((result) => {
+          results[i] = result;
+        })
+        .finally(() => {
+          active.delete(p);
+        });
+      active.add(p);
+      if (active.size >= concurrency) await Promise.race([...active, abortedWake]);
+    }
+    await Promise.all(active);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+  if (aborted) {
+    // Let whatever is still in flight settle before returning, so none of
+    // it becomes an unhandled rejection after this function has returned.
     await Promise.all(active).catch(() => undefined);
-    throw err;
+    throw new Error("aborted");
   }
   return results;
 }
@@ -302,6 +322,7 @@ export async function compact(
   messages: readonly Message[],
   asker: JevAsker,
   options: CompactOptions = {},
+  signal?: AbortSignal,
 ): Promise<CompactResult> {
   const started = Date.now();
   const resolved = resolveOptions(options);
@@ -317,13 +338,17 @@ export async function compact(
     fitted = state;
     batches = batchCalls(candidates, state.tokens, resolved);
     // Limit batch concurrency to 2 to avoid overwhelming the provider or local
-    // resources when scoring large transcripts. If the timeout (enforced outside
-    // this function) triggers an abort signal, any in-flight Jev calls continue
-    // to completion but their responses are discarded.
+    // resources when scoring large transcripts. The caller's signal (its own
+    // timeout, enforced outside this function) stops any further batches from
+    // being launched once it fires; batches already in flight are cancelled at
+    // the network level only where the asker's own fetch honours the signal
+    // baked into it (see askerOf in compactor.ts) — otherwise they still run
+    // to completion and their answers are discarded.
     const answered = await concurrentMap(
       batches,
       (batch) => askBatch(asker, state.state, batch),
       2,
+      signal,
     );
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }

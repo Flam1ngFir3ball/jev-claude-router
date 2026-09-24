@@ -199,6 +199,7 @@ export async function pruneTranscript(args: {
       args.messages,
       askerOf(args.provider, args.fetch, controller.signal),
       resolveOptions(args.options ?? {}),
+      controller.signal,
     );
     const raced = await Promise.race([
       work,

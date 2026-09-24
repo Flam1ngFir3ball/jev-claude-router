@@ -334,6 +334,14 @@ describe("a tier named in the prompt", () => {
     assert.equal(parseOverride("mustn't use opus"), null);
     assert.equal(parseOverride("can not use opus"), null);
     assert.equal(parseOverride("couldn't use opus"), null);
+    // Spaced forms of the same modals, not just their contractions — a prior
+    // version had "shouldn't"/"wouldn't"/"couldn't" and "won't" but not their
+    // spaced equivalents, so these read as affirmative and forced the very
+    // tier the sentence refused.
+    assert.equal(parseOverride("we should not use haiku for this"), null);
+    assert.equal(parseOverride("I would not use opus for that"), null);
+    assert.equal(parseOverride("we could not use fable"), null);
+    assert.equal(parseOverride("I will not use haiku"), null);
     assert.equal(parseOverride("must not use opus"), null);
     assert.equal(parseOverride("may not use fable"), null);
     assert.equal(parseOverride("stop using haiku and use opus"), "opus");
