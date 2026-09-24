@@ -1132,8 +1132,19 @@ export function withoutImitations(text: string): string {
 /** How a route line opens, for telling a partial one from ordinary text. */
 const LINE_OPENERS = ["> ✳️ ", "> ⚠️ "];
 
-/** The rule under a route line, after the line's own newline. */
+/**
+ * The rule under a route line, after the line's own newline: the canonical
+ * form (a blank line before it, which is what this plugin itself writes —
+ * REPLY_SEPARATOR) and the bare form `IMITATED_LINE` also strips (the rule
+ * directly under the line, no blank line). Streamed a few characters at a
+ * time, a copied line's rule can arrive as either shape; checking only the
+ * canonical one against `rest` let a bare split ("> ✳️ … · 12ms\n", then
+ * "-", then "--\n\n") desync from LINE_RULE at the very first "-" (it does
+ * not start with "\n"), settle immediately, and leak the tail of the rule
+ * ("---\n\n") through as ordinary text.
+ */
 const LINE_RULE = "\n---\n\n";
+const LINE_RULE_BARE = "---\n\n";
 
 /** A summary's first line, once the fence has opened. */
 const SUMMARY_HEAD = /^[^\n`]*\(\d+% cached\)/;
@@ -1193,8 +1204,13 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
         if (eol === -1 && !final) return "";
         if (eol !== -1) {
           const rest = h.slice(eol + 1);
-          // The rule under it may still be arriving.
-          if (!final && LINE_RULE.startsWith(rest) && rest.length < LINE_RULE.length) return "";
+          // The rule under it may still be arriving, in either shape.
+          if (
+            !final &&
+            (LINE_RULE.startsWith(rest) || LINE_RULE_BARE.startsWith(rest)) &&
+            rest.length < LINE_RULE.length
+          )
+            return "";
         }
         this.held = h.replace(IMITATED_LINE, "");
       }

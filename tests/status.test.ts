@@ -1004,6 +1004,13 @@ describe("ImitationFilter: the same result however the text is split", () => {
   const footer = "\n\n```\nopus-5-5 ✓ medium · Jev 32% · $0.14 · 351k in (99% cached) · 2k out\nkept opus: Jev 32% on fable, needs 90%\n```";
   const cases: [string, string][] = [
     ["> ✳️ opus · medium · kept opus: Jev 32% on fable, needs 90% · 430ms\n\n---\n\nThe restart came back clean.", "The restart came back clean."],
+    // The bare form IMITATED_LINE also strips: the rule directly under the
+    // line, one newline instead of a blank line before it. A prior version
+    // only checked the streaming split against the blank-line form, so a
+    // split right after that single newline ("...12ms\n", then "-", then
+    // "--\n\n") desynced at the very first "-" and let "---\n\n" leak through
+    // as ordinary text (measured 2026-09-24).
+    ["> ✳️ opus · medium · 12ms\n---\n\nReal text.", "Real text."],
     [`Merged and pushed.${footer}`, "Merged and pushed."],
     [`> ⚠️ not routed: timeout\n\n---\n\nDone.${footer}\n`, "Done."],
     ["Run this:\n\n```bash\nnpm test\n```\n\nThen check.", "Run this:\n\n```bash\nnpm test\n```\n\nThen check."],
