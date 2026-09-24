@@ -3101,6 +3101,18 @@ describe("register: audit regressions (2026-09-23)", () => {
       assert.match((await run(seeded.hooks, seeded.$, "")).text, /compact\s+off/);
     });
 
+    test("/clear drops the compaction prune cache, so the new conversation is not scored from the old one's", async () => {
+      const kit = await withJev();
+      const messages = transcript(10);
+      await kit.hooks.get("session.compact")!(kit.$, { trigger: "precompute", messages }, async () => ({ messages: [] }));
+      assert.equal(kit.compactions(), 1);
+      await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "clear" }, async (e: unknown) => e);
+      // Same handles as before the clear: without dropping the cache, this
+      // would match by handle and reuse the old conversation's scoring.
+      await kit.hooks.get("session.compact")!(kit.$, { trigger: "precompute", messages }, async () => ({ messages: [] }));
+      assert.equal(kit.compactions(), 2, "scored again, not reused from before the clear");
+    });
+
     test("a transcript the engine compacts ahead of time and then for real is scored once", async () => {
       const kit = await withJev();
       const messages = transcript(10);

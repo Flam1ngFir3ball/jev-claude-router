@@ -102,6 +102,26 @@ describe("persist", () => {
     assert.equal(unpack({ ...good, ceiling: null }), null);
   });
 
+  test("a corrupted or out-of-range Decision is dropped, not trusted", () => {
+    // Added alongside clamping confidence at its source (decisionOf): a
+    // Decision that reaches the store some other way (a hand-edited file,
+    // a future bug) with a bad shape or an out-of-range confidence must not
+    // come back and be routed on.
+    const good = JSON.parse(JSON.stringify(pack(stateWith({ prompt: "x", ms: 1, decision }))));
+    const withRunning = (running: unknown) => unpack({ ...good, running });
+    assert.equal(withRunning({ ...decision, confidence: 1.5 })?.running, null, "confidence over 1");
+    assert.equal(withRunning({ ...decision, confidence: -0.1 })?.running, null, "confidence under 0");
+    assert.equal(withRunning({ ...decision, confidence: "high" })?.running, null, "confidence not a number");
+    assert.equal(withRunning({ ...decision, tier: 5 })?.running, null, "tier not a string");
+    assert.equal(withRunning({ ...decision, model: undefined })?.running, null, "missing model");
+    assert.deepEqual(withRunning(decision)?.running, decision, "a valid one still comes back");
+    // decisions[] filters the same way, entry by entry.
+    const withDecisions = (entry: unknown) =>
+      unpack({ ...good, decisions: [["turn-1", entry]] });
+    assert.deepEqual(withDecisions(decision)?.decisions, [["turn-1", decision]]);
+    assert.deepEqual(withDecisions({ ...decision, confidence: 2 })?.decisions, []);
+  });
+
   test("the oldest snapshots are dropped past the limit, the current one never", () => {
     const keys = [
       "other",
