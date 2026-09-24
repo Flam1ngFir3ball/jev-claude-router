@@ -1,5 +1,13 @@
 # Changelog
 
+<!--
+  Every entry after 1.0.0 groups its items under "### Features" and
+  "### Fixes" (only the sections that apply; a chore-only release can use
+  "### Chores" instead). State what changed plainly — not how it was found
+  (an audit, a bug report, a review) and not the investigation that went
+  into it.
+-->
+
 ## 1.0.1 — 2026-09-24
 
 ### Features
