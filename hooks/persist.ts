@@ -160,13 +160,25 @@ export function unpack(raw: unknown): State | null {
   if (spawned === null || turns === null) return null;
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  // Validate Decision fields to catch corruption in the store: tier, model,
+  // effort are expected strings; confidence is 0–1. Fail open: invalid
+  // decisions are dropped rather than trusted to their detriment.
+  const isValidDecision = (v: unknown): v is Decision =>
+    isRecord(v) &&
+    typeof v.tier === "string" &&
+    typeof v.model === "string" &&
+    typeof v.effort === "string" &&
+    typeof v.confidence === "number" &&
+    Number.isFinite(v.confidence) &&
+    v.confidence >= 0 &&
+    v.confidence <= 1;
   const decisions: [string, Decision][] = Array.isArray(raw.decisions)
     ? raw.decisions.filter(
         (p): p is [string, Decision] =>
-          Array.isArray(p) && typeof p[0] === "string" && isRecord(p[1]),
+          Array.isArray(p) && typeof p[0] === "string" && isValidDecision(p[1]),
       )
     : [];
-  const decision = (v: unknown) => (isRecord(v) ? (v as Decision) : null);
+  const decision = (v: unknown) => (isValidDecision(v) ? v : null);
   const lastUsage =
     isRecord(raw.lastUsage) &&
     typeof raw.lastUsage.context === "number" &&
