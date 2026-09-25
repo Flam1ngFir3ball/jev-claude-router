@@ -8,7 +8,9 @@
   into it.
 -->
 
-## 1.0.3 — 2026-09-25
+## Unreleased
+
+Fixes ready and merged, held back from a version bump until approved:
 
 ### Fixes
 
