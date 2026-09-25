@@ -1670,10 +1670,10 @@ describe("register: the tiers subcommand", () => {
   const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
     hooks.get('command.run:{"command":"jev"}')!($, { args });
 
-  async function turn(hooks: Map<string, Function>, $: unknown, id: string) {
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string, text = "implement it") {
     await hooks.get("turn.start")!(
       $,
-      { text: "implement it", turnId: id },
+      { text, turnId: id },
       async (e: unknown) => e,
     );
     let sent: { model?: string; effort?: string } = {};
@@ -1746,13 +1746,19 @@ describe("register: the tiers subcommand", () => {
       assert.equal(t.sent.model, "claude-opus-5-5");
     });
 
-    test("outgrowing haiku's window does not fall back to the excluded tier", async () => {
+    test("outgrowing haiku's window steps up to the cheapest offered tier that fits, not to the excluded one and not to fully unrouted", async () => {
+      // fable (excluded) has room for 250k, so simply refusing to hold on
+      // it must not also refuse the step-up this same guard does when
+      // nothing was ever excluded (register.test.ts's "haiku outgrown"
+      // tests): landing on fully-unrouted here would pay a cold write on
+      // the session model for no reason, when sonnet already fits.
       const { hooks, $, setTier, setContext } = await startedOnFable();
       setContext(250_000);
       setTier("haiku", 0.99, 0);
       const t = await turn(hooks, $, "tf-h1c");
       assert.notEqual(t.sent.model, "claude-fable-5-1");
-      assert.match(t.text, /too long for haiku/);
+      assert.equal(t.sent.model, "claude-sonnet-5");
+      assert.match(t.text, /moved up only to sonnet/);
     });
 
     test("a bare go-ahead does not continue on the excluded tier", async () => {
@@ -1781,6 +1787,42 @@ describe("register: the tiers subcommand", () => {
       const t = await turn(hooks, $, "tf-h1e");
       assert.notEqual(t.sent.model, "claude-fable-5-1");
       assert.doesNotMatch(t.text, /kept fable/);
+    });
+
+    test("a task notification is still asked to Jev when its reply's tier has since been excluded", async () => {
+      // softNotify continues the reply's route without asking Jev — right,
+      // when there is a route left to continue. Checking continueFrom !==
+      // null without also checking its tier was still offered meant the
+      // classify call was skipped here too, and continuationOf's own check
+      // then fell back to unrouted with no Jev answer to route from at all.
+      const { hooks, $, setTier, fetches } = await startedOnFable();
+      const asked = fetches();
+      const xml = '<task-notification><task-id>abc</task-id><summary>Agent "reviewer" completed</summary></task-notification>';
+      setTier("opus", 0.98, 2);
+      const t = await turn(hooks, $, "tf-l1", xml);
+      assert.equal(fetches(), asked + 1, "Jev was asked, since fable's route is no longer continuable");
+      assert.equal(t.sent.model, "claude-opus-5-5");
+    });
+
+    test("a session-model placeholder on the excluded tier is still priced accurately, not switched at any cost", async () => {
+      // `running` here is never a real routed decision (no turn was ever
+      // routed to opus by this plugin — it is just what the resumed session
+      // reports), so excluding opus must not also blind the price check to
+      // the cache that is genuinely warm there: an unrouted turn would run
+      // on that same cache anyway, so forcing an expensive switch away from
+      // it buys nothing.
+      const { hooks, $, setTier, setContext } = await started({ JEV_ROUTER_STICKY: undefined });
+      setContext(150_000);
+      await hooks.get("classic.SessionStart")!(
+        $,
+        { source: "resume", model: "claude-opus-5", context_tokens: 150_000, prompt_cache_likely_expired: false },
+        async (e: unknown) => e,
+      );
+      await run(hooks, $, "tiers off opus");
+      setTier("haiku", 0.99, 0);
+      const t = await turn(hooks, $, "tf-m2");
+      assert.equal(t.sent.model, "claude-opus-5", "stays on the genuinely warm cache; switching would cost far more");
+      assert.match(t.text, /kept opus: haiku costs \$/);
     });
   });
 
@@ -1830,6 +1872,23 @@ describe("register: the tiers subcommand", () => {
     assert.equal((await turn(hooks, $, "tf6")).sent.model, undefined);
     await run(hooks, $, "tiers on fable");
     assert.equal((await turn(hooks, $, "tf7")).sent.model, "claude-fable-5-1");
+  });
+
+  test("JEV_ROUTER_EXCLUDE naming every tier does not leave excluded and offered disagreeing about which one it was", async () => {
+    // Before this was normalized at the source, `excluded` kept the raw,
+    // fully-excluded set while `offered` (correctly) fell back to the full
+    // ladder; the first /jev tiers command afterward then read that stale
+    // `excluded` as its starting point and inverted the request — turning
+    // the genuinely-last-standing tier off and bringing an already-"on" one
+    // back, exactly the class of bug this describe's other tests fixed for
+    // the runtime command alone.
+    const { hooks, $, setTier } = await started({ JEV_ROUTER_EXCLUDE: "haiku,sonnet,opus,fable" });
+    assert.match((await run(hooks, $, "")).text, /tiers\s+haiku, sonnet, opus, fable/, "the fallback: everything is offered");
+    assert.doesNotMatch((await run(hooks, $, "")).text, /excluded/, "nothing is actually excluded to show");
+    await run(hooks, $, "tiers off haiku");
+    setTier("opus", 0.95, 1);
+    const t = await turn(hooks, $, "tf8");
+    assert.equal(t.sent.model, "claude-opus-5-5", "opus (and every other non-haiku tier) is still genuinely offered");
   });
 });
 

@@ -179,6 +179,24 @@ export function offeredTiers(excluded: Set<Tier>): Tier[] {
   return kept.length > 0 ? [...kept] : [...TIERS];
 }
 
+/**
+ * `offered` paired with the `excluded` list that actually matches it. Naming
+ * every tier excluded (a misconfigured `JEV_ROUTER_EXCLUDE`, or a matching
+ * combination of `/jev tiers off` calls before the last-tier guard existed)
+ * makes `offeredTiers` fall back to the full ladder rather than nothing —
+ * every caller that stores or displays `excluded` alongside `offered` needs
+ * the two to agree, or `/jev` can end up saying a tier is both offered and
+ * excluded.
+ */
+export function tierFilter(excluded: Iterable<Tier>): {
+  offered: Tier[];
+  excluded: Tier[];
+} {
+  const set = excluded instanceof Set ? excluded : new Set(excluded);
+  const offered = offeredTiers(set);
+  return { offered, excluded: offered.length === TIERS.length ? [] : [...set] };
+}
+
 type ChoiceAnswer = {
   type: "choice";
   choice?: unknown;
@@ -347,12 +365,23 @@ export function thresholdOf(raw: string | undefined): number {
  *
  * `previous` is the tier the last routed turn ran on, or null on the first
  * turn of a session, which has nothing to hold to.
+ *
+ * `offered` refuses to hold on a `previous` that has since been turned off
+ * with `/jev tiers off` — but only when `previous` was itself a real routed
+ * decision (`effortConfidence` set). A `previous` seeded only as a
+ * placeholder from the session model (nothing ever routed there) is exempt:
+ * an unrouted turn runs on that same placeholder anyway, so refusing to
+ * weigh it against a switch's real cost does not stop the plugin from
+ * "using" the tier — the tier is not being used *by a choice this plugin
+ * made* either way — and it does force a switch whose cache-write cost can
+ * run many times what staying would have, for no benefit.
  */
 export function stickyDecision(
   fresh: Decision,
   previous: Decision | null,
   threshold: number,
   verdict: SwitchVerdict | null = null,
+  offered: readonly Tier[] = TIERS,
 ): Decision {
   if (previous === null) return fresh;
   // The model, not the tier: a session on `claude-opus-5` that Jev keeps on
@@ -365,7 +394,9 @@ export function stickyDecision(
       : { ...fresh, model: previous.model };
   const shaky = fresh.confidence < threshold;
   const unprofitable = verdict !== null && verdict.hold;
-  if (!shaky && !unprofitable) return fresh;
+  const droppedTier =
+    !offered.includes(previous.tier) && previous.effortConfidence !== undefined;
+  if ((!shaky && !unprofitable) || droppedTier) return fresh;
   return {
     tier: previous.tier,
     model: previous.model,
@@ -394,17 +425,26 @@ export function stickyDecision(
 
 /**
  * Keeps a turn off a tier whose window it does not fit: on the tier already
- * running when that one takes it, otherwise nowhere (null), so the session
- * model answers. A `use haiku` at 300k is refused the same way; the API
- * would refuse it with "Prompt is too long", and did, three times in a week.
+ * running when that one takes it, otherwise nowhere (null), so the caller's
+ * own step-up runs instead. A `use haiku` at 300k is refused the same way;
+ * the API would refuse it with "Prompt is too long", and did, three times in
+ * a week. `offered` refuses `previous` as a landing spot when it has been
+ * turned off since it started running, even though it still fits — the
+ * caller still sees `previous` was non-null (nothing here nulls it), so its
+ * own step-up runs from `decision.tier` rather than giving up outright.
  */
 export function withinWindow(
   decision: Decision,
   previous: Decision | null,
   contextTokens: number,
+  offered: readonly Tier[] = TIERS,
 ): Decision | null {
   if (fitsWindow(decision.tier, contextTokens)) return decision;
-  if (previous === null || !fitsWindow(previous.tier, contextTokens))
+  if (
+    previous === null ||
+    !fitsWindow(previous.tier, contextTokens) ||
+    !offered.includes(previous.tier)
+  )
     return null;
   return {
     tier: previous.tier,

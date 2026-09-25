@@ -25,6 +25,7 @@ import {
   sessionDecision,
   stickyOf,
   thresholdOf,
+  tierFilter,
   EFFORTS,
   type Ceiling,
   type Decision,
@@ -237,7 +238,10 @@ async function seedSettings(
   current: Settings | null,
 ): Promise<Settings> {
   if (current !== null) return current;
-  const excluded = excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE"));
+  // Normalized together: JEV_ROUTER_EXCLUDE naming every tier falls back to
+  // the full ladder in `offered`, and `excluded` must agree with that or
+  // `/jev` can end up saying a tier is both offered and excluded.
+  const tiers = tierFilter(excludedTiers(await $.env.get("JEV_ROUTER_EXCLUDE")));
   return {
     provider: providerOf({
       TYPESAFE_API_KEY: await $.env.get("TYPESAFE_API_KEY"),
@@ -250,8 +254,8 @@ async function seedSettings(
       JEV_ROUTER_JEV_MODEL: await $.env.get("JEV_ROUTER_JEV_MODEL"),
     }),
     timeoutMs: timeoutOf(await $.env.get("JEV_ROUTER_TIMEOUT_MS")),
-    offered: offeredTiers(excluded),
-    excluded: [...excluded],
+    offered: tiers.offered,
+    excluded: tiers.excluded,
     sticky: stickyOf(await $.env.get("JEV_ROUTER_STICKY"))
       ? thresholdOf(await $.env.get("JEV_ROUTER_STICKY_CONFIDENCE"))
       : null,
@@ -804,9 +808,9 @@ export function register(on: On) {
       // environment's own JEV_ROUTER_EXCLUDE seeding in place rather than
       // overwrite it with "nothing excluded" (see State.excludedTiers).
       if (s.excludedTiers !== undefined) {
-        const tiers = s.excludedTiers as Tier[];
-        settings.excluded = tiers;
-        settings.offered = offeredTiers(new Set(tiers));
+        const tiers = tierFilter(s.excludedTiers as Tier[]);
+        settings.excluded = tiers.excluded;
+        settings.offered = tiers.offered;
       }
       settings.compactOn = s.compactOn;
       settings.priceCheck = s.priceCheck;
@@ -1138,8 +1142,9 @@ export function register(on: On) {
 
     if (sub === "tiers" || sub.startsWith("tiers ")) {
       const result = tiersCommand(sub.slice("tiers".length), settings.excluded);
-      settings.excluded = result.excluded;
-      settings.offered = offeredTiers(new Set(result.excluded));
+      const tiers = tierFilter(result.excluded);
+      settings.excluded = tiers.excluded;
+      settings.offered = tiers.offered;
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }
@@ -1224,8 +1229,16 @@ export function register(on: On) {
       settings.allowOverride && !notification
         ? parseOverride(e.text, offered)
         : null;
+    // A tier `/jev tiers off` dropped since it started running is nothing
+    // safe to continue without asking Jev either: skipping straight to
+    // continuationOf's own check (which would fall back to unrouted anyway)
+    // means Jev is never asked about this notification at all, when a fresh
+    // classify would have routed it properly.
     const softNotify =
-      settings.notifyContinue && notification && continueFrom !== null;
+      settings.notifyContinue &&
+      notification &&
+      continueFrom !== null &&
+      offered.includes(continueFrom.tier);
     const askAbort = new AbortController();
     const asking =
       isContinuation(e.text) || nudge || softNotify || forced !== null

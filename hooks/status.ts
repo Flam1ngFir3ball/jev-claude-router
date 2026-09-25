@@ -404,15 +404,20 @@ export function attemptOf(
       ? { prompt: kept(text) }
       : { prompt: kept(summary), kind: "notify" as const };
   const forced = hold.forced ?? null;
-  // A tier `/jev tiers off` dropped since it started running is nothing to
-  // hold to any more: every hold below (the Jev-failure stay, the window
-  // check, stickiness, the price checks) reads `hold.running` as "safe to
-  // stay on", and none of them checked that on their own. Normalizing it
-  // here, once, means a turned-off tier cannot be held to through any of
-  // those paths — the turn is priced and routed as if nothing were running.
-  if (hold.running !== null && !offered.includes(hold.running.tier)) {
-    hold = { ...hold, running: null };
-  }
+  // A tier `/jev tiers off` dropped since it started running must not be
+  // actively chosen or held to any more — but simply erasing `hold.running`
+  // here for every such case went too far: it also disabled the window
+  // guard's step-up (nothing to step *from*, so a turn too long for Jev's
+  // pick fell to fully unrouted instead of the next tier up) and, for a
+  // `running` that is only a placeholder seeded from the session model (no
+  // key, nothing ever routed there), stripped the price check's own real
+  // pricing data for no reason — an unrouted turn runs on that same
+  // placeholder anyway, so refusing to weigh it costs money without
+  // stopping anything. `withinWindow` and `stickyDecision` below are given
+  // `offered` instead, and refuse to *land on or stay on* an excluded tier
+  // at their own single decision points, while `hold.running` stays intact
+  // everywhere else — including as the signal that there is something to
+  // step up from, and as the real cache a switch away is priced against.
 
   if (!result.ok && forced === null) {
     // No answer from Jev: stay on the tier already running rather than drop
@@ -455,6 +460,7 @@ export function attemptOf(
       decision,
       hold.running,
       hold.economics.contextTokens,
+      offered,
     );
     if (fits === null) {
       // Neither Jev's pick nor what is running takes a context this long
@@ -571,7 +577,7 @@ export function attemptOf(
         : !downgrade && hold.economics !== undefined
           ? upgradeBar(hold.sticky, hold.economics.contextTokens)
           : hold.sticky;
-    decision = stickyDecision(decision, running, bar, verdict);
+    decision = stickyDecision(decision, running, bar, verdict, offered);
   }
   // A forced turn named its tier; effort comes from Jev when it was asked,
   // otherwise medium. The Sonnet effort gate does not get a vote here.
