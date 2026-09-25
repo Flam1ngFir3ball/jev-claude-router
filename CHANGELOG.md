@@ -8,6 +8,18 @@
   into it.
 -->
 
+## 1.0.2 — 2026-09-25
+
+### Features
+
+- **`/jev tiers`.** Turns a tier on or off for the rest of the session,
+  kept across reloads: `/jev tiers off fable` drops it from the question
+  Jev is asked, `/jev tiers on fable` brings it back. Combined with
+  `/jev ceiling`, this covers running one tier at a different effort than
+  the rest, or dropping it entirely — `/jev ceiling high` then
+  `/jev ceiling medium fable` runs everything at high except Fable, held to
+  medium. At least one tier always stays on.
+
 ## 1.0.1 — 2026-09-24
 
 ### Features
