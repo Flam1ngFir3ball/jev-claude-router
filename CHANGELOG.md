@@ -8,6 +8,28 @@
   into it.
 -->
 
+## 1.0.3 — 2026-09-25
+
+### Fixes
+
+- **`/jev tiers off` on a tier already running.** Stickiness, the price
+  checks, the window guard and the Jev-failure fallback all treated the
+  currently-running tier as safe to stay on regardless of whether it had
+  since been turned off, so dropping a tier that was already in use had no
+  effect until the session's cache moved elsewhere on its own. A dropped
+  tier is now treated as nothing to hold to.
+- **The last-tier guard could keep the wrong tier on.** Naming an
+  already-excluded tier last in `/jev tiers off` (e.g. one tier on, `/jev
+  tiers off fable haiku` where haiku was already off) turned the actual
+  last tier off and brought the redundant, already-off one back instead.
+- **An old snapshot could silently clear `JEV_ROUTER_EXCLUDE`.** A session
+  snapshot saved before tier exclusion was persisted restored as "nothing
+  excluded," overwriting the environment's own setting the moment such a
+  snapshot was resumed.
+- The excluded-tiers display could claim every tier was both offered and
+  off at once, when every tier was named excluded and the full-ladder
+  fallback kicked in.
+
 ## 1.0.2 — 2026-09-25
 
 ### Features
