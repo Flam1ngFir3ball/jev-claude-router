@@ -10,7 +10,13 @@
 
 ## Unreleased
 
-Fixes ready and merged, held back from a version bump until approved:
+Ready and merged, held back from a version bump until approved:
+
+### Features
+
+- **The effort ceiling now defaults to `xhigh`**, matching the engine's own
+  default, instead of `medium`. `JEV_ROUTER_CEILING` or `/jev ceiling`
+  still adjust it per session, in either direction.
 
 ### Fixes
 
