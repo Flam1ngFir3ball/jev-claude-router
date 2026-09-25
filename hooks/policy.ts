@@ -721,15 +721,15 @@ export function subagentDecision(
 }
 
 /**
- * The most effort each tier may be asked for. The engine's own default is
- * xhigh; the router's is medium on every tier, raised per session with
- * `JEV_ROUTER_CEILING` or `/jev ceiling`. One effort per tier is the whole
- * policy: what Jev asks for above it is capped to it, and `cappedEffort`
- * keeps what Jev wanted so the route line can say so.
+ * The most effort each tier may be asked for, xhigh on every tier by
+ * default — matching the engine's own default — and adjustable per session
+ * with `JEV_ROUTER_CEILING` or `/jev ceiling`. One effort per tier is the
+ * whole policy: what Jev asks for above it is capped to it, and
+ * `cappedEffort` keeps what Jev wanted so the route line can say so.
  */
 export type Ceiling = Record<Tier, Effort>;
 
-export const DEFAULT_CEILING: Effort = "medium";
+export const DEFAULT_CEILING: Effort = "xhigh";
 
 /** Ladder position of an effort, low to high. */
 function effortRank(effort: Effort): number {

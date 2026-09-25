@@ -564,16 +564,16 @@ describe("the effort ceiling", () => {
     assert.equal(effortOf(9), "max");
   });
 
-  test("the default ceiling is medium on every tier", () => {
+  test("the default ceiling is xhigh on every tier, matching the engine's own default", () => {
     assert.deepEqual(ceilingOf(undefined), ceilingAt(DEFAULT_CEILING));
-    assert.deepEqual(ceilingOf(""), ceilingAt("medium"));
+    assert.deepEqual(ceilingOf(""), ceilingAt("xhigh"));
   });
 
-  test("one word raises every tier; tier:effort pairs raise some", () => {
-    assert.deepEqual(ceilingOf("xhigh"), ceilingAt("xhigh"));
-    assert.deepEqual(ceilingOf("fable:xhigh, opus:high"), {
-      ...ceilingAt("medium"),
-      fable: "xhigh",
+  test("one word raises or lowers every tier; tier:effort pairs adjust some", () => {
+    assert.deepEqual(ceilingOf("medium"), ceilingAt("medium"));
+    assert.deepEqual(ceilingOf("fable:medium, opus:high"), {
+      ...ceilingAt("xhigh"),
+      fable: "medium",
       opus: "high",
     });
   });
@@ -585,10 +585,10 @@ describe("the effort ceiling", () => {
   });
 
   test("a typo leaves the default rather than opening the ceiling", () => {
-    assert.deepEqual(ceilingOf("xhgih"), ceilingAt("medium"));
-    assert.deepEqual(ceilingOf("fable:ultra,sonnet:high"), {
-      ...ceilingAt("medium"),
-      sonnet: "high",
+    assert.deepEqual(ceilingOf("xhgih"), ceilingAt("xhigh"));
+    assert.deepEqual(ceilingOf("fable:ultra,sonnet:medium"), {
+      ...ceilingAt("xhigh"),
+      sonnet: "medium",
     });
   });
 

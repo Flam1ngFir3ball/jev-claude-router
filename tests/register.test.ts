@@ -188,11 +188,11 @@ describe("register: the route in the reply", () => {
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
 
     assert.equal(sent.model, "claude-opus-5-5");
-    assert.equal(sent.effort, "medium");
+    assert.equal(sent.effort, "high");
     // The latency is wall-clock, so it is matched loosely.
     assert.match(
       texts[0]!,
-      /^> ✳️ opus · medium · Jev 91% · capped from high · \d+ms\n\n---\n\nHello$/,
+      /^> ✳️ opus · high · Jev 91% · \d+ms\n\n---\n\nHello$/,
     );
     assert.equal(texts[1], " there.");
     assert.equal(
@@ -381,7 +381,7 @@ describe("register: the route in the reply", () => {
 
     const texts = chunks.filter((c) => c.kind === "text");
     const footer = texts.at(-1)!.text;
-    assert.match(footer, /```\nopus-5-5 ✓ medium · Jev 91%/);
+    assert.match(footer, /```\nopus-5-5 ✓ high · Jev 91%/);
     assert.match(footer, /\$/);
     assert.equal(
       chunks.at(-1)!.kind,
@@ -427,7 +427,7 @@ describe("register: the route in the reply", () => {
     );
     assert.match(
       last.filter((c) => c.kind === "text").at(-1)!.text,
-      /opus-5-5 ✓ medium/,
+      /opus-5-5 ✓ high/,
     );
   });
 
@@ -509,9 +509,8 @@ describe("register: the route in the reply", () => {
       ),
     );
     const texts = chunks.filter((c) => c.kind === "text").map((c) => c.text);
-    assert.match(texts[0]!, /^> ✳️ opus · medium · Jev 91% · capped from high · task finished · \d+ms/);
-    assert.match(texts.at(-1)!, /opus-5-5 ✓ medium · Jev 91% · /);
-    assert.match(texts.at(-1)!, /capped from high/);
+    assert.match(texts[0]!, /^> ✳️ opus · high · Jev 91% · task finished · \d+ms/);
+    assert.match(texts.at(-1)!, /opus-5-5 ✓ high · Jev 91% · /);
     const out = await hooks.get('command.run:{"command":"jev"}')!($, {
       args: "",
     });
@@ -1011,11 +1010,11 @@ describe("register: a bare go-ahead", () => {
     setTier("haiku", 1, 0);
     const second = await turn(hooks, $, "g2", "yes");
     assert.equal(second.sent.model, "claude-fable-5-1");
-    // The default ceiling capped the first turn at medium, which its first
-    // request ran as high; the go-ahead carries what Jev asked, medium.
-    assert.equal(second.sent.effort, "medium");
+    // xhigh is exactly the default ceiling, so it is not capped at all; the
+    // go-ahead carries the same effort Jev asked for.
+    assert.equal(second.sent.effort, "xhigh");
     assert.equal(fetches(), asked, "no round trip for a go-ahead");
-    assert.match(second.text, /fable · medium · continuing · 0ms/);
+    assert.match(second.text, /fable · xhigh · continuing · 0ms/);
   });
 
   test("does not carry a hold tag over from the turn it continues", async () => {
@@ -1167,17 +1166,17 @@ describe("register: effort on Sonnet", () => {
     assert.equal((await turn(hooks, $, "s8")).sent.effort, "xhigh");
   });
 
-  test("the default ceiling caps a cleared Sonnet effort flip at medium", async () => {
+  test("the default ceiling caps a cleared Sonnet effort flip at xhigh", async () => {
     const { hooks, $, setTier } = await started({
       JEV_ROUTER_CEILING: "",
     });
     setTier("sonnet", 0.9, 1, 0.9);
     await turn(hooks, $, "s9");
     await run(hooks, $, "sticky 0.3");
-    setTier("sonnet", 0.9, 3, 0.49);
+    setTier("sonnet", 0.9, 4, 0.49);
     const t = await turn(hooks, $, "s10");
-    assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /capped from xhigh/);
+    assert.equal(t.sent.effort, "xhigh");
+    assert.match(t.text, /capped from max/);
   });
 });
 
@@ -1588,13 +1587,13 @@ describe("register: the ceiling subcommand", () => {
     };
   }
 
-  test("the default caps Jev's xhigh at medium and says so", async () => {
+  test("the default caps Jev's max at xhigh and says so", async () => {
     const { hooks, $, setTier } = await started();
-    setTier("fable", 0.9, 3);
+    setTier("fable", 0.9, 4);
     const t = await turn(hooks, $, "c0");
-    assert.equal(t.sent.effort, "medium");
-    assert.match(t.text, /capped from xhigh/);
-    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
+    assert.equal(t.sent.effort, "xhigh");
+    assert.match(t.text, /capped from max/);
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+xhigh for all/);
   });
 
   test("/jev ceiling xhigh lets xhigh through on every tier", async () => {
@@ -1606,14 +1605,14 @@ describe("register: the ceiling subcommand", () => {
     assert.doesNotMatch(t.text, /capped/);
   });
 
-  test("/jev ceiling xhigh fable raises one tier and leaves the rest", async () => {
+  test("/jev ceiling medium fable lowers one tier and leaves the rest", async () => {
     const { hooks, $, setTier } = await started();
-    await run(hooks, $, "ceiling xhigh fable");
+    await run(hooks, $, "ceiling medium fable");
     setTier("fable", 0.9, 3);
-    assert.equal((await turn(hooks, $, "c2")).sent.effort, "xhigh");
+    assert.equal((await turn(hooks, $, "c2")).sent.effort, "medium");
     setTier("opus", 0.9, 3);
-    assert.equal((await turn(hooks, $, "c3")).sent.effort, "medium");
-    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium \(fable: xhigh\)/);
+    assert.equal((await turn(hooks, $, "c3")).sent.effort, "xhigh");
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+xhigh \(fable: medium\)/);
   });
 
   test("the environment seeds it, and the command overrides", async () => {
@@ -1632,9 +1631,9 @@ describe("register: the ceiling subcommand", () => {
 
   test("an effort on its own is the ceiling's shorthand", async () => {
     const { hooks, $, setTier } = await started();
-    assert.match((await run(hooks, $, "xhigh fable")).text, /medium \(fable: xhigh\)/);
+    assert.match((await run(hooks, $, "medium fable")).text, /xhigh \(fable: medium\)/);
     setTier("fable", 0.9, 3);
-    assert.equal((await turn(hooks, $, "sh1")).sent.effort, "xhigh");
+    assert.equal((await turn(hooks, $, "sh1")).sent.effort, "medium");
     assert.match((await run(hooks, $, "medium")).text, /medium for all/);
   });
 
@@ -1643,7 +1642,7 @@ describe("register: the ceiling subcommand", () => {
     const r = await run(hooks, $, "xhigh on");
     assert.match(r.text, /old effort toggles/);
     assert.match(r.text, /\/jev ceiling xhigh/);
-    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+xhigh for all/);
   });
 
   test("an unknown argument says so instead of printing the status", async () => {
@@ -1657,7 +1656,7 @@ describe("register: the ceiling subcommand", () => {
     const { hooks, $ } = await started();
     const r = await run(hooks, $, "ceiling ultra");
     assert.match(r.text, /not an effort/);
-    assert.match((await run(hooks, $, "")).text, /ceiling\s+medium for all/);
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+xhigh for all/);
   });
 });
 
@@ -2133,7 +2132,7 @@ describe("register: one summary per reply", () => {
     );
     assert.equal(fetches(), asked, "Jev is not asked about the nudge");
     assert.equal(sent.model, "claude-fable-5-1", "continues on the last decision");
-    assert.equal(sent.effort, "medium");
+    assert.equal(sent.effort, "xhigh");
     assert.equal(
       chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""),
       "reply",
@@ -2343,7 +2342,7 @@ describe("register: a reload of the module", () => {
     await new Promise((r) => setTimeout(r, 5));
     const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
     const status = (await run(after.hooks, after.$, "")).text;
-    assert.match(status, /fable·medium .* plan it/, "the history is back");
+    assert.match(status, /fable·xhigh .* plan it/, "the history is back");
     assert.match(status, new RegExp(`spent\\s+\\${spentBefore}`), "and the spend");
     after.setContext(150_000);
     after.setTier("haiku", 0.99, 0);
@@ -2356,13 +2355,13 @@ describe("register: a reload of the module", () => {
     const shared = { store: new Map<string, unknown>(), id: "sess-B" };
     const before = await boot(shared);
     await run(before.hooks, before.$, "sticky 0.6");
-    await run(before.hooks, before.$, "ceiling xhigh fable");
+    await run(before.hooks, before.$, "ceiling medium fable");
     await run(before.hooks, before.$, "quiet");
     await new Promise((r) => setTimeout(r, 5));
     const after = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
     const status = (await run(after.hooks, after.$, "")).text;
     assert.match(status, /switch needs 60%/);
-    assert.match(status, /ceiling\s+medium \(fable: xhigh\)/);
+    assert.match(status, /ceiling\s+xhigh \(fable: medium\)/);
     assert.match(status, /announce\s+off/);
   });
 
@@ -2974,7 +2973,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal(t.sent.model, "claude-fable-5-1", "the reply's own route continues");
     assert.doesNotMatch(t.text, /✳️/, "no second line under the open reply");
     // A task no summarised reply spawned: its wake-up is a reply of its own.
-    assert.match(t.text, /fable-5-1 ✓ medium/, "summarised on what answered");
+    assert.match(t.text, /fable-5-1 ✓ xhigh/, "summarised on what answered");
     assert.match((await run(kit.hooks, kit.$, "")).text, /\[task finished\] Agent "reviewer" completed/);
   });
 

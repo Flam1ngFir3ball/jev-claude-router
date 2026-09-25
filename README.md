@@ -93,7 +93,7 @@ when the switch is worth it, and says so when it is not.
    answers. In a session, `/jev` shows the router's state.
 
 Everything else has a working default: the confidence bar at 75%, price
-checks on, a $1 upgrade limit, an effort ceiling of `medium`, and compaction
+checks on, a $1 upgrade limit, an effort ceiling of `xhigh`, and compaction
 by Jev on.
 
 ## What you see
@@ -165,7 +165,7 @@ jev-claude-router:
   budget    1500ms
   sticky    on, switch needs 75% (90% up past 100k)
   price     on, a downgrade has to pay, an upgrade may cost $1.00 over staying
-  ceiling   medium (fable: xhigh)
+  ceiling   xhigh (fable: medium)
   compact   on, Jev prunes tool calls · last: kept 41/87 messages, 63% smaller (12 calls kept, 9 cut, 30 dropped) · 2.1s
   session   claude-opus-5, running on fable
   cache     1h writes · 201k context · fable→haiku pays below 3k
@@ -277,12 +277,13 @@ since effort is sent per request and costs no cache. On Sonnet an effort
 change rewrites much of the cache, so the effort is held too unless Jev is
 sure enough of it. (Claude Code currently sends no effort to Sonnet 5.)
 
-Each tier has an effort ceiling, `medium` by default. A turn Jev wanted
-higher runs at the ceiling and says `capped from xhigh`. `/jev ceiling`
-changes it, per tier or for all of them: `/jev ceiling high` then
-`/jev ceiling medium fable` runs everything at high except Fable, held to
-medium. To drop a tier entirely instead of capping its effort, `/jev tiers
-off fable` takes it out of the question Jev is asked.
+Each tier has an effort ceiling, `xhigh` by default (matching the engine's
+own default). A turn Jev wanted higher runs at the ceiling and says
+`capped from max`. `/jev ceiling` changes it, per tier or for all of them:
+`/jev ceiling xhigh` then `/jev ceiling medium fable` runs everything at
+xhigh except Fable, held to medium. To drop a tier entirely instead of
+capping its effort, `/jev tiers off fable` takes it out of the question
+Jev is asked.
 
 Fable 5.1 runs `medium` as `high` on the first request of a conversation,
 so the router sends `high` there and says so. Only a conversation's first
@@ -406,7 +407,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_PRICE_CHECK` | on | `0` turns both price checks off. |
 | `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying, or `off`. |
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
-| `JEV_ROUTER_CEILING` | `medium` | Effort ceiling: `xhigh` for all tiers, or per tier, e.g. `fable:xhigh,opus:high`. |
+| `JEV_ROUTER_CEILING` | `xhigh` | Effort ceiling: an effort for all tiers, or per tier, e.g. `fable:medium,opus:high`. |
 | `JEV_ROUTER_EXCLUDE` | | Tiers not offered to Jev at session start, e.g. `fable,haiku`; `/jev tiers` toggles this per session. |
 | `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
 | `JEV_ROUTER_NOTIFY_CONTINUE` | on | `0` asks Jev about finished-task turns. |
@@ -501,7 +502,7 @@ backends. This fork keeps that design and adds:
 | --- | --- |
 | Cost | Price checks on downgrades and upgrades, with a dollar limit on upgrades and a separate toggle; list prices with one-hour cache writes; pricing from the cache actually warm after resume, `/model`, an unrouted turn or an expired cache. |
 | Safety | The context-window guard, with a step up only as far as needed; a higher confidence bar for upgrades past 100k; the confidence bar on by default. |
-| Effort | The effort ceiling (default `medium`); Fable's first-request effort; the Sonnet effort hold. |
+| Effort | The effort ceiling (default `xhigh`); Fable's first-request effort; the Sonnet effort hold. |
 | Your words | Named tiers, with pasted, quoted and code text ignored; go-aheads; finished tasks and nudges continuing without a Jev call. |
 | Compaction | Compaction by Jev, built on fast-jev-compaction. |
 | Display | One summary per reply covering its turns and agents; plain-language reasons; the filter for copied lines and summaries. |
