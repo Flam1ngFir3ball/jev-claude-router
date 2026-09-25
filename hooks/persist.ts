@@ -16,7 +16,7 @@
  */
 
 import type { Compaction } from "./compactor.ts";
-import type { Ceiling, Decision } from "./policy.ts";
+import { TIERS, type Ceiling, type Decision } from "./policy.ts";
 import type { Attempt } from "./status.ts";
 
 export const SNAPSHOT_VERSION = 1;
@@ -54,6 +54,8 @@ export type State = {
   answered: boolean;
   sticky: number | null;
   ceiling: Ceiling;
+  /** Tiers `/jev tiers off` dropped from the question Jev is asked. */
+  excludedTiers: string[];
   /** Compaction by Jev is on. */
   compactOn: boolean;
   /** The downgrade and upgrade price checks are on. */
@@ -108,6 +110,7 @@ export function pack(state: State): Packed {
     answered: state.answered,
     sticky: state.sticky,
     ceiling: state.ceiling,
+    excludedTiers: state.excludedTiers,
     compactOn: state.compactOn,
     priceCheck: state.priceCheck,
     summarisedAgents: state.summarisedAgents,
@@ -210,6 +213,11 @@ export function unpack(raw: unknown): State | null {
     answered: raw.answered !== false,
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
     ceiling: raw.ceiling as Ceiling,
+    // Missing (a snapshot from before this field existed) means nothing
+    // dropped, same as the environment's own default.
+    excludedTiers: strings(raw.excludedTiers).filter((t) =>
+      (TIERS as readonly string[]).includes(t),
+    ),
     compactOn: raw.compactOn !== false,
     priceCheck: raw.priceCheck !== false,
     summarisedAgents: Array.isArray(raw.summarisedAgents)

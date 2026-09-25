@@ -67,6 +67,7 @@ import {
   spawnAttemptOf,
   statusReport,
   stickyCommand,
+  tiersCommand,
   toggleReply,
   TYPICAL_OUTPUT_TOKENS,
   unknownCommandReply,
@@ -201,8 +202,9 @@ const MID_TURN: ReadonlySet<string> = new Set([
 /**
  * Everything the router reads from the environment, read once. None of it
  * changes within a session, and reading fourteen variables on every turn was
- * fourteen awaits ahead of the Jev call. `sticky` and `ceiling` start here
- * and are then owned by `/jev sticky` and `/jev ceiling`.
+ * fourteen awaits ahead of the Jev call. `sticky`, `ceiling`, `offered` and
+ * `excluded` start here and are then owned by `/jev sticky`, `/jev ceiling`
+ * and `/jev tiers`.
  */
 type Settings = {
   provider: ProviderResult;
@@ -760,6 +762,7 @@ export function register(on: On) {
     answered,
     sticky: settings?.sticky ?? null,
     ceiling: settings?.ceiling ?? ceilingAt("medium"),
+    excludedTiers: [...(settings?.excluded ?? [])],
     compactOn: settings?.compactOn ?? true,
     priceCheck: settings?.priceCheck ?? true,
     summarisedAgents: [...summarisedAgents],
@@ -797,6 +800,8 @@ export function register(on: On) {
     if (settings !== null) {
       settings.sticky = s.sticky;
       settings.ceiling = s.ceiling;
+      settings.excluded = s.excludedTiers as Tier[];
+      settings.offered = offeredTiers(new Set(s.excludedTiers as Tier[]));
       settings.compactOn = s.compactOn;
       settings.priceCheck = s.priceCheck;
     }
@@ -1121,6 +1126,14 @@ export function register(on: On) {
         settings.ceiling,
       );
       settings.ceiling = result.ceiling;
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      return { text: result.text };
+    }
+
+    if (sub === "tiers" || sub.startsWith("tiers ")) {
+      const result = tiersCommand(sub.slice("tiers".length), settings.excluded);
+      settings.excluded = result.excluded;
+      settings.offered = offeredTiers(new Set(result.excluded));
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
     }

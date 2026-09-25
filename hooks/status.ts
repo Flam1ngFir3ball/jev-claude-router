@@ -1329,6 +1329,76 @@ function stuckAt(bar: number): string {
 }
 
 /**
+ * Reads `/jev tiers`, `/jev tiers off fable`, `/jev tiers on fable`. A bare
+ * `tiers` reports which are offered; `off <tier>...` drops one or more from
+ * the question Jev is asked, `on <tier>...` puts them back. At least one
+ * tier is always named — `off` alone would either do nothing (there is
+ * nothing to default to dropping) or, taken as "drop every tier", trip
+ * `offeredTiers`'s own fallback to the full ladder and silently undo itself,
+ * which would read as broken rather than as a no-op. The same reasoning
+ * refuses turning off the one tier still on: that is what `/jev off` (no
+ * tier name) is for, and letting it happen here would look identical to
+ * having no effect while actually meaning something different underneath.
+ */
+export function tiersCommand(
+  rest: string,
+  current: readonly Tier[],
+): { excluded: Tier[]; text: string } {
+  const parts = rest.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return { excluded: [...current], text: tiersReply(current) };
+  }
+  const [onOff, ...names] = parts;
+  if (onOff !== "on" && onOff !== "off") {
+    return {
+      excluded: [...current],
+      text: `"${onOff}" is not on or off. /jev tiers off fable drops a tier, /jev tiers on fable brings it back.`,
+    };
+  }
+  if (names.length === 0) {
+    return {
+      excluded: [...current],
+      text: `Name at least one tier: ${TIERS.join(", ")}. /jev tiers ${onOff} fable.`,
+    };
+  }
+  const unknown = names.filter((n) => !(TIERS as string[]).includes(n));
+  if (unknown.length > 0) {
+    return {
+      excluded: [...current],
+      text:
+        `"${unknown.join(", ")}" ${unknown.length === 1 ? "is" : "are"} not ` +
+        `a tier. Use ${TIERS.join(", ")}.`,
+    };
+  }
+  const dropped = new Set(current);
+  for (const name of names as Tier[]) {
+    if (onOff === "off") dropped.add(name);
+    else dropped.delete(name);
+  }
+  if (onOff === "off" && dropped.size >= TIERS.length) {
+    const kept = names[names.length - 1] as Tier;
+    dropped.delete(kept);
+    return {
+      excluded: TIERS.filter((t) => dropped.has(t)),
+      text: `At least one tier has to stay on; left ${kept} alone. /jev off turns routing off entirely.`,
+    };
+  }
+  const excluded = TIERS.filter((t) => dropped.has(t));
+  return { excluded, text: tiersReply(excluded) };
+}
+
+function tiersReply(excluded: readonly Tier[]): string {
+  if (excluded.length === 0) {
+    return `Every tier is offered to Jev: ${TIERS.join(", ")}. /jev tiers off fable drops one.`;
+  }
+  const on = TIERS.filter((t) => !excluded.includes(t));
+  return (
+    `${on.join(", ")} offered; ${excluded.join(", ")} off. ` +
+    "/jev tiers on brings a dropped one back."
+  );
+}
+
+/**
  * Reads `/jev ceiling`, `/jev ceiling xhigh`, `/jev ceiling xhigh fable opus`,
  * `/jev ceiling off`. A bare `ceiling` reports; an effort sets it on every
  * tier, or on the tiers named after it; `off` lifts every cap (which is max).

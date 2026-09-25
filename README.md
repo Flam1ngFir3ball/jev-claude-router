@@ -205,8 +205,8 @@ not routes: "search for opus docs" and "I'm using opus for comparison" are
 ordinary prompts. A negation cancels the next route ("don't use haiku, use
 opus" goes to opus). Pasted content, code, quoted lines, text in double
 quotes and background-task notifications are not read for this, so a pasted document that says "use
-opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier excluded with
-`JEV_ROUTER_EXCLUDE` cannot be named back in.
+opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier turned off
+with `JEV_ROUTER_EXCLUDE` or `/jev tiers off` cannot be named back in.
 
 **Go-aheads.** Jev scores a bare "yes" as trivial, which is right about the
 text and wrong about the work. A prompt that is only a go-ahead (`y`, `yes`,
@@ -279,7 +279,10 @@ sure enough of it. (Claude Code currently sends no effort to Sonnet 5.)
 
 Each tier has an effort ceiling, `medium` by default. A turn Jev wanted
 higher runs at the ceiling and says `capped from xhigh`. `/jev ceiling`
-changes it.
+changes it, per tier or for all of them: `/jev ceiling high` then
+`/jev ceiling medium fable` runs everything at high except Fable, held to
+medium. To drop a tier entirely instead of capping its effort, `/jev tiers
+off fable` takes it out of the question Jev is asked.
 
 Fable 5.1 runs `medium` as `high` on the first request of a conversation,
 so the router sends `high` there and says so. Only a conversation's first
@@ -371,6 +374,9 @@ is left alone.
 | `/jev ceiling xhigh`, `/jev xhigh` | Raise every tier's ceiling. |
 | `/jev ceiling xhigh fable`, `/jev xhigh fable` | Raise one tier's ceiling. |
 | `/jev ceiling off` | Remove every cap. |
+| `/jev tiers` | Show which tiers are offered to Jev. |
+| `/jev tiers off fable` | Drop one or more tiers from the question entirely. |
+| `/jev tiers on fable` | Bring a dropped tier back. |
 | `/jev compact`, `/jev compact on`, `/jev compact off` | Show or toggle compaction by Jev. |
 
 A command overrides the matching setting below for the rest of the session,
@@ -401,7 +407,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying, or `off`. |
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
 | `JEV_ROUTER_CEILING` | `medium` | Effort ceiling: `xhigh` for all tiers, or per tier, e.g. `fable:xhigh,opus:high`. |
-| `JEV_ROUTER_EXCLUDE` | | Tiers never offered to Jev, e.g. `fable,haiku`. |
+| `JEV_ROUTER_EXCLUDE` | | Tiers not offered to Jev at session start, e.g. `fable,haiku`; `/jev tiers` toggles this per session. |
 | `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
 | `JEV_ROUTER_NOTIFY_CONTINUE` | on | `0` asks Jev about finished-task turns. |
 

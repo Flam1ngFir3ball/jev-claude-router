@@ -1661,6 +1661,86 @@ describe("register: the ceiling subcommand", () => {
   });
 });
 
+describe("register: the tiers subcommand", () => {
+  const started = async (over: Record<string, string | undefined> = {}, shared?: { store: Map<string, unknown>; id: string }) => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", ...over }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+
+  async function turn(hooks: Map<string, Function>, $: unknown, id: string) {
+    await hooks.get("turn.start")!(
+      $,
+      { text: "implement it", turnId: id },
+      async (e: unknown) => e,
+    );
+    let sent: { model?: string; effort?: string } = {};
+    const chunks = await collect(
+      hooks.get("turn.step")!(
+        $,
+        { turnId: id, index: 0 },
+        (e: { model: string; effort: string }) => {
+          sent = e;
+          return answeredBy(e.model ?? "claude-opus-5-5");
+        },
+      ),
+    );
+    return {
+      sent,
+      text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""),
+    };
+  }
+
+  test("a turned-off tier is not routed to, even when Jev picks it", async () => {
+    const { hooks, $, setTier } = await started();
+    await run(hooks, $, "tiers off fable");
+    setTier("fable", 0.95, 3);
+    const t = await turn(hooks, $, "tf1");
+    assert.equal(t.sent.model, undefined, "fable was refused, so nothing was routed");
+    assert.match(t.text, /not routed/);
+  });
+
+  test("turning it back on lets the same pick through", async () => {
+    const { hooks, $, setTier } = await started();
+    await run(hooks, $, "tiers off fable");
+    await run(hooks, $, "tiers on fable");
+    setTier("fable", 0.95, 3);
+    assert.equal((await turn(hooks, $, "tf2")).sent.model, "claude-fable-5-1");
+  });
+
+  test("the motivating case: fable capped at medium, everything else at high", async () => {
+    const { hooks, $, setTier } = await started();
+    await run(hooks, $, "ceiling high");
+    await run(hooks, $, "ceiling medium fable");
+    setTier("fable", 0.9, 3);
+    assert.equal((await turn(hooks, $, "tf3")).sent.effort, "medium");
+    setTier("opus", 0.9, 3);
+    assert.equal((await turn(hooks, $, "tf4")).sent.effort, "high");
+    assert.match((await run(hooks, $, "")).text, /ceiling\s+high \(fable: medium\)/);
+  });
+
+  test("kept across a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-TIERS" };
+    const first = await started({}, shared);
+    await run(first.hooks, first.$, "tiers off fable");
+    const again = await started({}, shared);
+    assert.match((await run(again.hooks, again.$, "")).text, /excluded\s+fable/);
+    again.setTier("fable", 0.95, 3);
+    const t = await turn(again.hooks, again.$, "tf5");
+    assert.equal(t.sent.model, undefined, "still off after the reload");
+  });
+
+  test("JEV_ROUTER_EXCLUDE seeds it, and the command overrides", async () => {
+    const { hooks, $, setTier } = await started({ JEV_ROUTER_EXCLUDE: "fable" });
+    setTier("fable", 0.95, 3);
+    assert.equal((await turn(hooks, $, "tf6")).sent.model, undefined);
+    await run(hooks, $, "tiers on fable");
+    assert.equal((await turn(hooks, $, "tf7")).sent.model, "claude-fable-5-1");
+  });
+});
+
 describe("register: a conversation's first request", () => {
   const started = async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" });

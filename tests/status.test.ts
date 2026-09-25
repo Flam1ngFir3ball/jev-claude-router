@@ -14,6 +14,7 @@ import {
   replySummary,
   spawnAttemptOf,
   stickyCommand,
+  tiersCommand,
   liveLine,
   REPLY_SEPARATOR,
   statusReport,
@@ -716,8 +717,79 @@ describe("the ceiling subcommand", () => {
     assert.match(report, /ceiling\s+medium \(fable: xhigh\)/);
     assert.match(report, /cache\s+1h writes · no context yet/);
   });
+});
 
-  test("ceilingLine picks the common effort and lists the rest", () => {
+describe("the tiers subcommand", () => {
+  test("bare reports every tier offered", () => {
+    const r = tiersCommand("", []);
+    assert.deepEqual(r.excluded, []);
+    assert.match(r.text, /Every tier is offered.*haiku, sonnet, opus, fable/);
+  });
+
+  test("off drops a tier; on brings it back", () => {
+    const off = tiersCommand("off fable", []);
+    assert.deepEqual(off.excluded, ["fable"]);
+    assert.match(off.text, /haiku, sonnet, opus offered; fable off/);
+    const on = tiersCommand("on fable", off.excluded);
+    assert.deepEqual(on.excluded, []);
+  });
+
+  test("off takes more than one tier at once", () => {
+    const r = tiersCommand("off fable opus", []);
+    assert.deepEqual(r.excluded, ["opus", "fable"]);
+  });
+
+  test("on with no prior exclusion is a no-op that still reports cleanly", () => {
+    const r = tiersCommand("on fable", []);
+    assert.deepEqual(r.excluded, []);
+  });
+
+  test("setting fable to medium while everything else is high: the motivating case", () => {
+    // /jev tiers off fable, or /jev ceiling high then /jev ceiling medium
+    // fable, both reachable from the two commands together.
+    const off = tiersCommand("off fable", []);
+    assert.deepEqual(off.excluded, ["fable"]);
+    const ceilingResult = ceilingCommand("high", ceilingAt("medium"));
+    const capped = ceilingCommand("medium fable", ceilingResult.ceiling);
+    assert.equal(capped.ceiling.fable, "medium");
+    assert.equal(capped.ceiling.haiku, "high");
+    assert.equal(capped.ceiling.sonnet, "high");
+    assert.equal(capped.ceiling.opus, "high");
+  });
+
+  test("the last tier standing cannot be turned off", () => {
+    const r = tiersCommand("off haiku sonnet opus fable", []);
+    assert.equal(r.excluded.length, 3, "one tier was spared");
+    assert.ok(!r.excluded.includes("fable"), "the last one named is the one kept on");
+    assert.match(r.text, /at least one tier has to stay on/i);
+  });
+
+  test("off or on alone, with no tier named, changes nothing and says so", () => {
+    const bareOff = tiersCommand("off", []);
+    assert.deepEqual(bareOff.excluded, []);
+    assert.match(bareOff.text, /name at least one tier/i);
+    const bareOn = tiersCommand("on", ["fable"]);
+    assert.deepEqual(bareOn.excluded, ["fable"], "unchanged, not cleared");
+    assert.match(bareOn.text, /name at least one tier/i);
+  });
+
+  test("an unknown word or tier changes nothing and says so", () => {
+    const bad = tiersCommand("maybe fable", []);
+    assert.deepEqual(bad.excluded, []);
+    assert.match(bad.text, /not on or off/);
+    const tier = tiersCommand("off gpt", []);
+    assert.deepEqual(tier.excluded, []);
+    assert.match(tier.text, /"gpt" is not a tier/);
+  });
+
+  test("the status report names excluded tiers only when there are some", () => {
+    assert.doesNotMatch(statusReport(base), /excluded/);
+    assert.match(statusReport({ ...base, excluded: ["fable"] }), /excluded\s+fable/);
+  });
+});
+
+describe("ceilingLine", () => {
+  test("picks the common effort and lists the rest", () => {
     assert.equal(ceilingLine(ceilingAt("low")), "low for all");
     assert.equal(
       ceilingLine({ haiku: "low", sonnet: "medium", opus: "medium", fable: "xhigh" }),
