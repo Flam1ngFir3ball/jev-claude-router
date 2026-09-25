@@ -14,12 +14,18 @@ Fixes ready and merged, held back from a version bump until approved:
 
 ### Fixes
 
-- **`/jev tiers off` on a tier already running.** Stickiness, the price
-  checks, the window guard and the Jev-failure fallback all treated the
-  currently-running tier as safe to stay on regardless of whether it had
-  since been turned off, so dropping a tier that was already in use had no
-  effect until the session's cache moved elsewhere on its own. A dropped
-  tier is now treated as nothing to hold to.
+- **`/jev tiers off` on a tier already running.** Stickiness and the price
+  checks no longer stay on a tier that has since been turned off — except
+  when nothing was ever actually routed there (a session resumed onto that
+  tier, say): staying on that genuinely-warm cache is still weighed against
+  the real cost of switching, rather than forcing an expensive cold switch
+  for no benefit. A task notification continuing an open reply now also
+  asks Jev when that reply's tier has since been dropped, instead of
+  silently going unrouted.
+- **Outgrowing a tier's context window no longer falls through to fully
+  unrouted just because the tier that was running got turned off.** It
+  steps up to the next tier that fits, same as it always did when nothing
+  was excluded.
 - **The last-tier guard could keep the wrong tier on.** Naming an
   already-excluded tier last in `/jev tiers off` (e.g. one tier on, `/jev
   tiers off fable haiku` where haiku was already off) turned the actual
@@ -28,6 +34,10 @@ Fixes ready and merged, held back from a version bump until approved:
   snapshot saved before tier exclusion was persisted restored as "nothing
   excluded," overwriting the environment's own setting the moment such a
   snapshot was resumed.
+- **`JEV_ROUTER_EXCLUDE` naming every tier could invert the next `/jev
+  tiers` command.** The full-ladder fallback made everything offered, but
+  the stored exclusion list didn't agree with that, so the first tier
+  command afterward read the stale list and acted on the wrong tier.
 - The excluded-tiers display could claim every tier was both offered and
   off at once, when every tier was named excluded and the full-ladder
   fallback kicked in.
