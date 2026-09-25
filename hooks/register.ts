@@ -800,8 +800,14 @@ export function register(on: On) {
     if (settings !== null) {
       settings.sticky = s.sticky;
       settings.ceiling = s.ceiling;
-      settings.excluded = s.excludedTiers as Tier[];
-      settings.offered = offeredTiers(new Set(s.excludedTiers as Tier[]));
+      // undefined means the snapshot predates this field: leave the
+      // environment's own JEV_ROUTER_EXCLUDE seeding in place rather than
+      // overwrite it with "nothing excluded" (see State.excludedTiers).
+      if (s.excludedTiers !== undefined) {
+        const tiers = s.excludedTiers as Tier[];
+        settings.excluded = tiers;
+        settings.offered = offeredTiers(new Set(tiers));
+      }
       settings.compactOn = s.compactOn;
       settings.priceCheck = s.priceCheck;
     }

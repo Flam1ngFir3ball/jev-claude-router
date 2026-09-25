@@ -91,6 +91,26 @@ describe("persist", () => {
     assert.deepEqual(back.pending, []);
   });
 
+  test("excludedTiers absent (a snapshot from before it existed) comes back undefined, not an empty array", () => {
+    // register.ts's applyState leaves the environment's own
+    // JEV_ROUTER_EXCLUDE seeding in place only when this is undefined; if
+    // unpack defaulted a missing field to [], restoring an old snapshot
+    // would silently clear whatever the environment had excluded.
+    const packed = JSON.parse(JSON.stringify(pack(stateWith({ prompt: "x", ms: 1, decision }))));
+    delete packed.excludedTiers;
+    const back = unpack(packed)!;
+    assert.notEqual(back, null);
+    assert.equal(back.excludedTiers, undefined);
+  });
+
+  test("excludedTiers present is validated: unknown or non-string entries dropped, an explicit empty array kept", () => {
+    const packed = JSON.parse(JSON.stringify(pack(stateWith({ prompt: "x", ms: 1, decision }))));
+    const withField = (v: unknown) => unpack({ ...packed, excludedTiers: v })!;
+    assert.deepEqual(withField(["fable", "gpt", 7, "opus"]).excludedTiers, ["fable", "opus"]);
+    assert.deepEqual(withField([]).excludedTiers, [], "explicitly empty stays empty, not undefined");
+    assert.deepEqual(withField("fable").excludedTiers, [], "not an array at all: nothing kept");
+  });
+
   test("anything that is not a snapshot of this version is refused", () => {
     assert.equal(unpack(undefined), null);
     assert.equal(unpack("x"), null);

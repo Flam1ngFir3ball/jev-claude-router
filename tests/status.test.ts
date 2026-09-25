@@ -129,7 +129,22 @@ describe("status report", () => {
 
   test("excluded tiers are listed only when there are some", () => {
     assert.doesNotMatch(statusReport(base), /excluded/);
-    assert.match(statusReport({ ...base, excluded: ["fable"] }), /excluded\s+fable/);
+    // offered and excluded are always a matched pair in production
+    // (register.ts derives offered from excluded via offeredTiers, which
+    // falls back to the full ladder if excluded ever named every tier); the
+    // excluded line is read off offered, not the raw field, so the fixture
+    // keeps them consistent here too.
+    assert.match(
+      statusReport({ ...base, excluded: ["fable"], offered: ["haiku", "sonnet", "opus"] }),
+      /excluded\s+fable/,
+    );
+    // excluded naming every tier, with offered still the full ladder (the
+    // fallback register.ts's offeredTiers already applies): no excluded
+    // line, since nothing is actually excluded from what Jev is asked.
+    assert.doesNotMatch(
+      statusReport({ ...base, excluded: [...TIERS], offered: [...TIERS] }),
+      /excluded/,
+    );
   });
 
   test("the session line says what the loop runs and what is warm", () => {
@@ -764,6 +779,31 @@ describe("the tiers subcommand", () => {
     assert.match(r.text, /at least one tier has to stay on/i);
   });
 
+  test("the tier spared is the one actually on, not just the last name typed", () => {
+    // Only fable is on (haiku/sonnet/opus already excluded). Naming an
+    // already-off tier LAST used to make it the one "kept" — turning the
+    // real last-standing tier off and an already-off one back on, backwards
+    // from both the request and what the reply claimed happened.
+    const onlyFable = ["haiku", "sonnet", "opus"] as const;
+    const r = tiersCommand("off fable haiku", onlyFable);
+    assert.deepEqual([...r.excluded].sort(), [...onlyFable].sort(), "unchanged: fable stays on, haiku stays off");
+    assert.match(r.text, /left fable alone/);
+
+    const r2 = tiersCommand("off fable sonnet", onlyFable);
+    assert.deepEqual([...r2.excluded].sort(), [...onlyFable].sort());
+    assert.match(r2.text, /left fable alone/);
+  });
+
+  test("a bare report describes what is actually offered, even if excluded names every tier (env misconfig; the command itself never reaches this)", () => {
+    // JEV_ROUTER_EXCLUDE naming all four tiers reaches tiersReply with
+    // excluded = every tier; offeredTiers falls back to the full ladder
+    // rather than offering nothing, and the reply must say so instead of
+    // claiming every tier is both offered and off.
+    const r = tiersCommand("", [...TIERS]);
+    assert.match(r.text, /Every tier is offered/);
+    assert.doesNotMatch(r.text, /off\./);
+  });
+
   test("off or on alone, with no tier named, changes nothing and says so", () => {
     const bareOff = tiersCommand("off", []);
     assert.deepEqual(bareOff.excluded, []);
@@ -784,7 +824,10 @@ describe("the tiers subcommand", () => {
 
   test("the status report names excluded tiers only when there are some", () => {
     assert.doesNotMatch(statusReport(base), /excluded/);
-    assert.match(statusReport({ ...base, excluded: ["fable"] }), /excluded\s+fable/);
+    assert.match(
+      statusReport({ ...base, excluded: ["fable"], offered: ["haiku", "sonnet", "opus"] }),
+      /excluded\s+fable/,
+    );
   });
 });
 

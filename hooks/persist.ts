@@ -54,8 +54,15 @@ export type State = {
   answered: boolean;
   sticky: number | null;
   ceiling: Ceiling;
-  /** Tiers `/jev tiers off` dropped from the question Jev is asked. */
-  excludedTiers: string[];
+  /**
+   * Tiers `/jev tiers off` dropped from the question Jev is asked.
+   * `undefined` only comes back from `unpack` on a snapshot from before this
+   * field existed — never from `pack`, which always writes the live array —
+   * and means "this snapshot has no opinion", not "nothing is excluded": the
+   * caller should leave the environment's own `JEV_ROUTER_EXCLUDE` seeding
+   * in place rather than overwrite it with an empty array.
+   */
+  excludedTiers: string[] | undefined;
   /** Compaction by Jev is on. */
   compactOn: boolean;
   /** The downgrade and upgrade price checks are on. */
@@ -213,11 +220,17 @@ export function unpack(raw: unknown): State | null {
     answered: raw.answered !== false,
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
     ceiling: raw.ceiling as Ceiling,
-    // Missing (a snapshot from before this field existed) means nothing
-    // dropped, same as the environment's own default.
-    excludedTiers: strings(raw.excludedTiers).filter((t) =>
-      (TIERS as readonly string[]).includes(t),
-    ),
+    // Absent (a snapshot from before this field existed) is left undefined
+    // — a signal to leave the environment's own JEV_ROUTER_EXCLUDE seeding
+    // alone — rather than defaulted to an empty array, which used to
+    // silently clear an env-seeded exclusion the moment such a snapshot was
+    // restored (the field never existed to preserve it).
+    excludedTiers:
+      raw.excludedTiers === undefined
+        ? undefined
+        : strings(raw.excludedTiers).filter((t) =>
+            (TIERS as readonly string[]).includes(t),
+          ),
     compactOn: raw.compactOn !== false,
     priceCheck: raw.priceCheck !== false,
     summarisedAgents: Array.isArray(raw.summarisedAgents)

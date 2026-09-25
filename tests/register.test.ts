@@ -1710,6 +1710,80 @@ describe("register: the tiers subcommand", () => {
     assert.equal((await turn(hooks, $, "tf2")).sent.model, "claude-fable-5-1");
   });
 
+  describe("turning a tier off actually stops using it once it is already running (production defaults: sticky and price both on)", () => {
+    // Every one of these held to the excluded tier before the fix, because
+    // stickiness, the price checks, the window guard and the Jev-failure
+    // stay all read `running`/`continueFrom` as "safe to stay on" without
+    // checking it was still offered. `/jev tiers off fable` alone (sticky
+    // off, the describe-level default) does not exercise any of this — the
+    // whole point of a hold is that it only engages when sticky or price is
+    // on, which is the production default this describe turns back on.
+    const startedOnFable = async (over: Record<string, string | undefined> = {}) => {
+      // JEV_ROUTER_STICKY: undefined overrides load()'s test default of
+      // sticky off, back to the real default of on.
+      const kit = await started({ JEV_ROUTER_STICKY: undefined, ...over });
+      kit.setTier("fable", 0.95, 3);
+      await turn(kit.hooks, kit.$, "pre");
+      await run(kit.hooks, kit.$, "tiers off fable");
+      return kit;
+    };
+
+    test("a confident switch to another tier goes through, at a large context", async () => {
+      const { hooks, $, setTier, setContext } = await startedOnFable();
+      setContext(200_000);
+      setTier("opus", 0.98, 2);
+      const t = await turn(hooks, $, "tf-h1a");
+      assert.notEqual(t.sent.model, "claude-fable-5-1", "fable is off; it must not be held to");
+      assert.equal(t.sent.model, "claude-opus-5-5");
+    });
+
+    test("a confident switch to another tier goes through, at a small context", async () => {
+      const { hooks, $, setTier, setContext } = await startedOnFable();
+      setContext(5_000);
+      setTier("opus", 0.98, 2);
+      const t = await turn(hooks, $, "tf-h1b");
+      assert.notEqual(t.sent.model, "claude-fable-5-1");
+      assert.equal(t.sent.model, "claude-opus-5-5");
+    });
+
+    test("outgrowing haiku's window does not fall back to the excluded tier", async () => {
+      const { hooks, $, setTier, setContext } = await startedOnFable();
+      setContext(250_000);
+      setTier("haiku", 0.99, 0);
+      const t = await turn(hooks, $, "tf-h1c");
+      assert.notEqual(t.sent.model, "claude-fable-5-1");
+      assert.match(t.text, /too long for haiku/);
+    });
+
+    test("a bare go-ahead does not continue on the excluded tier", async () => {
+      const { hooks, $ } = await startedOnFable();
+      await hooks.get("turn.start")!(
+        $,
+        { text: "yes", turnId: "tf-h1d" },
+        async (e: unknown) => e,
+      );
+      const chunks = await collect(
+        hooks.get("turn.step")!(
+          $,
+          { turnId: "tf-h1d", index: 0 },
+          (e: { model?: string }) => answeredBy(e.model ?? "claude-opus-5-5"),
+        ),
+      );
+      const sent = (chunks[0] as unknown as { model?: string })?.model;
+      void sent;
+      const text = chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+      assert.doesNotMatch(text, /fable/i, "not carried over to the excluded tier");
+    });
+
+    test("a Jev failure does not stay on the excluded tier", async () => {
+      const { hooks, $, fail } = await startedOnFable();
+      fail();
+      const t = await turn(hooks, $, "tf-h1e");
+      assert.notEqual(t.sent.model, "claude-fable-5-1");
+      assert.doesNotMatch(t.text, /kept fable/);
+    });
+  });
+
   test("the motivating case: fable capped at medium, everything else at high", async () => {
     const { hooks, $, setTier } = await started();
     await run(hooks, $, "ceiling high");
@@ -1730,6 +1804,24 @@ describe("register: the tiers subcommand", () => {
     again.setTier("fable", 0.95, 3);
     const t = await turn(again.hooks, again.$, "tf5");
     assert.equal(t.sent.model, undefined, "still off after the reload");
+  });
+
+  test("a snapshot from before this field existed does not wipe JEV_ROUTER_EXCLUDE on reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-OLD-SNAP" };
+    const first = await started({}, shared);
+    // Write a turn so a snapshot exists, then strip its excludedTiers field
+    // to simulate one saved before 1.0.2 added it.
+    first.setTier("opus", 0.95, 1);
+    await turn(first.hooks, first.$, "os1");
+    const key = "session:sess-OLD-SNAP";
+    const saved = shared.store.get(key) as Record<string, unknown>;
+    delete saved.excludedTiers;
+    shared.store.set(key, saved);
+    const again = await started({ JEV_ROUTER_EXCLUDE: "fable" }, shared);
+    assert.match((await run(again.hooks, again.$, "")).text, /excluded\s+fable/, "the environment's exclusion still shows");
+    again.setTier("fable", 0.95, 3);
+    const t = await turn(again.hooks, again.$, "os2");
+    assert.equal(t.sent.model, undefined, "still excluded, not silently cleared by the old snapshot");
   });
 
   test("JEV_ROUTER_EXCLUDE seeds it, and the command overrides", async () => {

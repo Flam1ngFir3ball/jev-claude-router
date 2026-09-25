@@ -19,6 +19,7 @@ import {
   EFFORTS,
   forcedDecision,
   holdsSonnetEffort,
+  offeredTiers,
   stickyDecision,
   SUBAGENT_CONFIDENCE,
   subagentDecision,
@@ -403,6 +404,15 @@ export function attemptOf(
       ? { prompt: kept(text) }
       : { prompt: kept(summary), kind: "notify" as const };
   const forced = hold.forced ?? null;
+  // A tier `/jev tiers off` dropped since it started running is nothing to
+  // hold to any more: every hold below (the Jev-failure stay, the window
+  // check, stickiness, the price checks) reads `hold.running` as "safe to
+  // stay on", and none of them checked that on their own. Normalizing it
+  // here, once, means a turned-off tier cannot be held to through any of
+  // those paths — the turn is priced and routed as if nothing were running.
+  if (hold.running !== null && !offered.includes(hold.running.tier)) {
+    hold = { ...hold, running: null };
+  }
 
   if (!result.ok && forced === null) {
     // No answer from Jev: stay on the tier already running rather than drop
@@ -623,6 +633,11 @@ export function continuationOf(
   offered: readonly Tier[] = TIERS,
 ): Attempt {
   const { tier, model, effort, confidence, effortConfidence } = running;
+  // A tier `/jev tiers off` dropped since it started running is nothing
+  // safe to continue: same outcome as having nothing to continue at all
+  // (unrouted, the session model answers) rather than a switch quietly
+  // biased toward a tier the person just turned off.
+  if (!offered.includes(tier)) return continuationSkipped(text);
   if (contextTokens !== null && !fitsWindow(tier, contextTokens)) {
     const step = stepUp(tier, TIERS.at(-1)!, offered, contextTokens);
     if (step === null)
@@ -994,8 +1009,15 @@ export function statusReport(status: Status): string {
   lines.push(
     `  announce  ${status.announce ? "on, a line per turn" : "off (/jev loud)"}`,
   );
-  if (status.excluded.length > 0) {
-    lines.push(`  excluded  ${status.excluded.join(", ")}`);
+  // Derived from `offered`, not the raw `excluded` field: `offeredTiers`
+  // falls back to the full ladder when every tier is named excluded (an
+  // env-misconfigured JEV_ROUTER_EXCLUDE, say), and the raw field would
+  // then say every tier is both offered (line above) and excluded — the
+  // `tiers` line above is already correct either way, and this one must
+  // agree with it rather than with what was merely asked for.
+  const notOffered = TIERS.filter((t) => !status.offered.includes(t));
+  if (notOffered.length > 0) {
+    lines.push(`  excluded  ${notOffered.join(", ")}`);
   }
   if (status.spent > 0) lines.push(`  spent     ${usd(status.spent)} this session`);
 
@@ -1376,7 +1398,14 @@ export function tiersCommand(
     else dropped.delete(name);
   }
   if (onOff === "off" && dropped.size >= TIERS.length) {
-    const kept = names[names.length - 1] as Tier;
+    // The tier to spare is the last-named one that was actually on before
+    // this command — not simply the last name given: a name already off
+    // (redundant, or a duplicate) is not the one putting every tier out,
+    // and "sparing" it would leave the real offender dropped and an
+    // already-off tier back on, the opposite of what was asked and of what
+    // the reply below says happened.
+    const wasOn = names.filter((n) => !current.includes(n as Tier)) as Tier[];
+    const kept = wasOn[wasOn.length - 1] ?? (names[names.length - 1] as Tier);
     dropped.delete(kept);
     return {
       excluded: TIERS.filter((t) => dropped.has(t)),
@@ -1388,12 +1417,18 @@ export function tiersCommand(
 }
 
 function tiersReply(excluded: readonly Tier[]): string {
-  if (excluded.length === 0) {
+  // Through `offeredTiers`, not a plain "everything not in excluded": naming
+  // every tier excluded (JEV_ROUTER_EXCLUDE misconfigured, say — the
+  // command itself never lets this happen) falls back to the full ladder
+  // rather than offering nothing, and the reply must describe what is
+  // actually offered, not what was merely asked to be dropped.
+  const on = offeredTiers(new Set(excluded));
+  if (on.length === TIERS.length) {
     return `Every tier is offered to Jev: ${TIERS.join(", ")}. /jev tiers off fable drops one.`;
   }
-  const on = TIERS.filter((t) => !excluded.includes(t));
+  const off = TIERS.filter((t) => !on.includes(t));
   return (
-    `${on.join(", ")} offered; ${excluded.join(", ")} off. ` +
+    `${on.join(", ")} offered; ${off.join(", ")} off. ` +
     "/jev tiers on brings a dropped one back."
   );
 }
