@@ -165,3 +165,13 @@ describe("a timed-out scoring", () => {
     assert.equal(signal?.aborted, true);
   });
 });
+
+describe("minReductionOf: a percentage sign means a percentage (2026-09-28)", () => {
+  test("1% and 0.5% are hundredths, not the whole transcript or half of it", () => {
+    assert.equal(minReductionOf("1%"), 0.01);
+    assert.equal(minReductionOf("0.5%"), 0.005);
+    assert.equal(minReductionOf("40 %"), 0.4);
+    assert.equal(minReductionOf("100"), 1);
+    assert.equal(minReductionOf("%"), 0.25);
+  });
+});

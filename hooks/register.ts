@@ -49,6 +49,7 @@ import {
   compactTimeoutOf,
   minReductionOf,
   pruneTranscript,
+  shortOf,
   type Compaction,
 } from "./compactor.ts";
 import {
@@ -620,6 +621,7 @@ export function register(on: On) {
     handles: readonly string[];
     messages: readonly unknown[];
     reduction: number;
+    compaction: Compaction;
   } | null = null;
   /** Turns a newer copy claimed: this one passes them through untouched. */
   const ceded = new Set<string>();
@@ -989,6 +991,24 @@ export function register(on: On) {
       const all = size(transcript);
       reduction = all > 0 ? cached.reduction * (1 - size(tail) / all) : cached.reduction;
       removedChars = Math.round(reduction * all);
+      // The tail can dilute it below the bar the scoring cleared: then the
+      // engine's summary runs, as it would have for a fresh scoring.
+      const short = shortOf(reduction, settings.compactMinReduction);
+      const compaction: Compaction = {
+        ...cached.compaction,
+        at: Date.now(),
+        kept: pruned.messages.length,
+        of: transcript.length,
+        reduction,
+        ms: 0,
+        ...(short !== undefined ? { fallback: short } : {}),
+      };
+      if (e.agentId === undefined) lastCompaction = compaction;
+      if (short !== undefined) {
+        pruned = null;
+        reduction = 0;
+        removedChars = 0;
+      }
     } else if (
       enabled &&
       settings.compactOn &&
@@ -1010,7 +1030,12 @@ export function register(on: On) {
       // `true | undefined` spelling of isError (rebuilt blocks carry false).
       if (result.ok) {
         pruned = { messages: result.messages as unknown as typeof e.messages };
-        prunedCache = { handles, messages: result.messages, reduction: result.compaction.reduction };
+        prunedCache = {
+          handles,
+          messages: result.messages,
+          reduction: result.compaction.reduction,
+          compaction: result.compaction,
+        };
         reduction = result.compaction.reduction;
         removedChars = Math.round(
           reduction *

@@ -3395,6 +3395,18 @@ describe("register: audit regressions (2026-09-23)", () => {
       assert.equal(second.messages.at(-1).handle, "h-new");
     });
 
+    test("a reused scoring diluted below the bar by a large tail leaves the engine's summary to run", async () => {
+      const kit = await withJev();
+      const messages = transcript(10);
+      await kit.hooks.get("session.compact")!(kit.$, { trigger: "precompute", messages }, async () => ({ messages: [] }));
+      const grown = [...messages, { role: "user", text: "x".repeat(1_000_000), toolUses: [], handle: "h-big" }];
+      let fellThrough = false;
+      await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: grown }, async () => (fellThrough = true, { messages: [] }));
+      assert.equal(kit.compactions(), 1, "not scored again");
+      assert.equal(fellThrough, true, "the engine's summary ran");
+      assert.match((await run(kit.hooks, kit.$, "")).text, /last: engine summary: only \d+% removed, needs 25%/);
+    });
+
     test("a copy that no longer owns the session does not answer a compaction from its cache", async () => {
       const shared = { store: new Map<string, unknown>(), id: "sess-OLDCACHE" };
       const old = await withJev({}, shared);

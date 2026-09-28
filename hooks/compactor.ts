@@ -52,12 +52,25 @@ export function compactTimeoutOf(raw: string | undefined): number {
   return Math.min(n, MAX_COMPACT_TIMEOUT_MS);
 }
 
-/** `JEV_ROUTER_COMPACT_MIN_REDUCTION`: a share 0–1; the default when unset or bad. */
+/**
+ * `JEV_ROUTER_COMPACT_MIN_REDUCTION`: a share 0–1; the default when unset or
+ * bad. A number past 1 is a percentage, and so is anything written with `%`,
+ * whatever its size: `1%` is a hundredth, not all of it.
+ */
 export function minReductionOf(raw: string | undefined): number {
-  const v = (raw ?? "").trim().replace(/%$/, "");
+  const trimmed = (raw ?? "").trim();
+  const percent = trimmed.endsWith("%");
+  const v = percent ? trimmed.slice(0, -1).trim() : trimmed;
   const n = Number(v);
   if (v === "" || !Number.isFinite(n) || n < 0) return MIN_REDUCTION;
-  return n > 1 ? Math.min(n / 100, 1) : n;
+  return percent || n > 1 ? Math.min(n / 100, 1) : n;
+}
+
+/** Why a pruning that removed too little does not stand; undefined when it does. */
+export function shortOf(reduction: number, minReduction: number): string | undefined {
+  return reduction < minReduction
+    ? `only ${Math.round(reduction * 100)}% removed, needs ${Math.round(minReduction * 100)}%`
+    : undefined;
 }
 
 /** A transcript message as the engine hands it to `session.compact`. */
@@ -214,15 +227,8 @@ export async function pruneTranscript(args: {
     }
     const result = raced as CompactResult;
     const compaction = compactionOf(result, now() - started);
-    if (compaction.reduction < args.minReduction) {
-      return {
-        ok: false,
-        compaction: {
-          ...compaction,
-          fallback: `only ${Math.round(compaction.reduction * 100)}% removed, needs ${Math.round(args.minReduction * 100)}%`,
-        },
-      };
-    }
+    const short = shortOf(compaction.reduction, args.minReduction);
+    if (short !== undefined) return { ok: false, compaction: { ...compaction, fallback: short } };
     return { ok: true, messages: toEngineMessages(args.messages, result.messages), compaction };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
