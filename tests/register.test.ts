@@ -3655,3 +3655,35 @@ describe("register: audit regressions (2026-09-28)", () => {
     assert.deepEqual(models, ["claude-opus-5-5", "claude-opus-5-5"], "the second step is still rewritten");
   });
 });
+
+describe("register: the environment still governs what no command set (2026-09-28)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const boot = async (env: Record<string, string>, shared: { store: Map<string, unknown>; id: string }) => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", ...env }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return kit;
+  };
+  test("a reload with a changed JEV_ROUTER_* follows it, while a command's setting is kept", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-ENV" };
+    const first = await boot({}, shared);
+    await first.hooks.get("turn.start")!(first.$, { text: "x", turnId: "e1" }, async (e: unknown) => e);
+    await collect(first.hooks.get("turn.step")!(first.$, { turnId: "e1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    await run(first.hooks, first.$, "sticky 0.6");
+    const again = await boot(
+      { JEV_ROUTER_PRICE_CHECK: "0", JEV_ROUTER_CEILING: "low", JEV_ROUTER_COMPACT: "0", JEV_ROUTER_STICKY: "1" },
+      shared,
+    );
+    const status = (await run(again.hooks, again.$, "")).text;
+    assert.match(status, /price\s+off/);
+    assert.match(status, /ceiling\s+low/);
+    assert.match(status, /compact\s+off/);
+    assert.match(status, /switch needs 60%/, "the command's bar still wins");
+  });
+  test("/jev --on and /jev --quiet are the same commands", async () => {
+    const { hooks, $ } = load();
+    assert.match((await run(hooks, $, "--off")).text, /routing off/);
+    assert.match((await run(hooks, $, "--on")).text, /routing on/);
+    assert.doesNotMatch((await run(hooks, $, "--quiet")).text, /not a command/);
+  });
+});

@@ -153,3 +153,30 @@ describe("persist", () => {
     assert.ok(!staleKeys(keys, "session:5").includes("session:5"));
   });
 });
+
+describe("persist: a snapshot is checked, not trusted (2026-09-28)", () => {
+  const packed = () => JSON.parse(JSON.stringify(pack(stateWith({ prompt: "p", ms: 1, decision }))));
+  test("a ceiling missing a tier, or capping one at no effort, is refused", () => {
+    const missing = packed();
+    delete missing.ceiling.fable;
+    assert.equal(unpack(missing), null);
+    const bogus = packed();
+    bogus.ceiling.opus = "bogus";
+    assert.equal(unpack(bogus), null);
+  });
+  test("a decision on an unknown tier or effort is dropped", () => {
+    const raw = packed();
+    raw.running = { ...decision, tier: "gpt" };
+    raw.latest = { ...decision, effort: "turbo" };
+    raw.decisions = [["t", { ...decision, tier: "gpt" }], ["u", decision]];
+    const back = unpack(raw)!;
+    assert.equal(back.running, null);
+    assert.equal(back.latest, null);
+    assert.deepEqual(back.decisions.map(([id]) => id), ["u"]);
+  });
+  test("the settings a command set come back; a snapshot without the field restores them all", () => {
+    const s = { ...stateWith({ prompt: "p", ms: 1, decision }), overridden: ["sticky" as const] };
+    assert.deepEqual(roundTrip(s)!.overridden, ["sticky"]);
+    assert.equal(roundTrip(stateWith({ prompt: "p", ms: 1, decision }))!.overridden, undefined);
+  });
+});

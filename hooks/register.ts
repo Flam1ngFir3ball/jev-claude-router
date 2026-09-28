@@ -27,6 +27,7 @@ import {
   thresholdOf,
   tierFilter,
   EFFORTS,
+  TIERS,
   type Ceiling,
   type Decision,
   type Effort,
@@ -38,6 +39,8 @@ import {
   SNAPSHOT_PREFIX,
   staleKeys,
   unpack,
+  OVERRIDABLE,
+  type Overridable,
   type State,
 } from "./persist.ts";
 import { providerOf, type ProviderResult } from "./provider.ts";
@@ -86,6 +89,9 @@ type Engine = {
   };
   clock: { sleep: (ms: number) => Promise<unknown> };
 };
+
+/** Whether two ceilings cap every tier the same. */
+const sameCeiling = (a: Ceiling, b: Ceiling) => TIERS.every((t) => a[t] === b[t]);
 
 /** Turns kept in the decision cache before the oldest are dropped. */
 const CACHE_LIMIT = 32;
@@ -744,6 +750,9 @@ export function register(on: On) {
   /** False right after `/clear`: the next key lookup must not restore. */
   let restoreOnKey = true;
 
+  /** The settings a `/jev` command set this session, which outrank the environment. */
+  const overridden = new Set<Overridable>();
+
   const stateNow = (): State => ({
     attempts,
     reply,
@@ -767,6 +776,7 @@ export function register(on: On) {
     excludedTiers: [...(settings?.excluded ?? [])],
     compactOn: settings?.compactOn ?? true,
     priceCheck: settings?.priceCheck ?? true,
+    overridden: [...overridden],
     summarisedAgents: [...summarisedAgents],
     compaction: lastCompaction,
   });
@@ -799,19 +809,25 @@ export function register(on: On) {
     lastCompaction = s.compaction;
     summarisedAgents.clear();
     for (const id of s.summarisedAgents) summarisedAgents.add(id);
+    // Only what a command set outranks the environment; the rest stays as
+    // the environment seeded it, so a changed JEV_ROUTER_* holds on reload.
+    // A snapshot from before `overridden` existed restores them all.
+    const restore = new Set<Overridable>(s.overridden ?? OVERRIDABLE);
+    overridden.clear();
+    for (const k of restore) overridden.add(k);
     if (settings !== null) {
-      settings.sticky = s.sticky;
-      settings.ceiling = s.ceiling;
+      if (restore.has("sticky")) settings.sticky = s.sticky;
+      if (restore.has("ceiling")) settings.ceiling = s.ceiling;
       // undefined means the snapshot predates this field: leave the
       // environment's own JEV_ROUTER_EXCLUDE seeding in place rather than
       // overwrite it with "nothing excluded" (see State.excludedTiers).
-      if (s.excludedTiers !== undefined) {
+      if (restore.has("excludedTiers") && s.excludedTiers !== undefined) {
         const tiers = tierFilter(s.excludedTiers as Tier[]);
         settings.excluded = tiers.excluded;
         settings.offered = tiers.offered;
       }
-      settings.compactOn = s.compactOn;
-      settings.priceCheck = s.priceCheck;
+      if (restore.has("compactOn")) settings.compactOn = s.compactOn;
+      if (restore.has("priceCheck")) settings.priceCheck = s.priceCheck;
     }
   };
 
@@ -1074,8 +1090,10 @@ export function register(on: On) {
     const arg = e.args.trim().toLowerCase();
     const sub = arg.replace(/^-+/, "");
 
-    if (arg === "on" || arg === "off") {
-      enabled = arg === "on";
+    // The dash-stripped spelling throughout, so `/jev --on` works as
+    // `/jev --sticky` does.
+    if (sub === "on" || sub === "off") {
+      enabled = sub === "on";
       if (!enabled) clearRouting();
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: toggleReply(enabled) };
@@ -1085,6 +1103,7 @@ export function register(on: On) {
       const want = sub.slice("price".length).trim();
       if (want === "on" || want === "off") {
         settings.priceCheck = want === "on";
+        overridden.add("priceCheck");
         if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       } else if (want !== "") {
         return { text: unknownCommandReply(sub, false) };
@@ -1100,6 +1119,7 @@ export function register(on: On) {
       const want = sub.slice("compact".length).trim();
       if (want === "on" || want === "off") {
         settings.compactOn = want === "on";
+        overridden.add("compactOn");
         if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       } else if (want !== "") {
         return { text: unknownCommandReply(sub, false) };
@@ -1113,8 +1133,8 @@ export function register(on: On) {
       };
     }
 
-    if (arg === "quiet" || arg === "loud") {
-      announce = arg === "loud";
+    if (sub === "quiet" || sub === "loud") {
+      announce = sub === "loud";
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: announceReply(announce) };
     }
@@ -1123,6 +1143,7 @@ export function register(on: On) {
     // for, and refusing it would teach nothing.
     if (sub === "sticky" || sub.startsWith("sticky ")) {
       const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
+      if (result.sticky !== settings.sticky) overridden.add("sticky");
       settings.sticky = result.sticky;
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
@@ -1133,6 +1154,7 @@ export function register(on: On) {
         sub.slice("ceiling".length),
         settings.ceiling,
       );
+      if (!sameCeiling(result.ceiling, settings.ceiling)) overridden.add("ceiling");
       settings.ceiling = result.ceiling;
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
       return { text: result.text };
@@ -1141,6 +1163,7 @@ export function register(on: On) {
     if (sub === "tiers" || sub.startsWith("tiers ")) {
       const result = tiersCommand(sub.slice("tiers".length), settings.excluded);
       const tiers = tierFilter(result.excluded);
+      if (tiers.excluded.join() !== settings.excluded.join()) overridden.add("excludedTiers");
       settings.excluded = tiers.excluded;
       settings.offered = tiers.offered;
       if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
@@ -1155,6 +1178,7 @@ export function register(on: On) {
       const legacy = rest[0] === "on" || rest[0] === "off";
       if ((effortNamed(head) !== null || head === "ultra") && !legacy) {
         const result = ceilingCommand(sub, settings.ceiling);
+        if (!sameCeiling(result.ceiling, settings.ceiling)) overridden.add("ceiling");
         settings.ceiling = result.ceiling;
         if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
         return { text: result.text };

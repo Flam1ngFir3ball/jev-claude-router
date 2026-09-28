@@ -16,7 +16,7 @@
  */
 
 import type { Compaction } from "./compactor.ts";
-import { TIERS, type Ceiling, type Decision } from "./policy.ts";
+import { EFFORTS, TIERS, type Ceiling, type Decision } from "./policy.ts";
 import type { Attempt } from "./status.ts";
 
 export const SNAPSHOT_VERSION = 1;
@@ -26,6 +26,10 @@ export const SNAPSHOT_PREFIX = "session:";
 
 /** Sessions whose snapshots are kept; older ones are dropped on save. */
 export const SNAPSHOTS_KEPT = 20;
+
+/** The settings a `/jev` command can set, which then outrank the environment. */
+export const OVERRIDABLE = ["sticky", "ceiling", "excludedTiers", "compactOn", "priceCheck"] as const;
+export type Overridable = (typeof OVERRIDABLE)[number];
 
 export type State = {
   attempts: Attempt[];
@@ -67,6 +71,14 @@ export type State = {
   compactOn: boolean;
   /** The downgrade and upgrade price checks are on. */
   priceCheck: boolean;
+  /**
+   * The settings above that a `/jev` command set this session; only these
+   * are restored over the environment, so a reload or resume still follows
+   * a changed `JEV_ROUTER_*` for everything no command touched.
+   * `undefined` only from `unpack` on a snapshot from before this field
+   * existed, which restores every setting, as those snapshots always did.
+   */
+  overridden: Overridable[] | undefined;
   /** Agents whose reply's summary was written: their late wake-up joins no block. */
   summarisedAgents: string[];
   /** The last compaction Jev was asked about, for /jev. */
@@ -120,6 +132,7 @@ export function pack(state: State): Packed {
     excludedTiers: state.excludedTiers,
     compactOn: state.compactOn,
     priceCheck: state.priceCheck,
+    overridden: state.overridden,
     summarisedAgents: state.summarisedAgents,
     compaction: state.compaction,
   };
@@ -175,9 +188,9 @@ export function unpack(raw: unknown): State | null {
   // decisions are dropped rather than trusted to their detriment.
   const isValidDecision = (v: unknown): v is Decision =>
     isRecord(v) &&
-    typeof v.tier === "string" &&
+    (TIERS as readonly unknown[]).includes(v.tier) &&
     typeof v.model === "string" &&
-    typeof v.effort === "string" &&
+    (EFFORTS as readonly unknown[]).includes(v.effort) &&
     typeof v.confidence === "number" &&
     Number.isFinite(v.confidence) &&
     v.confidence >= 0 &&
@@ -195,7 +208,14 @@ export function unpack(raw: unknown): State | null {
     typeof raw.lastUsage.output === "number"
       ? { context: raw.lastUsage.context, output: raw.lastUsage.output }
       : null;
-  if (!isRecord(raw.ceiling)) return null;
+  // Every tier's cap must be an effort: one missing or misspelled would
+  // cap that tier to nothing, and the request would go out with no effort.
+  const ceiling = raw.ceiling;
+  if (
+    !isRecord(ceiling) ||
+    !TIERS.every((t) => (EFFORTS as readonly unknown[]).includes(ceiling[t]))
+  )
+    return null;
   return {
     attempts,
     reply,
@@ -219,7 +239,7 @@ export function unpack(raw: unknown): State | null {
     // A snapshot from before this field exists has turns behind it.
     answered: raw.answered !== false,
     sticky: typeof raw.sticky === "number" ? raw.sticky : null,
-    ceiling: raw.ceiling as Ceiling,
+    ceiling: Object.fromEntries(TIERS.map((t) => [t, ceiling[t]])) as Ceiling,
     // Absent (a snapshot from before this field existed) is left undefined
     // — a signal to leave the environment's own JEV_ROUTER_EXCLUDE seeding
     // alone — rather than defaulted to an empty array, which used to
@@ -233,6 +253,12 @@ export function unpack(raw: unknown): State | null {
           ),
     compactOn: raw.compactOn !== false,
     priceCheck: raw.priceCheck !== false,
+    overridden:
+      raw.overridden === undefined
+        ? undefined
+        : strings(raw.overridden).filter((k): k is Overridable =>
+            (OVERRIDABLE as readonly string[]).includes(k),
+          ),
     summarisedAgents: Array.isArray(raw.summarisedAgents)
       ? raw.summarisedAgents.filter((a): a is string => typeof a === "string")
       : [],
@@ -240,7 +266,6 @@ export function unpack(raw: unknown): State | null {
   };
 }
 
-/** The snapshot keys to drop so `SNAPSHOTS_KEPT` remain, oldest first. */
 /** A saved compaction with every field it needs, or null. */
 function compactionOf(raw: unknown): Compaction | null {
   if (!isRecord(raw) || !isRecord(raw.calls)) return null;
@@ -258,6 +283,7 @@ function compactionOf(raw: unknown): Compaction | null {
   };
 }
 
+/** The snapshot keys to drop so `SNAPSHOTS_KEPT` remain, oldest first. */
 export function staleKeys(keys: readonly string[], current: string): string[] {
   const sessions = keys.filter(
     (k) => k.startsWith(SNAPSHOT_PREFIX) && k !== current,
