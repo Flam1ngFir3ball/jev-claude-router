@@ -1137,8 +1137,22 @@ export const REPLY_SEPARATOR = "\n\n---\n\n";
  */
 export const FOOTER_SEPARATOR = "\n\n";
 
+/**
+ * A route line's own shape, as `liveLine` writes it: a tier, and the time
+ * Jev took at the end; or the not-routed warning. Matching the shape, not
+ * just the opening `> ⚠️ `, keeps a warning callout the model writes itself
+ * ("> ⚠️ This force-pushes.") from being taken for a copied line.
+ */
+const ROUTE_LINE_BODY = `(?:✳️ (?:${TIERS.join("|")}) · [^\\n]*· \\d+(?:\\.\\d+)?ms|⚠️ not routed: [^\\n]*)`;
+const ROUTE_LINE_SHAPE = new RegExp(`^> ${ROUTE_LINE_BODY}(?=\\n|$)`);
+
+/** Whether text opens with a route line of the plugin's own shape. */
+export function isRouteLine(text: string): boolean {
+  return ROUTE_LINE_SHAPE.test(text);
+}
+
 /** A route line the model wrote itself at the start of its text, with the rule under it. */
-const IMITATED_LINE = /^> (?:✳️|⚠️) [^\n]*(?:\n+---(?:\n+|$)|\n+|$)/;
+const IMITATED_LINE = new RegExp(`^> ${ROUTE_LINE_BODY}(?:\\n+---(?:\\n+|$)|\\n+|$)`);
 
 /**
  * A summary the model wrote itself at the end of its text: a fence whose
@@ -1159,6 +1173,15 @@ export function withoutImitations(text: string): string {
 
 /** How a route line opens, for telling a partial one from ordinary text. */
 const LINE_OPENERS = ["> ✳️ ", "> ⚠️ "];
+
+/** Every way a route line's first words can read, once past its opener. */
+const LINE_STARTS = ["> ⚠️ not routed: ", ...TIERS.map((t) => `> ✳️ ${t} · `)];
+
+/** Whether a first line still being streamed could turn out to be a route line. */
+function couldBeRouteLine(partial: string): boolean {
+  const line = partial.split("\n", 1)[0]!;
+  return LINE_STARTS.some((s) => s.startsWith(line) || line.startsWith(s));
+}
 
 /**
  * The rule under a route line, after the line's own newline: the canonical
@@ -1224,7 +1247,7 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
     if (!this.settled) {
       const h = this.held;
       const opener = LINE_OPENERS.find((o) => h.startsWith(o));
-      if (opener === undefined) {
+      if (opener === undefined || !couldBeRouteLine(h)) {
         // Still possibly the start of a line: wait for more.
         if (!final && LINE_OPENERS.some((o) => o.startsWith(h))) return "";
       } else {

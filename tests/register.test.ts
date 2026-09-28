@@ -3634,3 +3634,24 @@ describe("register: audit regressions (2026-09-23)", () => {
     await run(hooks, $, "");
   });
 });
+
+describe("register: audit regressions (2026-09-28)", () => {
+  test("a reply opening with its own ⚠️ warnings keeps them, and the rest of the turn stays routed", async () => {
+    const { hooks, $ } = load();
+    await hooks.get("turn.start")!($, { text: "force push it", turnId: "w1" }, async (e: unknown) => e);
+    const models: string[] = [];
+    const step = (index: number, ...texts: string[]) =>
+      collect(
+        hooks.get("turn.step")!($, { turnId: "w1", index, model: "claude-fable-5-1" }, (e: { model: string }) => {
+          models.push(e.model);
+          return modelSays(...texts);
+        }),
+      );
+    const first = await step(0, "> ⚠️ This force-pushes.\n> ⚠️ It rewrites history.\n\nHere is the plan.");
+    const text = first.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.match(text, /^> ✳️ opus · /, "the route line is written");
+    assert.match(text, /> ⚠️ This force-pushes\.\n> ⚠️ It rewrites history\.\n\nHere is the plan\.$/, "both warnings kept");
+    await step(1, "more");
+    assert.deepEqual(models, ["claude-opus-5-5", "claude-opus-5-5"], "the second step is still rewritten");
+  });
+});

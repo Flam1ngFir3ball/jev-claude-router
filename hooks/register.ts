@@ -73,6 +73,7 @@ import {
   TYPICAL_OUTPUT_TOKENS,
   unknownCommandReply,
   ImitationFilter,
+  isRouteLine,
   type AgentTag,
   type Attempt,
 } from "./status.ts";
@@ -88,9 +89,6 @@ type Engine = {
 
 /** Turns kept in the decision cache before the oldest are dropped. */
 const CACHE_LIMIT = 32;
-
-/** A reply's route line, as `liveLine` writes it: what an inner copy already put in. */
-const ROUTE_LINE = /^> (?:✳️|⚠️) /;
 
 /** A summary block, as `replySummary` writes it after `FOOTER_SEPARATOR`. */
 const SUMMARY = /^\n\n```\n[^\n]*\(\d+% cached\)/;
@@ -1212,8 +1210,11 @@ export function register(on: On) {
         savedOnce = false;
       }
     }
+    // Decided afresh each turn: standing aside is about who holds the
+    // session now, so a turn that stood aside does not switch routing off
+    // for the rest of a session with no id to claim.
     if (superseded()) inert = true;
-    else if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
+    else inert = snapshotKey ? !(await ownsSession($, snapshotKey, birth, true)) : false;
     if (inert) return next(e);
     const { offered, ceiling } = settings;
     // Jev is the long pole of the turn, so it is asked before anything
@@ -1593,7 +1594,9 @@ export function register(on: On) {
           // since the turn began leaves it to the owner, once, and a line an
           // inner copy already wrote is not written again.
           pending.delete(e.turnId);
-          if (ROUTE_LINE.test(chunk.text) || !(await holdsNow())) {
+          // The line's whole shape, not its opening: a reply that opens
+          // with its own "> ⚠️ " warning is not a line a copy wrote.
+          if (isRouteLine(chunk.text) || !(await holdsNow())) {
             inert = true;
             yield chunk;
             continue;

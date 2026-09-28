@@ -1203,3 +1203,27 @@ describe("ImitationFilter: a summary quoted early in a block still streams", () 
     assert.equal(out, text);
   });
 });
+
+describe("withoutImitations: a warning the model writes is not a route line", () => {
+  const warning = "> ⚠️ **Warning:** this force-pushes and rewrites history.\n\nHere is the plan.";
+  test("kept whole, and a copied line of the real shape still goes", () => {
+    assert.equal(withoutImitations(warning), warning);
+    assert.equal(withoutImitations("> ✳️ quick note\n\nText."), "> ✳️ quick note\n\nText.");
+    assert.equal(withoutImitations("> ⚠️ not routed: typesafe said HTTP 401\n\n---\n\nText."), "Text.");
+  });
+  test("kept however it streams", () => {
+    for (let size = 1; size <= 7; size++) {
+      const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+      let out = "";
+      for (let i = 0; i < warning.length; i += size)
+        for (const c of f.push({ kind: "text", index: 0, text: warning.slice(i, i + size) })) out += c.text;
+      for (const c of f.end()) out += c.text;
+      assert.equal(out, warning, `pieces of ${size}`);
+    }
+  });
+  test("released before its line ends once it cannot be a route line", () => {
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    const out = f.push({ kind: "text", index: 0, text: "> ⚠️ Careful, this" });
+    assert.equal(out.map((c) => c.text).join(""), "> ⚠️ Careful, this");
+  });
+});
