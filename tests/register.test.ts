@@ -3699,3 +3699,26 @@ describe("register: the environment still governs what no command set (2026-09-2
     assert.doesNotMatch((await run(hooks, $, "--quiet")).text, /not a command/);
   });
 });
+
+describe("register: a switch no response confirmed (2026-09-28)", () => {
+  test("a turn moved to a new tier and interrupted before any response leaves the old tier warm", async () => {
+    const { hooks, $, setTier, setContext } = load();
+    const turn = async (id: string, text: string, answer: (model: string) => AsyncIterable<unknown>) => {
+      await hooks.get("turn.start")!($, { text, turnId: id }, async (e: unknown) => e);
+      let sent = "";
+      const chunks = await collect(
+        hooks.get("turn.step")!($, { turnId: id, index: 0 }, (e: { model: string }) => ((sent = e.model), answer(e.model))),
+      );
+      return { sent, text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join("") };
+    };
+    setTier("opus", 0.95, 2);
+    assert.equal((await turn("u1", "implement it", (m) => answeredBy(m))).sent, "claude-opus-5-5");
+    setTier("fable", 0.95, 3);
+    // Interrupted: the stream ends with no usage, so nothing was written on fable.
+    assert.equal((await turn("u2", "plan it", () => modelSays("Let me"))).sent, "claude-fable-5-1");
+    setContext(150_000);
+    setTier("haiku", 0.99, 0);
+    const t = await turn("u3", "what is 2+2", (m) => answeredBy(m));
+    assert.match(t.text, /kept opus: haiku costs/, "priced against opus, which is what is warm");
+  });
+});

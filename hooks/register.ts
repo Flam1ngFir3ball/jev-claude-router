@@ -656,6 +656,13 @@ export function register(on: On) {
   let latest: Decision | null = null;
   /** The tier the last routed turn ran on; what a shaky switch is held to. */
   let running: Decision | null = null;
+  /**
+   * What was running before this turn moved `running` to a new model, until
+   * a response on it confirms the new model's cache was written. A turn
+   * interrupted or failed before any response wrote nothing, so the next
+   * turn goes back to pricing against what is actually warm.
+   */
+  let unconfirmed: { was: Decision | null } | null = null;
   /** What that turn carried and produced, for pricing the next switch. */
   let lastUsage: { context: number; output: number } | null = null;
   /** The main loop's model as `/model` shows it, read when first needed. */
@@ -740,6 +747,7 @@ export function register(on: On) {
     latest = null;
     continueFrom = null;
     running = null;
+    unconfirmed = null;
     lastUsage = null;
   };
 
@@ -800,6 +808,7 @@ export function register(on: On) {
     stepped.clear();
     for (const id of s.stepped) stepped.add(id);
     running = s.running;
+    unconfirmed = null;
     continueFrom = s.continueFrom;
     latest = s.latest;
     lastUsage = s.lastUsage;
@@ -931,6 +940,7 @@ export function register(on: On) {
       typeof e.model === "string"
     ) {
       running = sessionDecision(e.model);
+      unconfirmed = null;
       if (running !== null) {
         lastUsage = { context: e.context_tokens, output: TYPICAL_OUTPUT_TOKENS };
       }
@@ -1059,6 +1069,7 @@ export function register(on: On) {
       if (pruned === null) {
         // The engine's summary: a new prefix, nothing warm, a small context.
         running = null;
+        unconfirmed = null;
         continueFrom = null;
         lastUsage = null;
       } else if (lastUsage !== null) {
@@ -1089,6 +1100,7 @@ export function register(on: On) {
     if (e.source === "resume") return next(e);
     if (typeof e.to_model === "string") sessionModel = e.to_model;
     running = null;
+    unconfirmed = null;
     continueFrom = null;
     if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
     return next(e);
@@ -1265,6 +1277,12 @@ export function register(on: On) {
     if (superseded()) inert = true;
     else inert = snapshotKey ? !(await ownsSession($, snapshotKey, birth, true)) : false;
     if (inert) return next(e);
+    // The last turn switched and then ended with no response on the new
+    // model: nothing was written there, so what was warm before still is.
+    if (unconfirmed !== null) {
+      running = unconfirmed.was;
+      unconfirmed = null;
+    }
     const { offered, ceiling } = settings;
     // Jev is the long pole of the turn, so it is asked before anything
     // else is read. A copy that then cedes the turn drops the answer: one
@@ -1457,8 +1475,11 @@ export function register(on: On) {
       // What the next turn holds to is the tier actually running, which on a
       // held turn is the previous one, not the one Jev named — at the effort
       // Jev asked for, not the one a first turn ran instead.
+      const was = running;
       running = asAsked(attempt.decision);
       continueFrom = running;
+      if (unconfirmed === null && (was === null || baseModel(was.model) !== baseModel(running.model)))
+        unconfirmed = { was };
     } else {
       // Unrouted: the session model answered. A following go-ahead must not
       // re-apply the last routed tier as if that were the previous turn.
@@ -1525,6 +1546,7 @@ export function register(on: On) {
           if (e.agentId === undefined) {
             cacheExpired = false;
             answered = true;
+            unconfirmed = null;
             const warm = warmDecision(u.model, e.effort);
             if (warm !== null) {
               running = warm;
@@ -1690,6 +1712,7 @@ export function register(on: On) {
             // and no later request is the conversation's first.
             cacheExpired = false;
             answered = true;
+            unconfirmed = null;
             const warm = warmDecision(usage.model, e.effort);
             const unrouted = attempt === undefined || !("decision" in attempt);
             if (

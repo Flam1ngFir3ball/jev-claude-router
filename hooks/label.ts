@@ -24,8 +24,11 @@ export function labelOf(
   if (!enabled) return "jev off";
   if (!decision) return null;
 
+  // A named tier and a failed Jev call carry 0 as a placeholder, not a
+  // score: Jev was not asked, or did not answer, so there is no doubt to show.
+  const scored = !(decision.forced && decision.confidence === 0) && decision.jevFailed === undefined;
   const doubt =
-    decision.confidence < LOW_CONFIDENCE
+    scored && decision.confidence < LOW_CONFIDENCE
       ? `, only ${Math.round(decision.confidence * 100)}% sure`
       : "";
   return `jev: ${decision.tier}, ${decision.effort} effort${doubt}`;

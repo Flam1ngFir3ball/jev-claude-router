@@ -208,3 +208,21 @@ describe("TYPESAFE_BASE_URL allowlist", () => {
     assert.equal(typesafeBaseOf("http://api.typesafe.ai", "1").ok, false);
   });
 });
+
+describe("audit regressions (2026-09-28)", () => {
+  it("a whitespace-only TypeSafe key does not beat a real gateway key, and a key is trimmed", () => {
+    const p = providerOf({ TYPESAFE_API_KEY: "  ", AI_GATEWAY_API_KEY: "gw-key\n", JEV_ROUTER_PROVIDER: undefined, TYPESAFE_BASE_URL: undefined });
+    assert.ok(p.ok);
+    if (p.ok) {
+      assert.strictEqual(p.name, "gateway");
+      assert.strictEqual(p.apiKey, "gw-key");
+    }
+  });
+  it("a base that already ends in the endpoint's path is not doubled", () => {
+    for (const raw of ["https://api.typesafe.ai/v1/systemone", "https://api.typesafe.ai/v1", "https://api.typesafe.ai/v1/systemone/"]) {
+      const b = typesafeBaseOf(raw, undefined);
+      assert.deepStrictEqual(b, { ok: true, base: "https://api.typesafe.ai" }, raw);
+    }
+    assert.deepStrictEqual(typesafeBaseOf("https://proxy.typesafe.ai/jev", undefined), { ok: true, base: "https://proxy.typesafe.ai/jev" });
+  });
+});

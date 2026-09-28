@@ -60,9 +60,15 @@ export function shortError(detail: string): string {
   return bare.length > 60 ? `${bare.slice(0, 57)}…` : bare;
 }
 
+/**
+ * Below this a budget is taken for a mistake, most likely seconds written
+ * where milliseconds are read (`1.5`), which would time every turn out.
+ */
+export const MIN_TIMEOUT_MS = 100;
+
 export function timeoutOf(raw: string | undefined): number {
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TIMEOUT_MS;
+  if (!Number.isFinite(parsed) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
   return Math.min(parsed, MAX_TIMEOUT_MS);
 }
 
@@ -268,7 +274,10 @@ function providerNoteOf(response: HttpResponseLike): string {
   try {
     const body = JSON.parse(response.text) as { error?: { type?: string } };
     const type = body?.error?.type;
-    return typeof type === "string" ? ` (${type})` : "";
+    // It lands in the reply's route line: a short, plain word or nothing.
+    if (typeof type !== "string") return "";
+    const plain = type.replace(/[^\w.-]/g, "").slice(0, 40);
+    return plain === "" ? "" : ` (${plain})`;
   } catch {
     return "";
   }

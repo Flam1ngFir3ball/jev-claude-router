@@ -350,11 +350,26 @@ export function stickyOf(raw: string | undefined): boolean {
  * and each is better said by leaving the flag off.
  */
 export function thresholdOf(raw: string | undefined): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_STICKY_CONFIDENCE;
-  const ratio = parsed > 1 ? parsed / 100 : parsed;
-  if (ratio <= 0 || ratio >= 1) return DEFAULT_STICKY_CONFIDENCE;
-  return ratio;
+  return confidenceShareOf(raw) ?? DEFAULT_STICKY_CONFIDENCE;
+}
+
+/**
+ * A confidence bar as a share strictly between 0 and 1, or null. `0.6`,
+ * `60` and `60%` are the same bar; anything written with `%` is a
+ * percentage, so `0.5%` is half a percent, not half. Without `%`, a number
+ * past 1 must be a whole percentage: `1.5` is refused rather than read as
+ * 1.5%, a bar so low it is as good as none. Plain decimals only (`Number`
+ * alone reads `0x40` as 64).
+ */
+export function confidenceShareOf(raw: string | undefined): number | null {
+  const trimmed = (raw ?? "").trim();
+  const percent = trimmed.endsWith("%");
+  const v = percent ? trimmed.slice(0, -1).trim() : trimmed;
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return null;
+  const n = Number(v);
+  if (!percent && n > 1 && !Number.isInteger(n)) return null;
+  const ratio = percent || n > 1 ? n / 100 : n;
+  return ratio > 0 && ratio < 1 ? ratio : null;
 }
 
 /**
@@ -691,15 +706,21 @@ export function forcedDecision(tier: Tier, fresh: Decision | null): Decision {
  * shakier (0.00 to 0.81 across ten prompts; lowest on the short follow-ups
  * where a flip is least worth $0.12). Symmetric on purpose: letting rises
  * through freely ratchets a Sonnet stretch up to xhigh and holds it there.
+ *
+ * With `ceiling`, an effort the ceiling no longer allows is not held: it
+ * would be cut to the cap anyway, so the effort changes and the cache is
+ * rewritten whatever the hold does, and Jev's own pick should run instead.
  */
 export function holdsSonnetEffort(
   fresh: Decision,
   previous: Decision | null,
   threshold: number,
+  ceiling?: Ceiling,
 ): boolean {
   if (previous === null) return false;
   if (fresh.tier !== "sonnet" || previous.tier !== "sonnet") return false;
   if (fresh.effort === previous.effort) return false;
+  if (ceiling !== undefined && effortRank(previous.effort) > effortRank(ceiling.sonnet)) return false;
   return (fresh.effortConfidence ?? 0) < threshold;
 }
 

@@ -844,3 +844,12 @@ describe("policy: audit regressions (2026-09-28)", () => {
     assert.deepEqual(d?.probabilities, { haiku: 0, fable: 1 });
   });
 });
+
+describe("holdsSonnetEffort under a ceiling (2026-09-28)", () => {
+  const on = (effort: Effort, effortConfidence: number): Decision => ({ tier: "sonnet", model: "claude-sonnet-5-5", effort, confidence: 0.9, effortConfidence });
+  test("an effort the ceiling now cuts is not held: it changes either way", () => {
+    const ceiling = { ...ceilingAt("max"), sonnet: "medium" as const };
+    assert.equal(holdsSonnetEffort(on("low", 0.3), on("xhigh", 0.9), 0.75, ceiling), false);
+    assert.equal(holdsSonnetEffort(on("low", 0.3), on("medium", 0.9), 0.75, ceiling), true, "one within the cap still is");
+  });
+});

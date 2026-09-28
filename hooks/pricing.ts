@@ -260,7 +260,8 @@ export function breakEvenTokens(
 
 /** `$4.41`, `$0.36`, `$0.024`, `$0.0035`: enough places to show a small turn. */
 export function usd(n: number): string {
-  if (n >= 0.1) return `$${n.toFixed(2)}`;
-  if (n >= 0.01) return `$${n.toFixed(3)}`;
+  // Decided on the rounded figure: $0.09999 is $0.10, not $0.100.
+  if (Number(n.toFixed(3)) >= 0.1) return `$${n.toFixed(2)}`;
+  if (Number(n.toFixed(4)) >= 0.01) return `$${n.toFixed(3)}`;
   return `$${n.toFixed(4)}`;
 }

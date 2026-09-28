@@ -395,9 +395,9 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `TYPESAFE_API_KEY` | | TypeSafe direct key. |
 | `AI_GATEWAY_API_KEY` | | Vercel AI Gateway key. |
 | `JEV_ROUTER_PROVIDER` | TypeSafe if its key is set | `typesafe` or `gateway`. |
-| `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | Only `*.typesafe.ai` is accepted unless `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`. |
+| `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | Must be https. Only `*.typesafe.ai` is accepted unless `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`. A trailing `/v1/systemone` is dropped, since the router adds it. |
 | `JEV_ROUTER_JEV_MODEL` | `jev-latest` | Pin a Jev version (e.g. `jev-1.13.0`) so confidences stay stable across releases. |
-| `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev. At most 8000. |
+| `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev, in milliseconds. At least 100 (anything less is taken for a mistake and the default used), at most 8000. |
 
 **Routing**
 

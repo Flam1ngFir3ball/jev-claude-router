@@ -80,7 +80,10 @@ export function typesafeBaseOf(
         "JEV_ROUTER_ALLOW_CUSTOM_BASE=1 to permit it",
     };
   }
-  return { ok: true, base: `${url.origin}${url.pathname}`.replace(/\/$/, "") };
+  // The endpoint's own path is added after the base; a base that already
+  // carries it (copied from the docs' full URL) would otherwise double it.
+  const path = url.pathname.replace(/\/+$/, "").replace(/\/v1(?:\/systemone)?$/, "");
+  return { ok: true, base: `${url.origin}${path}` };
 }
 
 function flagOn(raw: string | undefined): boolean {
@@ -107,7 +110,15 @@ function typesafeProvider(
   };
 }
 
-export function providerOf(env: ProviderEnv): ProviderResult {
+export function providerOf(raw: ProviderEnv): ProviderResult {
+  // A key pasted with a newline or spaces is the key without them, and one
+  // that is only whitespace is no key: it must not win over a real one.
+  const keyOf = (v: string | undefined) => (v ?? "").trim() || undefined;
+  const env = {
+    ...raw,
+    TYPESAFE_API_KEY: keyOf(raw.TYPESAFE_API_KEY),
+    AI_GATEWAY_API_KEY: keyOf(raw.AI_GATEWAY_API_KEY),
+  };
   const forced = (env.JEV_ROUTER_PROVIDER ?? "").toLowerCase().trim();
 
   if (forced === "typesafe") {

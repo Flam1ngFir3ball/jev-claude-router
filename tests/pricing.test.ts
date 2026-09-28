@@ -142,3 +142,14 @@ describe("pricing: older models sharing a prefix (2026-09-28)", () => {
     assert.deepEqual(priceOfModel("claude-sonnet-5-5"), PRICE.sonnet);
   });
 });
+
+describe("usd: the places follow the rounded figure (2026-09-28)", () => {
+  test("just under a cut-off rounds up into it", () => {
+    assert.equal(usd(0.09999), "$0.10");
+    assert.equal(usd(0.009999), "$0.010");
+    assert.equal(usd(0.0999), "$0.10");
+    assert.equal(usd(0.36), "$0.36");
+    assert.equal(usd(0.024), "$0.024");
+    assert.equal(usd(0.0035), "$0.0035");
+  });
+});

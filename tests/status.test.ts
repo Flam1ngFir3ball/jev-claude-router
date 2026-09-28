@@ -18,6 +18,7 @@ import {
   liveLine,
   REPLY_SEPARATOR,
   statusReport,
+  unknownCommandReply,
   toggleReply,
   type Status,
   addUsage,
@@ -1225,5 +1226,42 @@ describe("withoutImitations: a warning the model writes is not a route line", ()
     const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
     const out = f.push({ kind: "text", index: 0, text: "> ⚠️ Careful, this" });
     assert.equal(out.map((c) => c.text).join(""), "> ⚠️ Careful, this");
+  });
+});
+
+describe("status: audit regressions (2026-09-28)", () => {
+  const onFable = { tier: "fable" as const, model: "claude-fable-5-1", effort: "xhigh" as const, confidence: 0.9 };
+  test("/jev sticky refuses what is not a plain confidence, and reads % as a percentage", () => {
+    assert.equal(stickyCommand("1.5", 0.75).sticky, 0.75, "1.5 is refused, not read as 1.5%");
+    assert.equal(stickyCommand("0x40", 0.75).sticky, 0.75, "hex is refused");
+    assert.equal(stickyCommand("0.5%", 0.75).sticky, 0.005);
+    assert.equal(stickyCommand("60%", 0.75).sticky, 0.6);
+    assert.equal(stickyCommand("60", 0.75).sticky, 0.6);
+    assert.equal(stickyCommand("0.6", 0.75).sticky, 0.6);
+  });
+  test("just under a million tokens reads 1.0M, not 1000k", () => {
+    assert.match(statusReport({ ...base, contextTokens: 999_600 }), /1\.0M context/);
+  });
+  test("with sticky off, the line names the command that turns it back on", () => {
+    assert.match(statusReport(base), /sticky\s+off \(\/jev sticky on\)/);
+  });
+  test("the cache line prices a downgrade only to a tier that is still offered, and on the main loop's output", () => {
+    const routed: Attempt = { prompt: "plan", ms: 300, decision: onFable };
+    addUsage(routed, usageOf("claude-fable-5-1", { output_tokens: 1500, cache_read_input_tokens: 199_000, cache_creation_input_tokens: 0 }));
+    const off = statusReport({ ...base, contextTokens: 200_000, running: onFable, attempts: [routed], offered: ["sonnet", "opus", "fable"], excluded: ["haiku"] });
+    assert.match(off, /fable→sonnet pays below/);
+    const agent: Attempt = { prompt: "search", ms: 300, kind: "agent", decision: onFable };
+    addUsage(agent, usageOf("claude-fable-5-1", { output_tokens: 50 }));
+    const line = (r: string) => r.split("\n").find((l) => l.includes("pays below"));
+    assert.equal(
+      line(statusReport({ ...base, contextTokens: 200_000, running: onFable, attempts: [agent, routed] })),
+      line(statusReport({ ...base, contextTokens: 200_000, running: onFable, attempts: [routed] })),
+    );
+  });
+});
+
+describe("status: the usage text names every subcommand (2026-09-28)", () => {
+  test("tiers is listed", () => {
+    assert.match(unknownCommandReply("tier", false), /tiers \[on\|off <tier>\]/);
   });
 });

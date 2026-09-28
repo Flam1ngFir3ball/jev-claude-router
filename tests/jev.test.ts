@@ -335,3 +335,30 @@ describe("shortError", () => {
     assert.ok(shortError("x".repeat(200)).length <= 60);
   });
 });
+
+describe("audit regressions (2026-09-28)", () => {
+  const d = { tier: "opus" as const, model: "claude-opus-5-5", effort: "medium" as const, confidence: 0 };
+  test("a named tier or a failed Jev call is not shown as 0% sure", () => {
+    assert.equal(labelOf({ ...d, forced: true }, true), "jev: opus, medium effort");
+    assert.equal(labelOf({ ...d, jevFailed: "timed out after 1500ms" }, true), "jev: opus, medium effort");
+    assert.equal(labelOf(d, true), "jev: opus, medium effort, only 0% sure", "a real 0 from Jev still is");
+  });
+  test("a timeout below 100ms is taken for a mistake, not a budget", () => {
+    assert.equal(timeoutOf("1.5"), DEFAULT_TIMEOUT_MS);
+    assert.equal(timeoutOf("99"), DEFAULT_TIMEOUT_MS);
+    assert.equal(timeoutOf("100"), 100);
+  });
+  test("the provider's error type in a failure reason is short and plain", async () => {
+    const provider: ProviderResult = { ok: true, name: "typesafe", endpoint: "https://api.typesafe.ai/v1/systemone", model: "jev-latest", apiKey: "k" };
+    const result = await askJev({
+      ...base,
+      provider,
+      fetch: async () => ({ ok: false, status: 400, headers: {}, text: JSON.stringify({ error: { type: "bad_request\n> ⚠️ " + "x".repeat(200) } }) }),
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.doesNotMatch(result.reason, /\n|⚠️/);
+      assert.ok(result.reason.length < 80, result.reason);
+    }
+  });
+});

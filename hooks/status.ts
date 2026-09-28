@@ -12,6 +12,7 @@ import type { JevResult } from "./jev.ts";
 import {
   capTo,
   ceilingAt,
+  confidenceShareOf,
   MODEL_OF,
   decisionOf,
   DEFAULT_STICKY_CONFIDENCE,
@@ -514,7 +515,7 @@ export function attemptOf(
         hold.sticky !== null &&
         hold.running !== null &&
         hold.running.effortConfidence !== undefined &&
-        holdsSonnetEffort(fits, hold.running, hold.sticky)
+        holdsSonnetEffort(fits, hold.running, hold.sticky, hold.ceiling ?? undefined)
           ? { ...fits, effort: hold.running.effort, heldEffort: fits.effort }
           : fits;
       return {
@@ -588,7 +589,7 @@ export function attemptOf(
     // A placeholder for what a session runs on carries no effort Jev
     // chose; there is nothing to hold to.
     hold.running.effortConfidence !== undefined &&
-    holdsSonnetEffort(decision, hold.running, hold.sticky)
+    holdsSonnetEffort(decision, hold.running, hold.sticky, hold.ceiling ?? undefined)
   ) {
     decision = {
       ...decision,
@@ -772,8 +773,10 @@ function attemptLine(attempt: Attempt): string {
 
 /** Thousands or millions, rounded, for token counts: 130k, 2k, 3.3M. */
 function kOf(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  return `${Math.round(n / 1000)}k`;
+  const k = Math.round(n / 1000);
+  // 999,500 rounds to a thousand k, which is a million.
+  if (k >= 1000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${k}k`;
 }
 
 /**
@@ -983,7 +986,7 @@ export function statusReport(status: Status): string {
   lines.push(
     `  sticky    ${
       status.sticky === null
-        ? "off (JEV_ROUTER_STICKY=0)"
+        ? "off (/jev sticky on)"
         : `on, switch needs ${pct(status.sticky)} ` +
           `(${pct(upgradeBar(status.sticky, UPGRADE_CONTEXT_TOKENS))} up past ` +
           `${kOf(UPGRADE_CONTEXT_TOKENS)})`
@@ -1064,9 +1067,11 @@ function cacheLine(status: Status): string {
   const running = status.running;
   if (running !== null) {
     const from = running.tier;
-    const to = TIERS.find((t) => isDowngrade(from, t));
+    // A tier turned off is not a downgrade the router can make.
+    const to = TIERS.find((t) => status.offered.includes(t) && isDowngrade(from, t));
     if (to !== undefined) {
-      const last = status.attempts.find((a) => "decision" in a && a.usage);
+      // The main loop's own output: a subagent's is its own conversation.
+      const last = status.attempts.find((a) => "decision" in a && a.usage && a.kind !== "agent");
       const out = Math.min(
         last?.usage?.output_tokens ?? TYPICAL_OUTPUT_TOKENS,
         TYPICAL_OUTPUT_TOKENS,
@@ -1317,7 +1322,8 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
 export function unknownCommandReply(arg: string, legacy: boolean): string {
   const usage =
     "/jev (status), on, off, quiet, loud, sticky [off|0.6], price [on|off], " +
-    "compact [on|off], ceiling <effort> [tiers], or an effort on its own (/jev xhigh fable).";
+    "compact [on|off], tiers [on|off <tier>], ceiling <effort> [tiers], " +
+    "or an effort on its own (/jev xhigh fable).";
   return legacy
     ? `"/jev ${arg}" was one of the old effort toggles; the ceiling replaced them. ` +
         `Try /jev ceiling xhigh to allow up to xhigh, or /jev ceiling medium to cap there. ${usage}`
@@ -1345,7 +1351,7 @@ export function stickyCommand(
   rest: string,
   current: number | null,
 ): { sticky: number | null; text: string } {
-  const arg = rest.trim().toLowerCase().replace(/%$/, "");
+  const arg = rest.trim().toLowerCase();
 
   if (arg === "off") {
     return {
@@ -1359,9 +1365,8 @@ export function stickyCommand(
     return { sticky: bar, text: stuckAt(bar) };
   }
 
-  const parsed = Number(arg);
-  const ratio = parsed > 1 ? parsed / 100 : parsed;
-  if (!Number.isFinite(parsed) || ratio <= 0 || ratio >= 1) {
+  const ratio = confidenceShareOf(arg);
+  if (ratio === null) {
     return {
       sticky: current,
       text:
