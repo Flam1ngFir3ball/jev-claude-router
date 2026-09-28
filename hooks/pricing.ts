@@ -39,15 +39,26 @@ export const PRICE: Record<Tier, Price> = {
  * Models the session may run on that are not on the ladder, so an unrouted
  * turn's cost is still right. Matched by prefix of the id the API reports.
  */
+const OPUS_4_0: Price = { input: 15, write5m: 18.75, write1h: 30, read: 1.5, output: 75 };
+/** Fable 5 and Mythos 5: Fable 5.1's price, but four times its cache read. */
+const FABLE_5_0: Price = { ...PRICE.fable, read: 1 };
+
+// First match wins, so a longer id goes above the prefix it starts with.
 const OTHER_PRICE: readonly (readonly [string, Price])[] = [
   ["claude-opus-5-5", PRICE.opus],
   ["claude-opus-5", { input: 5, write5m: 6.25, write1h: 10, read: 0.5, output: 25 }],
+  // Opus 4 and 4.1, and Opus 4's dated id: three times the later 4.x price.
+  ["claude-opus-4-0", OPUS_4_0],
+  ["claude-opus-4-1", OPUS_4_0],
+  ["claude-opus-4-2025", OPUS_4_0],
   ["claude-opus-4", { input: 5, write5m: 6.25, write1h: 10, read: 0.5, output: 25 }],
   ["claude-sonnet-5", PRICE.sonnet],
   ["claude-sonnet-4", { input: 3, write5m: 3.75, write1h: 6, read: 0.3, output: 15 }],
   ["claude-haiku-4", PRICE.haiku],
-  ["claude-fable-5", PRICE.fable],
-  ["claude-mythos-5", PRICE.fable],
+  ["claude-fable-5-1", PRICE.fable],
+  ["claude-mythos-5-1", PRICE.fable],
+  ["claude-fable-5", FABLE_5_0],
+  ["claude-mythos-5", FABLE_5_0],
 ];
 
 /** The cache TTL from the environment; `1h` unless told `5m`. */

@@ -114,7 +114,7 @@ export const EFFORTS: readonly Effort[] = [
 /** Model ids as the engine names them. */
 export const MODEL_OF: Record<Tier, string> = {
   haiku: "claude-haiku-4-5",
-  sonnet: "claude-sonnet-5",
+  sonnet: "claude-sonnet-5-5",
   opus: "claude-opus-5-5",
   fable: "claude-fable-5-1",
 };
@@ -250,7 +250,7 @@ export function decisionOf(
   const confidence =
     typeof tier.confidence === "number" && Number.isFinite(tier.confidence)
       ? Math.min(1, Math.max(0, tier.confidence))
-      : confidenceFrom(probabilities, offered.length);
+      : confidenceFrom(probabilities, offered.length, choice as Tier);
 
   return {
     tier: choice as Tier,
@@ -273,7 +273,7 @@ function probabilitiesOf(
   for (const tier of offered) {
     const p = raw[tier];
     if (typeof p === "number" && Number.isFinite(p)) {
-      out[tier] = p;
+      out[tier] = Math.min(1, Math.max(0, p));
       any = true;
     }
   }
@@ -287,20 +287,25 @@ function probabilitiesOf(
  * (0.85 / 0.15 / 0 → 0.78) is `(n·p_max − 1) / (n − 1)` for n options. Same
  * scale as the confidence the direct API sends, so the sticky bar means the
  * same thing on either provider.
+ *
+ * With `chosen`, the mass is the chosen tier's own, not the largest: an
+ * answer whose choice and probabilities disagree (haiku chosen at 0.05,
+ * fable at 0.95) is not sure of haiku, and must not clear a bar as if it were.
  */
 export function confidenceFrom(
   probabilities: Partial<Record<Tier, number>> | undefined,
   options: number,
+  chosen?: Tier,
 ): number {
   if (probabilities === undefined) return 0;
   const values = Object.values(probabilities).filter(
     (v): v is number => typeof v === "number",
   );
   if (values.length === 0) return 0;
-  const max = Math.max(...values);
+  const p = chosen === undefined ? Math.max(...values) : (probabilities[chosen] ?? 0);
   const clamp = (n: number) => Math.min(1, Math.max(0, n));
-  if (options <= 1) return clamp(max);
-  return clamp((options * max - 1) / (options - 1));
+  if (options <= 1) return clamp(p);
+  return clamp((options * p - 1) / (options - 1));
 }
 
 /**

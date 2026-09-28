@@ -823,3 +823,24 @@ describe("a tier named inside double quotes is being quoted, not asked for", () 
     assert.equal(parseOverride('use fable to explain what "use opus" means'), "fable", "own words outside the quotes still count");
   });
 });
+
+describe("policy: audit regressions (2026-09-28)", () => {
+  test("the sonnet tier runs the current Sonnet", () => {
+    assert.equal(MODEL_OF.sonnet, "claude-sonnet-5-5");
+  });
+  test("a gateway answer's confidence is the chosen tier's, not the largest mass", () => {
+    const d = decisionOf({
+      tier: { type: "choice", choice: "haiku", probabilities: { haiku: 0.05, sonnet: 0, opus: 0, fable: 0.95 } },
+      effort: { type: "score", score: 2 },
+    });
+    assert.equal(d?.tier, "haiku");
+    assert.equal(d?.confidence, 0, "5% on haiku is below an even spread");
+  });
+  test("probabilities outside 0..1 are clamped", () => {
+    const d = decisionOf({
+      tier: { type: "choice", choice: "fable", probabilities: { haiku: -3, fable: 7 } },
+      effort: { type: "score", score: 2 },
+    });
+    assert.deepEqual(d?.probabilities, { haiku: 0, fable: 1 });
+  });
+});

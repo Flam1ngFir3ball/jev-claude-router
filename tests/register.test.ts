@@ -1130,7 +1130,7 @@ describe("register: effort on Sonnet", () => {
     await turn(hooks, $, "s1");
     setTier("sonnet", 0.9, 3, 0.49);
     const t = await turn(hooks, $, "s2");
-    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.equal(t.sent.model, "claude-sonnet-5-5");
     assert.equal(t.sent.effort, "medium", "the previous effort, not xhigh");
     assert.match(t.text, /sonnet · medium · Jev 90% · kept medium: Jev 49% on xhigh/);
   });
@@ -1473,7 +1473,7 @@ describe("register: a downgrade priced against the context", () => {
     setContext(300_000);
     setTier("fable", 0.9, 3);
     const t = await turn(hooks, $, "u2", "plan it");
-    assert.equal(t.sent.model, "claude-sonnet-5", "the cheapest tier that fits, not fable");
+    assert.equal(t.sent.model, "claude-sonnet-5-5", "the cheapest tier that fits, not fable");
     assert.match(t.text, /haiku too long, moved up only to sonnet \(Jev wanted fable\)/);
     assert.doesNotMatch(t.text, /costs \$/, "no figures from a verdict that no longer applies");
   });
@@ -1756,7 +1756,7 @@ describe("register: the tiers subcommand", () => {
       setTier("haiku", 0.99, 0);
       const t = await turn(hooks, $, "tf-h1c");
       assert.notEqual(t.sent.model, "claude-fable-5-1");
-      assert.equal(t.sent.model, "claude-sonnet-5");
+      assert.equal(t.sent.model, "claude-sonnet-5-5");
       assert.match(t.text, /moved up only to sonnet/);
     });
 
@@ -2494,7 +2494,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     setContext(190_000);
     setTier("opus", 0.6, 2);
     const t = await turn(hooks, $, "w2", "now implement it");
-    assert.equal(t.sent.model, "claude-sonnet-5", "haiku takes 200k; the doubt about opus still stands, so only one step up");
+    assert.equal(t.sent.model, "claude-sonnet-5-5", "haiku takes 200k; the doubt about opus still stands, so only one step up");
     assert.match(t.text, /haiku too long, moved up only to sonnet/);
   });
 
@@ -2506,7 +2506,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     setContext(190_000);
     setTier("haiku", 0.99, 0);
     const t = await turn(hooks, $, "hh2", "3+3");
-    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.equal(t.sent.model, "claude-sonnet-5-5");
     assert.match(t.text, /haiku too long, moved up only to sonnet/);
   });
 
@@ -2556,11 +2556,11 @@ describe("register: audit regressions (2026-09-23)", () => {
     const { hooks, $, setTier, setContext } = await boot();
     setContext(1_000);
     setTier("sonnet", 0.95, 1, 0.9);
-    assert.equal((await turn(hooks, $, "sw1", "a small edit")).sent.model, "claude-sonnet-5");
+    assert.equal((await turn(hooks, $, "sw1", "a small edit")).sent.model, "claude-sonnet-5-5");
     setContext(190_000);
     setTier("haiku", 0.99, 0, 0.1);
     const t = await turn(hooks, $, "sw2", "2+2");
-    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.equal(t.sent.model, "claude-sonnet-5-5");
     assert.equal(t.sent.effort, "medium", "effort held on Sonnet");
   });
 
@@ -2603,7 +2603,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     setContext(190_000);
     setTier("sonnet", 0.6, 1);
     const t = await turn(hooks, $, "wn2", "a small edit");
-    assert.equal(t.sent.model, "claude-sonnet-5");
+    assert.equal(t.sent.model, "claude-sonnet-5-5");
     assert.doesNotMatch(t.text, /moved up only/);
   });
 
@@ -2701,7 +2701,7 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.equal((await turn(hooks, $, "g1", "2+2")).sent.model, "claude-haiku-4-5");
     setContext(190_000);
     const t = await turn(hooks, $, "g2", "yes");
-    assert.equal(t.sent.model, "claude-sonnet-5", "the cheapest tier that fits, not an unrouted turn");
+    assert.equal(t.sent.model, "claude-sonnet-5-5", "the cheapest tier that fits, not an unrouted turn");
     assert.match(t.text, /haiku too long, moved up only to sonnet/);
   });
 

@@ -53,7 +53,7 @@ The four tiers:
 | Tier | For | Model |
 | --- | --- | --- |
 | `haiku` | Trivial: a lookup, a rename, a yes or no. | `claude-haiku-4-5` |
-| `sonnet` | Straightforward and minor, no real decision to make. | `claude-sonnet-5` |
+| `sonnet` | Straightforward and minor, no real decision to make. | `claude-sonnet-5-5` |
 | `opus` | Plain implementation carrying some complexity. | `claude-opus-5-5` |
 | `fable` | Planning, brainstorming, architecture, systematic debugging. | `claude-fable-5-1` |
 
@@ -275,7 +275,8 @@ The price follows the cache that is actually warm:
 A held turn still gets the effort Jev asked for on Haiku, Opus and Fable,
 since effort is sent per request and costs no cache. On Sonnet an effort
 change rewrites much of the cache, so the effort is held too unless Jev is
-sure enough of it. (Claude Code currently sends no effort to Sonnet 5.)
+sure enough of it. (Measured on Sonnet 5, to which Claude Code sent no
+effort; the hold stays for Sonnet 5.5 until it is measured there.)
 
 Each tier has an effort ceiling, `xhigh` by default (matching the engine's
 own default). A turn Jev wanted higher runs at the ceiling and says

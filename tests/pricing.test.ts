@@ -124,3 +124,21 @@ describe("pricing", () => {
     assert.equal(usd(0.0035), "$0.0035");
   });
 });
+
+describe("pricing: older models sharing a prefix (2026-09-28)", () => {
+  test("Fable 5 and Mythos 5 read the cache at $1, their 5.1 successors at $0.25", () => {
+    assert.equal(priceOfModel("claude-fable-5")?.read, 1);
+    assert.equal(priceOfModel("claude-mythos-5")?.read, 1);
+    assert.equal(priceOfModel("claude-fable-5-1")?.read, 0.25);
+    assert.equal(priceOfModel("claude-mythos-5-1")?.read, 0.25);
+    assert.equal(priceOfModel("claude-fable-5")?.output, 50);
+  });
+  test("Opus 4 and 4.1 are priced at $15 / $75, later 4.x at $5 / $25", () => {
+    for (const id of ["claude-opus-4-0", "claude-opus-4-1", "claude-opus-4-1-20250805", "claude-opus-4-20250514"])
+      assert.deepEqual([priceOfModel(id)?.input, priceOfModel(id)?.output], [15, 75], id);
+    assert.equal(priceOfModel("claude-opus-4-8")?.input, 5);
+  });
+  test("Sonnet 5.5 is priced like the ladder's Sonnet", () => {
+    assert.deepEqual(priceOfModel("claude-sonnet-5-5"), PRICE.sonnet);
+  });
+});
