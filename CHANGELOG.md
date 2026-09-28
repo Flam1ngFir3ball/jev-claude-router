@@ -47,6 +47,50 @@ Ready and merged, held back from a version bump until approved:
 - The excluded-tiers display could claim every tier was both offered and
   off at once, when every tier was named excluded and the full-ladder
   fallback kicked in.
+- **A reply that opened with its own `> ⚠️` warning lost it.** Only a
+  line of the route line's own shape (a tier and Jev's latency, or
+  `not routed:`) is now taken for a copied route line. A reply opening
+  with two such warnings also used to switch routing off for the rest of
+  that turn; it no longer does.
+- **A reload or resume ignored a changed `JEV_ROUTER_*`.** The session
+  snapshot restored sticky, the ceiling, excluded tiers, compact and the
+  price checks over the environment whether or not a `/jev` command had
+  set them. Only what a command set now outranks the environment.
+- **A corrupt snapshot could send a request with no effort.** A ceiling
+  missing a tier, or decisions on an unknown tier or effort, are refused.
+- **The `sonnet` tier runs Claude Sonnet 5.5** (`claude-sonnet-5-5`), not
+  the previous-generation `claude-sonnet-5`.
+- **Prices:** Claude Fable 5 and Mythos 5 read the cache at $1/MTok (only
+  5.1 reads at $0.25), and Claude Opus 4 and 4.1 cost $15/$75.
+- **Gateway confidence** is the chosen tier's probability, not the largest
+  one, and probabilities are clamped to 0–1.
+- **`JEV_ROUTER_COMPACT_MIN_REDUCTION=1%`** means one percent, not all of
+  it. A pruning reused between the engine's two compaction passes is held
+  to the same minimum, and `/jev` shows its figures.
+- **`/jev sticky` and `JEV_ROUTER_STICKY_CONFIDENCE`** take plain decimals:
+  `%` always means a percentage, a bare number past 1 must be whole
+  (`1.5` is refused), and hex is refused.
+- **`JEV_ROUTER_TIMEOUT_MS` below 100** is taken for a mistake (seconds
+  written as `1.5`) and the default used.
+- **Provider settings:** a whitespace-only `TYPESAFE_API_KEY` no longer
+  beats a real gateway key, keys are trimmed, and a `TYPESAFE_BASE_URL`
+  ending in `/v1/systemone` no longer has the path doubled.
+- **A switch interrupted before any response** no longer counts the new
+  tier as warm when the next turn is priced.
+- **The Sonnet effort hold** no longer holds to an effort the ceiling cuts
+  anyway.
+- **`/jev --on`, `--off`, `--quiet` and `--loud`** work like `--sticky`.
+- **Display:** the footer no longer says "only 0% sure" for a tier you
+  named or a failed Jev call; `1000k` reads `1.0M`; dollar figures just
+  under $0.10 and $0.01 no longer show an extra digit; the `/jev` usage
+  text lists `tiers`; the sticky line names `/jev sticky on`; the cache
+  line skips tiers turned off and a subagent's output.
+
+### Chores
+
+- `npm run check-gateway`, a duplicate of `check-jev`, is removed.
+- `check-jev` and `try-prompts` fall back to the shell's environment when
+  `~/.claude/settings.json` is missing, instead of crashing.
 
 ## 1.0.2 — 2026-09-25
 

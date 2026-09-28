@@ -404,7 +404,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `JEV_ROUTER_STICKY` | on | `0` removes the confidence bar. |
-| `JEV_ROUTER_STICKY_CONFIDENCE` | `0.75` | The confidence bar. |
+| `JEV_ROUTER_STICKY_CONFIDENCE` | `0.75` | The confidence bar: `0.6`, `60` or `60%`. |
 | `JEV_ROUTER_PRICE_CHECK` | on | `0` turns both price checks off. |
 | `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying, or `off`. |
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
@@ -521,7 +521,8 @@ backends. This fork keeps that design and adds:
   library itself. Its `src/` (commit `e3f262a7f4d4`) is vendored under
   `hooks/compaction/`, with its MIT licence in
   [LICENSE-fast-jev-compaction](LICENSE-fast-jev-compaction) — unchanged
-  apart from a batch-concurrency cap added on top in `compact.ts`. This fork
+  apart from a batch-concurrency cap and an abort signal added in
+  `compact.ts`. This fork
   adds the wiring to its provider and settings, the toggle, the fallback
   rules, the reuse across the engine's two compaction passes, and the `/jev`
   reporting.

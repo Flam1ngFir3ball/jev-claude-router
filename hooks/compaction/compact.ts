@@ -1,7 +1,9 @@
 // Vendored from fast-jev-compaction (https://github.com/tamaratran/fast-jev-compaction)
 // commit e3f262a7f4d4, MIT licensed; see LICENSE-fast-jev-compaction. Imports
-// renamed to .ts. `concurrentMap` (below) was added on top of the vendored
-// source to cap batch concurrency; everything else in this file is unchanged.
+// renamed to .ts. Changed on top of the vendored source: `concurrentMap`
+// (below) was added, and `compact()`'s batch `Promise.all` replaced by it, to
+// cap batch concurrency; `compact()` takes an optional `signal` to stop
+// starting batches. Everything else in this file is unchanged.
 
 import { noulAnswer } from "./request.ts";
 import { collectToolCalls, estimateTokens, fitState } from "./state.ts";
@@ -143,9 +145,11 @@ async function askBatch(
  * this is a true `map`, not a fire-and-forget pool). Useful for controlling
  * resource use when scoring large transcript fragments in many batches.
  *
- * If `signal` aborts, no new work starts and the promise rejects once every
- * already-started call has settled (so none becomes an unhandled rejection);
- * calls already sent to the network complete regardless, since aborting the
+ * If `signal` aborts, no new work starts and the promise rejects. Aborted
+ * while waiting for a free slot, it first waits for every started call to
+ * settle; aborted before the next item starts, it rejects straight away.
+ * Either way no call becomes an unhandled rejection, since each already has
+ * handlers attached; calls already sent to the network complete regardless, since aborting the
  * signal only cancels a fetch that itself honours it (see askJev's note —
  * the engine's own fetch today does not).
  */

@@ -9,11 +9,16 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { providerOf } from "../hooks/provider.ts";
 
-const settings = JSON.parse(
-  readFileSync(`${homedir()}/.claude/settings.json`, "utf8"),
-);
+// The keys live in ~/.claude/settings.json's `env` (README, step 2); the
+// shell's environment is the fallback, so a missing file is not a crash.
+let settings = {};
+try {
+  settings = JSON.parse(readFileSync(`${homedir()}/.claude/settings.json`, "utf8"));
+} catch (error) {
+  console.error(`note: could not read ~/.claude/settings.json (${error.code ?? error.message}); using the shell's environment`);
+}
 
-const env = settings?.env ?? {};
+const env = { ...process.env, ...(settings?.env ?? {}) };
 const provider = providerOf({
   TYPESAFE_API_KEY: env.TYPESAFE_API_KEY,
   AI_GATEWAY_API_KEY: env.AI_GATEWAY_API_KEY,
