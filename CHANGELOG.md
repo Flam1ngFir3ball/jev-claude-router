@@ -250,6 +250,18 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **A resume that names no model no longer carries an earlier resume's
+  model into another session**: resuming one session and then another
+  could send the first one's model (a tier turned off included) to the
+  second.
+- A reply that opens with a long route-line look-alike no longer turns
+  the router off for the rest of the turn: only with no filter in place is
+  a line-shaped opening taken for a line another copy wrote.
+- Prose that opens with `<task-notification>` is a typed prompt, not a
+  task's notification.
+- A request that fails with nothing to say reads "unknown error", not
+  "undefined" or "[object Object]"; a transcript message without text is
+  left to the engine's summary.
 - **A key with a line break or space inside it is refused** with the
   variable's name, rather than sent: the request would fail with an error
   quoting the header, key and all, into the route line and the store. Error

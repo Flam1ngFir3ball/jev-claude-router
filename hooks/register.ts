@@ -1216,6 +1216,9 @@ export function register(on: On) {
     // after this puts back is checked against it.
     // Only when a restore is still to come (a resume into another session),
     // or it would linger for a later one.
+    // A resume that names no model leaves nothing to check against: what an
+    // earlier resume named was another session's.
+    if ((e.source === "resume" || e.source === "fork") && typeof e.model !== "string") resumedOn = null;
     if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string") {
       if (snapshotKey === undefined && restoreOnKey) resumedOn = e.model;
       else {
@@ -1267,7 +1270,10 @@ export function register(on: On) {
     let removedChars = 0;
     // A transcript with anything but messages in it is left to the engine.
     const transcript =
-      Array.isArray(e.messages) && e.messages.every((m) => typeof m === "object" && m !== null) ? e.messages : [];
+      Array.isArray(e.messages) &&
+      e.messages.every((m) => typeof m === "object" && m !== null && typeof m.text === "string" && Array.isArray(m.toolUses))
+        ? e.messages
+        : [];
     // `/compact <what to keep>` is an instruction to the summariser; Jev's
     // pruning has no way to follow it, so the summary runs.
     const instructed = typeof e.instructions === "string" && e.instructions.trim() !== "";
@@ -2068,7 +2074,10 @@ export function register(on: On) {
           }
           // The line's whole shape, not its opening: a reply that opens
           // with its own "> ⚠️ " warning is not a line a copy wrote.
-          if (isRouteLine(chunk.text) || !(await holdsNow())) {
+          // Only with no filter: an inner copy's line is stripped by this
+          // copy's filter like any copy, so a line-shaped text that gets
+          // through it (too long to be held) is the model's own.
+          if ((filter === null && isRouteLine(chunk.text)) || !(await holdsNow())) {
             inert = true;
             yield chunk;
             continue;

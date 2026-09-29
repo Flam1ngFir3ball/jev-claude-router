@@ -253,7 +253,8 @@ const tagOf = (text: string, tag: string): string | undefined => {
  * the row should say instead of the XML envelope.
  */
 export function notificationOf(text: string): string | null {
-  if (!NOTIFICATION.test(text)) return null;
+  // An envelope, not prose that opens with the tag.
+  if (!NOTIFICATION.test(text) || !hasNotification(text)) return null;
   return plain(tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`);
 }
 
@@ -343,7 +344,7 @@ export function hasNotification(text: string): boolean {
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
 export function notificationTaskOf(text: string): string | null {
-  if (!NOTIFICATION.test(text)) return null;
+  if (!NOTIFICATION.test(text) || !hasNotification(text)) return null;
   return tagOf(text, "task-id") ?? null;
 }
 

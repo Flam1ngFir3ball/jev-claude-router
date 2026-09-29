@@ -4873,3 +4873,85 @@ describe("register: round-10 findings (2026-09-29)", () => {
     assert.match((await jev(kit, "")).text, /compact\s+on, but the gateway cannot score/);
   });
 });
+
+describe("register: round-10 driver findings (2026-09-29)", () => {
+  const stepOf = async (kit: ReturnType<typeof load>, id: string, text: string, engine: string, reply: string | string[] = "ok") => {
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+    let sent = "";
+    let out = "";
+    const chunks = (await collect(
+      kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, model: engine }, (e: { model: string }) => {
+        sent = e.model;
+        return (async function* () {
+          for (const piece of typeof reply === "string" ? [reply] : reply) yield { kind: "text", index: 0, text: piece, ref: 1 };
+          yield { kind: "stop", stopReason: "end_turn", usage: { model: e.model, input_tokens: 100, output_tokens: 100, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0 } };
+        })();
+      }),
+    )) as { kind: string; text?: string }[];
+    for (const c of chunks) if (c.kind === "text") out += c.text;
+    return { sent, out };
+  };
+
+  test("a resume naming no model does not carry an earlier resume's model into another session", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-CB" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined, JEV_ROUTER_EXCLUDE: "fable" }, shared);
+    const start = kit.hooks.get("classic.SessionStart")!;
+    kit.setSessionModel("claude-haiku-4-5");
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setContext(20_000);
+    kit.setTier("sonnet", 0.9, 1);
+    await stepOf(kit, "b0", "plan the billing architecture", "claude-haiku-4-5");
+    shared.id = "sess-CA";
+    kit.setSessionModel("claude-fable-5-1");
+    await start(kit.$, { source: "resume", model: "claude-fable-5-1", context_tokens: 108_946 }, async (e: unknown) => e);
+    shared.id = "sess-CB";
+    kit.setSessionModel("claude-opus-5");
+    kit.setContext(143_772);
+    await start(kit.$, { source: "resume", context_tokens: 143_772 }, async (e: unknown) => e);
+    kit.setTier("sonnet", 0.6, 1);
+    const { sent } = await stepOf(kit, "b1", "implement cursor pagination", "claude-opus-5");
+    assert.notEqual(sent, "claude-fable-5-1");
+  });
+
+  test("a reply whose first line is a long route-line look-alike still gets the route line and keeps routing", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("haiku", 0.95, 1);
+    const first = await stepOf(kit, "lo1", "rename foo to bar", "claude-opus-5-5", [`> ⚠️ not routed: ${"word ".repeat(250)}`, "more words", "\nand more"]);
+    assert.equal(first.sent, "claude-haiku-4-5");
+    assert.match(first.out, /^> ✳️ haiku · /);
+    const status = (await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "" }, async () => ({ text: "passed through" }))) as { text: string };
+    assert.match(status.text, /routing\s+on/, "the copy still answers /jev");
+  });
+
+  test("prose that opens with the notification tag is a typed prompt", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const text = "<task-notification> blocks keep appearing in my logs; what writes them? Plan a fix across the hooks.";
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: "pt1" }, async (e: unknown) => e);
+    assert.equal(kit.lastState(), text);
+  });
+
+  test("a fetch that rejects with no Error says so in words", async () => {
+    for (const thrown of [undefined, { code: 1 }]) {
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      kit.$.http.fetch = async () => {
+        throw thrown;
+      };
+      const { out } = await stepOf(kit, "rj1", "implement it", "claude-opus-5-5");
+      assert.doesNotMatch(out, /undefined|\[object Object\]/);
+      assert.match(out, /request failed: unknown error/);
+    }
+  });
+
+  test("a transcript message without text is left to the engine", async () => {
+    const kit = load({ TYPESAFE_API_KEY: "ts-key", AI_GATEWAY_API_KEY: undefined });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    let fellThrough = false;
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: [{ role: "user", toolUses: [] }] }, async () => ((fellThrough = true), { messages: [] }));
+    assert.ok(fellThrough);
+    const status = (await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "" }, async (e: unknown) => e)) as { text: string };
+    assert.doesNotMatch(status.text, /Cannot read/);
+  });
+});
