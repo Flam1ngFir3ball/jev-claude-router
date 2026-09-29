@@ -78,7 +78,11 @@ Vercel AI Gateway), and nowhere else:
 - **A subagent's task**, as the model wrote it, when it is spawned.
 - **A finished task's one-line summary** (`Agent "reviewer" completed`)
   when `JEV_ROUTER_NOTIFY_CONTINUE=0` or there is no route to continue;
-  never the task's result.
+  never the task's result. A result can quote anything, so a prompt is cut
+  at the first thing shaped like a task notification (`<task-notification>`
+  followed by a tag), wherever it is: a prompt that quotes an example of
+  one has only what comes before it graded (the model still gets all of
+  it), and the same cut applies to what is kept on disk.
 - **The conversation at a compaction**, as described under
   [Compaction by Jev](#compaction-by-jev); `/jev compact off` stops it.
 

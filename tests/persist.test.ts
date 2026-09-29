@@ -248,9 +248,13 @@ describe("persist: a snapshot the router could not have written is refused (2026
 });
 
 describe("persist: a model id of an unforeseen spelling restores (2026-09-29)", () => {
-  test("spaces and plus signs are kept; a line break is not", () => {
+  test("plus signs, ARNs and paths are kept; spaces, markdown and line breaks are not", () => {
     const s = stateWith({ prompt: "p", ms: 1, decision });
-    assert.equal(roundTrip({ ...s, sessionModel: "Opus 4.1" })!.sessionModel, "Opus 4.1");
+    const arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-4-1-20250805-v1:0";
+    assert.equal(roundTrip({ ...s, sessionModel: arn })!.sessionModel, arn);
+    assert.equal(roundTrip({ ...s, sessionModel: "Opus 4.1" })!.sessionModel, null);
+    const link = { ...decision, tier: "opus" as const, model: "claude-opus-5-5 [click me](https://evil.example/x) | **bold** #h" };
+    assert.equal(roundTrip({ ...s, running: link })?.running ?? null, null);
     const plus = { ...decision, tier: "opus" as const, model: "claude-opus-4-1+beta" };
     assert.deepEqual(roundTrip({ ...s, running: plus })!.running, plus);
     assert.equal(roundTrip({ ...s, sessionModel: "claude-opus-5\n# x" })!.sessionModel, null);

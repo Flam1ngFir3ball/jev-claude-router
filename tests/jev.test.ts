@@ -444,3 +444,13 @@ describe("shortError keeps advice about a bearer token (2026-09-29)", () => {
     assert.equal(shortError("HTTP 401: Missing bearer token. Set AI_GATEWAY_API_KEY"), "HTTP 401: Missing bearer token");
   });
 });
+
+describe("shortError redacts any Bearer value but the words about one (2026-09-29)", () => {
+  test("short, quoted and plain-letter keys", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    for (const key of ["gw-key", "abcdefghijKLMNOPqrst", '"ts_live_9f8e7d6c"', "'ts_live_x'"]) {
+      const out = shortError(`Headers.append: Bearer ${key} is invalid`);
+      assert.ok(!out.includes(key.replace(/["']/g, "")), out);
+    }
+  });
+});

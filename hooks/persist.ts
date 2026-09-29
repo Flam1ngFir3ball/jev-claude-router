@@ -20,10 +20,10 @@ import { EFFORTS, TIERS, type Ceiling, type Decision } from "./policy.ts";
 import { tierOfModel } from "./pricing.ts";
 
 /** A model id as the engine spells one: `claude-opus-5-5[1m]`, a Bedrock or Vertex id. */
-// Not a pattern of known spellings, which a new one would fail and lose the
-// whole snapshot: only what cannot be in a model id and would break a line.
-// eslint-disable-next-line no-control-regex
-const MODEL_ID = /^[^\x00-\x1f\x7f-\x9f`<>\u2028\u2029]{1,200}$/;
+// The characters model ids use (Bedrock ARNs, Vertex paths, `[1m]`, `+`),
+// and none that the route line — a rendered blockquote — would read as
+// markdown: no spaces, parentheses, emphasis or table bars.
+const MODEL_ID = /^[\w.:/@+\[\]-]{1,200}$/;
 
 /**
  * The most entries any list in a snapshot can hold: the router keeps far

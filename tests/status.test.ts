@@ -1568,16 +1568,21 @@ describe("status: a long copied summary still goes (2026-09-29)", () => {
   });
 });
 
-describe("status: a notification the person quotes is theirs (2026-09-29)", () => {
+describe("status: a notification the person quotes is cut, for privacy (2026-09-29)", () => {
   const real = '<task-notification>\n<task-id>a1</task-id>\n<summary>Agent done</summary>\n<result>SECRET</result>\n</task-notification>';
-  test("quoted in code, a paste or double quotes, it is sent with the request after it", () => {
+  // Decided: nothing after an envelope is trusted, however it is quoted, so
+  // what follows a quoted example is left out of what Jev grades.
+  test("quoted in code, a paste or double quotes, the text before it is kept and nothing after", () => {
     for (const text of [
       `Why is the summary empty?\n\`\`\`\n${real}\n\`\`\`\nFix it in status.ts`,
       `Refactor this.\n<pasted_content>\nconst s = \`<task-notification><summary>\${x}</summary>\`;\n</pasted_content>\nThanks, and make it async.`,
       'The engine sends "<task-notification> <task-id>" first; document the order in README',
       "Write a regex that matches `<task-notification><status>done</status>` and explain it.",
     ]) {
-      assert.equal(hasNotification(text), false, text);
+      assert.equal(hasNotification(text), true, text);
+      const at = text.search(/<task-notification/);
+      assert.ok(notificationStateOf(text).startsWith(text.slice(0, at).trim()), text);
+      assert.doesNotMatch(notificationStateOf(text), /SECRET|Fix it|async|README|explain/, text);
     }
   });
   test("a mention before the engine's own envelope is kept; the cut is at the envelope", () => {
@@ -1624,12 +1629,13 @@ describe("status: typed text cannot hide the engine's envelope (2026-09-29)", ()
       assert.doesNotMatch(notificationStateOf(text), /SECRET/, text);
     }
   });
-  test("prose that names the tag is not an envelope", () => {
+  test("prose that names the bare tag is not an envelope; with an element after it, it is", () => {
+    assert.equal(hasNotification("Rename <task-notification> to <agent-notification> across hooks/"), false);
     for (const text of [
       "The <task-notification> <b>must</b> be parsed before anything else; rewrite the parser",
       "Handle <task-notification> <!-- comments --> in the parser and add tests",
     ])
-      assert.equal(hasNotification(text), false, text);
+      assert.equal(hasNotification(text), true, text);
   });
 });
 
@@ -1661,14 +1667,24 @@ describe("status: streamed and whole agree on long copies (2026-09-29)", () => {
   });
 });
 
-describe("status: the engine's notification is the text's end (2026-09-29)", () => {
-  test("a quoted example the person's request follows is sent whole, however it is quoted", () => {
+describe("status: nothing after an envelope reaches Jev (2026-09-29)", () => {
+  test("a quoted example, and whatever follows it, is cut", () => {
     for (const text of [
       "Why does my parser choke on this?\n```\n<task-notification>\n<task-id>x</task-id>\n<result>partial output...\n```\nPlease rewrite the whole parser",
       "In `<task-notification><summary>` the engine puts a summary; where is `<result>` rendered? Please refactor the renderer.",
       "<pasted_content>\n<task-notification>\n<task-id>x</task-id>\n<result>log line</pasted_content>\nExplain this and redesign the pipeline.",
     ])
-      assert.equal(hasNotification(text), false, text);
+      assert.doesNotMatch(notificationStateOf(text), /partial|rewrite|refactor|log line|redesign/, text);
+  });
+  test("text after the envelope — a trailer, a queued prompt, trailing space — does not let the result through", () => {
+    const env = '<task-notification>\n<task-id>a</task-id>\n<summary>Agent "reader" completed</summary>\n<result>API_TOKEN=sk-secret-123</result>\n</task-notification>';
+    for (const text of [
+      `fix the parser\n${env}\nand also the docs`,
+      `fix the parser\n${env}\nFull transcript available at: /tmp/x`,
+      `fix the parser\n${env}${" ".repeat(400)}`,
+    ]) {
+      assert.equal(notificationStateOf(text), 'fix the parser\nAgent "reader" completed');
+    }
   });
   test("an envelope whose result quotes the closing tag and a fence, after an unclosed typed fence, withholds the result", () => {
     const text =

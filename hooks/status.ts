@@ -288,16 +288,15 @@ export function notificationStateOf(text: string): string {
 const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
 
 /**
- * Where the engine's notification starts in text the person typed ahead of
- * it, or -1. The engine appends its envelope, so text that carries one ends
- * with the closing tag; a quoted example that the person's own request
- * follows (in a fence, a paste, a sentence) does not, and is sent whole.
- * Text that does end so is cut at its first envelope, wherever it is and
- * whatever quotes it: a task's result can quote anything, fences and
- * closing tags included, so nothing after the first envelope is trusted.
+ * Where a notification starts in text the person typed, or -1: the first
+ * envelope, wherever it is and whatever quotes it. Nothing after it is
+ * trusted, since a task's result can quote anything — fences, closing
+ * tags, pastes — and whatever follows the envelope (a trailer, queued
+ * prompts) cannot be told from the result. Decided for privacy over
+ * routing: a prompt that quotes an example envelope has what follows the
+ * quote left out of what Jev grades (the model still gets all of it).
  */
 function envelopeAt(text: string): number {
-  if (!/<\/task-notification\s*>\s*$/i.test(text.slice(-200))) return -1;
   return text.search(ENVELOPE);
 }
 

@@ -259,18 +259,20 @@ Ready and merged, held back from a version bump until approved:
   words.
 - A spawn with no description or type, and a streamed chunk that is not
   text, pass through rather than throw or print "undefined".
-- **Typed text carries the engine's notification only when it ends with
-  one**, as the engine appends it: such text is cut at its first envelope,
-  whatever quotes it, so a result that quotes the closing tag or a fence
-  cannot reach Jev; a quoted example the person's request follows is sent
-  whole.
+- **A prompt is cut at its first notification envelope, wherever it is and
+  however it is quoted**: nothing after one reaches Jev or the store, since
+  a result can quote closing tags and fences, and a trailer or a queued
+  prompt after it cannot be told from the result. A prompt that quotes an
+  example envelope has only what precedes it graded (see the README's
+  "What leaves your machine").
 - Only the chosen provider's key and pinned model are checked: a stale key
   for the other provider, or a pin the gateway ignores, blocks nothing; a
   pinned model with build metadata (`+build.5`) is accepted.
-- A saved model id of any spelling restores; only a line break or a
-  backtick makes it unreadable, so a new id cannot lose the whole snapshot.
-- "Missing bearer token." in an error is kept: only a key-like value after
-  `Bearer` is redacted.
+- A saved model id is one of the characters model ids use (ARNs, Vertex
+  paths, `[1m]`, `+`), so one from a tampered store cannot carry markdown
+  into the route line.
+- "Missing bearer token." in an error is kept; any other value after
+  `Bearer`, quoted or short, is redacted.
 - `/jev` compares a long Bedrock or Vertex session model whole, not as cut
   for the line; "if it works, switch to haiku" is a condition again.
 - A summary fence whose long first line streams in small pieces is held

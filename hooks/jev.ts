@@ -73,8 +73,12 @@ export function messageOf(error: unknown): string {
   }
 }
 
-/** A `Bearer` header value that looks like a key, for redacting from error text. */
-export const BEARER_VALUE = /\bBearer\s+(?=[^\s"']*[\d_])[^\s"']{8,}/gi;
+/**
+ * A `Bearer` value, for redacting from error text: whatever follows the
+ * word, quoted or not, short or long, except the words an error uses when
+ * it talks about one ("Missing bearer token").
+ */
+export const BEARER_VALUE = /\bBearer\s+(?!(?:tokens?|auth|authentication|authorization|header|scheme)\b)["']?[^\s"']+["']?/gi;
 
 /**
  * An engine fetch error as a few words for the route line: without the
