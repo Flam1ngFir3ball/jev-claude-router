@@ -5243,6 +5243,19 @@ describe("register: a tier's own alias stands for its model (2026-09-29)", () =>
     const t = await stepOn(kit, "oo1", "implement it", "claude-opus-4-1");
     assert.equal(t.sent, "claude-opus-4-1", "kept is kept: no cold switch to another Opus");
   });
+  for (const tier of ["opus", "sonnet"] as const)
+    test(`once a response names the model, the alias's guess is gone (/model to an older Opus, Jev ${tier})`, async () => {
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "0" });
+      kit.setSessionModel("opus");
+      kit.setContext(120_000);
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      kit.setTier("opus", 0.95, 2);
+      await stepOn(kit, "sg1", "implement it", "claude-opus-5-5");
+      kit.setSessionModel("claude-opus-5");
+      kit.setTier(tier, 0.95, 3);
+      const t2 = await stepOn(kit, "sg2", "refactor the parser across files", "claude-opus-5");
+      assert.equal(t2.sent, "claude-opus-5-5", "the warm Opus, not a cold older one");
+    });
   test("a provider's spelling of the session model is not priced as a switch to itself", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
     kit.setSessionModel("claude-opus-5-5@20260901");

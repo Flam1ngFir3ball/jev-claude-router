@@ -2053,7 +2053,11 @@ export function register(on: On) {
           model:
             typeof e.model === "string" &&
             (sameModelAs(decision.model, e.model) ||
-              (aliasGuess !== null && decision.model === aliasGuess && tierOfModel(e.model) === decision.tier))
+              (aliasGuess !== null &&
+                sessionModel !== null &&
+                TIER_ALIAS.test(sessionModel) &&
+                decision.model === aliasGuess &&
+                tierOfModel(e.model) === decision.tier))
               ? e.model
               : decision.model,
           effort: decision.effort,
@@ -2196,6 +2200,9 @@ export function register(on: On) {
             unconfirmed = null;
             const warm = warmDecision(usage.model, e.effort);
             const unrouted = attempt === undefined || !("decision" in attempt);
+            // A response that names its model ends any guess from an alias,
+            // whether or not it differs from what was run on.
+            if (warm !== null) aliasGuess = null;
             if (
               warm !== null &&
               (running === null ||
