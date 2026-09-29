@@ -4436,3 +4436,55 @@ describe("register: round-6 session driver findings (2026-09-29)", () => {
   });
 
 });
+
+describe("register: round-7 findings (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  test("session.end on a copy a reload replaced does not write its stale state over the newer one's", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-SE" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await a.hooks.get("turn.start")!(a.$, { text: "x", turnId: "s1" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "s1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    await run(b.hooks, b.$, "off");
+    await b.hooks.get("session.end")!(b.$, {}, async (e: unknown) => e);
+    await a.hooks.get("session.end")!(a.$, {}, async (e: unknown) => e);
+    assert.equal((shared.store.get("session:sess-SE") as { enabled: boolean }).enabled, false);
+  });
+  test("a resume's reported model is not undone by a cut-short switch the snapshot still holds", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-RU" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    kit.setSessionModel("claude-haiku-4-5");
+    kit.setContext(30_000);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const turn = async (id: string, text: string, step = true) => {
+      await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+      if (!step) return "";
+      let sent = "";
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+      return sent;
+    };
+    kit.fail();
+    await turn("u0", "implement it");
+    kit.setTier("opus", 0.95, 2);
+    await turn("u1", "design the system", false);
+    shared.id = "sess-RU2";
+    kit.setSessionModel("claude-sonnet-5-5");
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-sonnet-5-5", context_tokens: 30_000 }, async (e: unknown) => e);
+    shared.id = "sess-RU";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-sonnet-5-5", context_tokens: 30_000 }, async (e: unknown) => e);
+    kit.setTier("haiku", 0.5, 2);
+    assert.equal(await turn("u2", "implement the next part"), "claude-sonnet-5-5");
+  });
+  test("a seen: record whose owner record is gone is swept once old", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-SW" };
+    shared.store.set("seen:session:GONE", { birth: 1, at: Date.now() - 3 * 24 * 3600 * 1000 });
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "w1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "w1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    assert.equal(shared.store.has("seen:session:GONE"), false);
+  });
+});

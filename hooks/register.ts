@@ -453,6 +453,12 @@ async function saveSnapshot(
       // A claim on a session that never saved (left at once for a /resume
       // or a /clear) has no snapshot to be pruned with; one a day old is
       // nobody's live session any more.
+      // A seen: record whose owner record is gone (released by a copy of an
+      // earlier version, which does not know about seen:) is dropped once old.
+      for (const seenKey of keys.filter((k) => k.startsWith(SEEN_PREFIX) && !keys.includes(`${OWNER_PREFIX}${k.slice(SEEN_PREFIX.length)}`))) {
+        const seen = seenOf(await $.store.get(seenKey));
+        if (seen === null || Date.now() - seen.at > ORPHAN_OWNER_MS) await $.store.delete(seenKey);
+      }
       for (const owner of orphanOwnerKeys(keys, OWNER_PREFIX, key)) {
         const seenKey = `${SEEN_PREFIX}${owner.slice(OWNER_PREFIX.length)}`;
         const stamp = stampOf(await $.store.get(owner));
@@ -952,7 +958,11 @@ export function register(on: On) {
 
   /** Puts a restored snapshot back, over what the environment seeded. */
   const applyState = (s: State | null) => {
-    if (s === null) return;
+    // Nothing to restore: a resume's reported model has nothing to correct.
+    if (s === null) {
+      resumedOn = null;
+      return;
+    }
     attempts.splice(0, attempts.length, ...s.attempts);
     reply = s.reply;
     replyAgents = new Set(s.replyAgents);
@@ -973,6 +983,15 @@ export function register(on: On) {
     latest = s.latest;
     lastUsage = s.lastUsage;
     sessionModel = s.sessionModel ?? sessionModel;
+    spent = s.spent;
+    enabled = s.enabled;
+    announce = s.announce;
+    answered = s.answered;
+    lastCompaction = s.compaction;
+    unconfirmed = s.unconfirmed;
+    // A resume event this copy saw speaks for the session now; a snapshot
+    // saved before it does not.
+    if (!resumeSpoke) cacheExpired = s.cacheExpired;
     // A resume that reported another model than the snapshot's: the session
     // is on that one now, and what was warm under the snapshot's is not.
     if (resumedOn !== null) {
@@ -983,15 +1002,6 @@ export function register(on: On) {
       sessionModel = resumedOn;
       resumedOn = null;
     }
-    spent = s.spent;
-    enabled = s.enabled;
-    announce = s.announce;
-    answered = s.answered;
-    lastCompaction = s.compaction;
-    unconfirmed = s.unconfirmed;
-    // A resume event this copy saw speaks for the session now; a snapshot
-    // saved before it does not.
-    if (!resumeSpoke) cacheExpired = s.cacheExpired;
     summarisedAgents.clear();
     for (const id of s.summarisedAgents) summarisedAgents.add(id);
     // Only what a command set outranks the environment; the rest stays as
@@ -1061,7 +1071,10 @@ export function register(on: On) {
   on("session.end", async ($, e, next) => {
     // What the throttled mid-turn saves have not written yet is saved first:
     // once the claim is gone, a later copy restores from the store alone.
-    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
+    // Only the copy that still holds the session: one a reload replaced
+    // may not have learnt it yet, and would write its stale state over.
+    if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false)))
+      await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
     if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
     return next(e);
   });
@@ -1074,7 +1087,10 @@ export function register(on: On) {
     if (e.source === "clear") {
       // The old conversation is saved as it stands, and its claim goes; the
       // next lookup claims afresh.
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
+      // Only the copy that still holds the session: one a reload replaced
+      // may not have learnt it yet, and would write its stale state over.
+      if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false)))
+        await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
       // A new conversation, and a new transcript id: its state is saved
       // under that, so a later resume of the old session restores the old
@@ -1119,7 +1135,10 @@ export function register(on: On) {
         // This copy leaves the old session: what it has not saved is saved
         // first, and its claim goes with it, or a process that resumes that
         // session later stands aside for good.
-        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
+        // Only the copy that still holds the session: one a reload replaced
+        // may not have learnt it yet, and would write its stale state over.
+        if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false)))
+          await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
         if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
         // Settings too: what a command set in the old session is not the
         // resumed one's. The environment seeds them again, and the resumed
@@ -1162,7 +1181,10 @@ export function register(on: On) {
     }
     // The model the resume says the session is on: what a snapshot restored
     // after this puts back is checked against it.
-    if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string") resumedOn = e.model;
+    // Only when a restore is still to come (a resume into another session),
+    // or it would linger for a later one.
+    if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string" && snapshotKey === undefined && restoreOnKey)
+      resumedOn = e.model;
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&

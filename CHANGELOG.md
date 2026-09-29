@@ -230,6 +230,12 @@ Ready and merged, held back from a version bump until approved:
 - **`session.end` saves** what the throttled mid-turn saves had not.
 - **A late wake-up for a reply already summarised** no longer writes the
   summary of whatever reply is open at the time.
+- **Leaving a session saves only from the copy that still holds it**, so
+  on `session.end` a copy a reload replaced cannot write its stale state
+  over the newer one's (a `/jev off` reverted on the next start). A
+  resume's reported model is not undone by a cut-short switch the resumed
+  snapshot still held, and `seen:` records left behind by an earlier
+  version are swept once old.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 
