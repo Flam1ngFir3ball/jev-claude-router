@@ -4349,3 +4349,90 @@ describe("register: owner records across versions (2026-09-29)", () => {
     assert.equal(typeof shared.store.get("owner:session:sess-NUM"), "number");
   });
 });
+
+describe("register: round-6 session driver findings (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const text = (chunks: { kind: string; text?: string }[]) => chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+  test("every turn keeps its route line and summary, the 33rd and past it too", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    for (let i = 1; i <= 70; i++) {
+      await kit.hooks.get("turn.start")!(kit.$, { text: `task ${i}`, turnId: `b${i}` }, async (e: unknown) => e);
+      const out = text(await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: `b${i}`, index: 0 }, (e: { model: string }) => answeredBy(e.model))));
+      assert.match(out, /^> ✳️ /, `turn ${i} line`);
+      assert.match(out, /% cached\)/, `turn ${i} summary`);
+    }
+  });
+  test("a tier turned off is not held to after a compaction in the middle of the turn that moved to it", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setSessionModel("claude-sonnet-5-5");
+    kit.setContext(20_000);
+    kit.setTier("fable", 0.95, 3);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "switch to fable", turnId: "x1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "x1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: [] }, async () => ({ messages: [] }));
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "x1", index: 1 }, (e: { model: string }) => answeredBy(e.model)));
+    await run(kit.hooks, kit.$, "tiers off fable");
+    kit.setTier("opus", 0.95, 2);
+    let sent = "";
+    await kit.hooks.get("turn.start")!(kit.$, { text: "next", turnId: "x2" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "x2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.notEqual(sent, "claude-fable-5-1");
+  });
+  test("session.end saves what the throttled saves had not", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-END" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await a.hooks.get("turn.start")!(a.$, { text: "w", turnId: "e1" }, async (e: unknown) => e);
+    for (let i = 0; i < 3; i++) await collect(a.hooks.get("turn.step")!(a.$, { turnId: "e1", index: i }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    const before = (await run(a.hooks, a.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1];
+    await a.hooks.get("session.end")!(a.$, {}, async (e: unknown) => e);
+    (globalThis as { __jevRouterLive?: unknown }).__jevRouterLive = undefined;
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    assert.equal((await run(b.hooks, b.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1], before);
+  });
+  test("a late wake-up for a summarised reply does not write the summary of the reply open now", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setAgentStatus("completed");
+    await kit.hooks.get("turn.start")!(kit.$, { text: "t1", turnId: "l1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "l1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: "p", description: "d", subagentType: "general-purpose", fork: false, background: true }, async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "agent-1" }));
+    assert.match(text(await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "l1", index: 1 }, (e: { model: string }) => answeredBy(e.model)))), /% cached\)/);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "t2", turnId: "l2" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "l2", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    await kit.hooks.get("turn.start")!(kit.$, { text: '<task-notification><task-id>agent-1</task-id><summary>Agent "d" completed</summary></task-notification>', turnId: "l3" }, async (e: unknown) => e);
+    const woke = text(await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "l3", index: 0 }, (e: { model: string }) => answeredBy(e.model))));
+    assert.doesNotMatch(woke, /% cached\)/);
+  });
+  test("a resume that reports another model than the snapshot's is not held to the snapshot's", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-RA" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    kit.setSessionModel("claude-haiku-4-5");
+    kit.setContext(30_000);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const turn = async (id: string, text: string) => {
+      await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+      let sent = "";
+      const engine = await kit.$.session.model();
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, model: engine }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+      return sent;
+    };
+    // A runs on haiku, one unrouted turn: haiku is warm.
+    kit.fail();
+    await turn("r1", "implement it");
+    shared.id = "sess-RB";
+    kit.setSessionModel("claude-opus-5-5");
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-opus-5-5", context_tokens: 30_000 }, async (e: unknown) => e);
+    // Back to A, the session now reported on opus.
+    shared.id = "sess-RA";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-opus-5-5", context_tokens: 30_000 }, async (e: unknown) => e);
+    await run(kit.hooks, kit.$, "tiers off haiku");
+    kit.setTier("sonnet", 0.5);
+    assert.notEqual(await turn("r2", "implement the next part"), "claude-haiku-4-5");
+  });
+
+});

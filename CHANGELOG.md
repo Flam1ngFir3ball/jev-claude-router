@@ -219,6 +219,15 @@ Ready and merged, held back from a version bump until approved:
 - **A resume into another session** reads that session's model afresh
   instead of keeping the one this process was on, and an agent the router
   left alone keeps its single history row across a reload.
+- **Every 33rd routed turn lost its route line, summary and usage row**:
+  the trim of in-flight turns could evict the turn just started. The new
+  turn is never the one trimmed.
+- **A tier turned off** is no longer held to after an engine compaction in
+  the middle of the turn that moved to it, nor after a resume that reports
+  another model than the resumed session's snapshot.
+- **`session.end` saves** what the throttled mid-turn saves had not.
+- **A late wake-up for a reply already summarised** no longer writes the
+  summary of whatever reply is open at the time.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 

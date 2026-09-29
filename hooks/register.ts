@@ -740,6 +740,8 @@ export function register(on: On) {
   let inert = false;
   /** The engine said the resumed session's cache has expired, and no response has written it since. */
   let cacheExpired = false;
+  /** The model a resume event reported, until the resumed snapshot is restored against it. */
+  let resumedOn: string | null = null;
   /** A resume or fork event has said whether the cache expired: that outranks a snapshot's word. */
   let resumeSpoke = false;
   /**
@@ -844,13 +846,16 @@ export function register(on: On) {
    * `decisions` — those still need the route line and usage fold-in. If every
    * entry is protected, the map is allowed to grow past the limit.
    */
-  const trimByTurn = () => {
+  // `keep` is the turn just added: it is not in `pending` or `decisions`
+  // yet, and with every other row protected it was the one evicted, so
+  // every 33rd turn lost its line, its summary and its usage.
+  const trimByTurn = (keep?: string) => {
     let scanned = 0;
     while (byTurn.size > CACHE_LIMIT && scanned < byTurn.size) {
       const oldest = byTurn.keys().next();
       if (oldest.done) break;
       const key = oldest.value;
-      if (pending.has(key) || decisions.has(key)) {
+      if (key === keep || pending.has(key) || decisions.has(key)) {
         touch(byTurn, key, byTurn.get(key)!);
         scanned++;
         continue;
@@ -968,6 +973,16 @@ export function register(on: On) {
     latest = s.latest;
     lastUsage = s.lastUsage;
     sessionModel = s.sessionModel ?? sessionModel;
+    // A resume that reported another model than the snapshot's: the session
+    // is on that one now, and what was warm under the snapshot's is not.
+    if (resumedOn !== null) {
+      if (running !== null && baseModel(running.model) !== baseModel(resumedOn)) {
+        running = sessionDecision(resumedOn);
+        unconfirmed = null;
+      }
+      sessionModel = resumedOn;
+      resumedOn = null;
+    }
     spent = s.spent;
     enabled = s.enabled;
     announce = s.announce;
@@ -1044,6 +1059,9 @@ export function register(on: On) {
   // that resumes the same session later is not left standing aside behind
   // an owner that no longer exists.
   on("session.end", async ($, e, next) => {
+    // What the throttled mid-turn saves have not written yet is saved first:
+    // once the claim is gone, a later copy restores from the store alone.
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
     if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
     return next(e);
   });
@@ -1142,6 +1160,9 @@ export function register(on: On) {
       cacheExpired = e.prompt_cache_likely_expired === true;
       resumeSpoke = true;
     }
+    // The model the resume says the session is on: what a snapshot restored
+    // after this puts back is checked against it.
+    if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string") resumedOn = e.model;
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&
@@ -1694,7 +1715,7 @@ export function register(on: On) {
       record(attempt);
     }
     byTurn.set(e.turnId, attempt);
-    trimByTurn();
+    trimByTurn(e.turnId);
 
     // The line goes into the reply's own text, in turn.step below. Render
     // hooks and $.ui.log both drew nothing in the desktop app; the model's
@@ -1849,7 +1870,7 @@ export function register(on: On) {
         trim(unrouted);
       }
       byTurn.set(e.turnId, attempt);
-      trimByTurn();
+      trimByTurn(e.turnId);
     }
     let decision = decisions.get(e.turnId);
     if (decision !== undefined) {
@@ -1995,7 +2016,14 @@ export function register(on: On) {
               (running === null ||
                 baseModel(running.model) !== baseModel(warm.model))
             ) {
-              running = warm;
+              // The turn's own decision when that is what answered (after a
+              // compaction cleared `running` mid-turn, say): a bare warm
+              // placeholder reads as the session model, not a routed tier.
+              running =
+                !unrouted && attempt !== undefined && "decision" in attempt &&
+                baseModel(attempt.decision.model) === baseModel(warm.model)
+                  ? asAsked(attempt.decision)
+                  : warm;
             }
             // A compaction in the middle of this turn cleared what a
             // go-ahead continues; the turn's own decision is still it.
@@ -2036,6 +2064,10 @@ export function register(on: On) {
         // its parent reads.
         if (
           attempt &&
+          // This turn is part of the open reply: a late wake-up for a reply
+          // already summarised is not, and must not write whatever reply is
+          // open now (one cut short, say).
+          reply.includes(attempt) &&
           announce &&
           e.agentId === undefined &&
           attempt.kind !== "agent" &&
