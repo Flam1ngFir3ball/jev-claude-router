@@ -5234,6 +5234,15 @@ describe("register: a tier's own alias stands for its model (2026-09-29)", () =>
       assert.equal(t.sent, "claude-opus-5-5");
       assert.match(t.line, /kept opus/);
     });
+  test("a hold on a version guessed from `opus` goes out as the engine's own Opus", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
+    kit.setSessionModel("opus");
+    kit.setContext(120_000);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("sonnet", 0.6, 2);
+    const t = await stepOn(kit, "oo1", "implement it", "claude-opus-4-1");
+    assert.equal(t.sent, "claude-opus-4-1", "kept is kept: no cold switch to another Opus");
+  });
   test("a provider's spelling of the session model is not priced as a switch to itself", async () => {
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
     kit.setSessionModel("claude-opus-5-5@20260901");

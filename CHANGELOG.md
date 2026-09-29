@@ -291,7 +291,9 @@ Ready and merged, held back from a version bump until approved:
   held; one that names no single model (`opusplan`, which runs Sonnet
   outside plan mode; `default`) makes no placeholder, rather than holding
   to "opus" with a cold switch priced as a stay. The session model is read
-  afresh when a placeholder is made.
+  afresh when a placeholder is made. An alias names the tier, not the
+  version: a turn held on it goes out as the engine's own model of that
+  tier (an older Opus behind `opus` included), so "kept" is a stay.
 - A provider's spelling of the session model (`…@date`, `us.anthropic.…`)
   is not priced as a switch to itself.
 - **A provider's spelling of the routed model in usage**

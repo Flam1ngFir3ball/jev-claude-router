@@ -492,7 +492,7 @@ export function sessionDecision(model: string): Decision | null {
   // nothing is held to a model not running. A tier's own alias (`opus`,
   // `sonnet[1m]`) runs that tier's model, and stands for it.
   if (AMBIGUOUS_ALIAS.test(model)) return null;
-  const plainAlias = /^(opus|sonnet|haiku|fable)(?:\[1m\])?$/i.exec(model);
+  const plainAlias = TIER_ALIAS.exec(model);
   if (plainAlias) {
     const tier = plainAlias[1]!.toLowerCase() as Tier;
     return { tier, model: MODEL_OF[tier], effort: "medium", confidence: 1 };
@@ -508,6 +508,9 @@ export function sessionDecision(model: string): Decision | null {
  * blockquote) would read as markdown: no spaces, parentheses or emphasis.
  */
 export const MODEL_ID = /^[\w.:/@+\[\]-]{1,512}$/;
+
+/** A tier's own alias (`opus`, `sonnet[1m]`): its tier is known, its version is not. */
+export const TIER_ALIAS = /^(opus|sonnet|haiku|fable)(?:\[1m\])?$/i;
 
 /** A model alias that names no one model: a placeholder cannot be made of it. */
 export const AMBIGUOUS_ALIAS = /^(?:opusplan|default|best)(?:\[1m\])?$/i;

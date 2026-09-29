@@ -9,6 +9,7 @@ import {
 } from "./jev.ts";
 import { labelOf, withLabel } from "./label.ts";
 import {
+  TIER_ALIAS,
   asAsked,
   capTo,
   ceilingAt,
@@ -36,7 +37,7 @@ import {
   type Effort,
   type Tier,
 } from "./policy.ts";
-import { baseModel, sameModelAs, ttlOf, usageCost, type Ttl } from "./pricing.ts";
+import { tierOfModel, baseModel, sameModelAs, ttlOf, usageCost, type Ttl } from "./pricing.ts";
 import {
   pack,
   SNAPSHOT_PREFIX,
@@ -780,6 +781,17 @@ export function register(on: On) {
   /** The model a resume event reported, until the resumed snapshot is restored against it. */
   let resumedOn: string | null = null;
   /**
+   * The model a placeholder guessed from a tier's alias (`opus` names the
+   * tier, not the version the engine resolves it to): a turn that holds to
+   * it goes out as the engine's own model of that tier, so "kept" is true.
+   */
+  let aliasGuess: string | null = null;
+  const placeholderOf = (model: string): Decision | null => {
+    const made = sessionDecision(model);
+    aliasGuess = made !== null && TIER_ALIAS.test(model) ? made.model : null;
+    return made;
+  };
+  /**
    * A snapshot was restored since the last turn: the session model it held
    * may be another process's, or from before a resume that did not name the
    * model, so the next turn checks it against the engine's.
@@ -930,6 +942,7 @@ export function register(on: On) {
    * compaction forgets only what was warm; see session.compact.)
    */
   const clearRouting = () => {
+    aliasGuess = null;
     decisions.clear();
     byTurn.clear();
     pending.clear();
@@ -1035,7 +1048,7 @@ export function register(on: On) {
     // is on that one now, and what was warm under the snapshot's is not.
     if (resumedOn !== null) {
       if (running !== null && !sameModelAs(running.model, resumedOn)) {
-        running = sessionDecision(resumedOn);
+        running = placeholderOf(resumedOn);
         unconfirmed = null;
       }
       sessionModel = resumedOn;
@@ -1238,7 +1251,7 @@ export function register(on: On) {
         // Restored already (session.start in a fresh process came first):
         // the reported model is applied here, over what the snapshot held.
         if (running !== null && !sameModelAs(running.model, e.model)) {
-          running = sessionDecision(e.model);
+          running = placeholderOf(e.model);
           unconfirmed = null;
         }
         sessionModel = e.model;
@@ -1251,7 +1264,7 @@ export function register(on: On) {
       e.context_tokens > 0 &&
       typeof e.model === "string"
     ) {
-      running = sessionDecision(e.model);
+      running = placeholderOf(e.model);
       unconfirmed = null;
       if (running !== null) {
         lastUsage = { context: e.context_tokens, output: TYPICAL_OUTPUT_TOKENS };
@@ -1683,7 +1696,7 @@ export function register(on: On) {
         // Only for a model it can read and name: an alias (`opus`,
         // `opusplan`) or one off the ladder says nothing about the cache,
         // and dropping the placeholder for it would lose a warm hold.
-        const now = sessionDecision(live);
+        const now = placeholderOf(live);
         if (
           now !== null &&
           running !== null &&
@@ -1786,7 +1799,7 @@ export function register(on: On) {
         // Read now, not as cached: `/model` may have changed it since, and a
         // placeholder of a model left would hold the turn to it.
         sessionModel = (await sessionModelOf($)) ?? sessionModel;
-        if (sessionModel !== null) running = sessionDecision(sessionModel);
+        if (sessionModel !== null) running = placeholderOf(sessionModel);
       }
       const economics =
         context > 0
@@ -2035,7 +2048,14 @@ export function register(on: On) {
           ...e,
           // The engine's own spelling when it is the same model: a kept
           // turn is not respelled to `[1m]` or a provider id it did not use.
-          model: typeof e.model === "string" && sameModelAs(decision.model, e.model) ? e.model : decision.model,
+          // And its own model of the tier when the decision holds to a
+          // version guessed from an alias.
+          model:
+            typeof e.model === "string" &&
+            (sameModelAs(decision.model, e.model) ||
+              (aliasGuess !== null && decision.model === aliasGuess && tierOfModel(e.model) === decision.tier))
+              ? e.model
+              : decision.model,
           effort: decision.effort,
         })
       : next(e);
@@ -2190,6 +2210,8 @@ export function register(on: On) {
                 sameModelAs(attempt.decision.model, warm.model)
                   ? asAsked(attempt.decision)
                   : warm;
+              // What answered is known now: no guess is left to hold to.
+              aliasGuess = null;
             }
             // A compaction in the middle of this turn cleared what a
             // go-ahead continues; the turn's own decision is still it.
