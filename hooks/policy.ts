@@ -772,10 +772,14 @@ const SET_PHRASE =
 const POLITE_CONDITION = new RegExp(
   "^(?:if|when|whenever|unless|until)\\s+(?:" +
     [
-      "(?:you|u|ya)\\s+(?:can|could|would|will|may|might|want(?: to)?|like|wish|prefer|please|must|disagree|object|agree|think so|see fit|are able|are ready|are free|don'?t mind|do not mind|get (?:a|the) chance|have (?:a )?(?:sec|second|moment|minute|chance|time))",
-      "you'?re (?:ready|able|free|ok|okay|happy|done)",
+      "(?:you|u|ya)\\s+(?:can|could|would|will|may|might|want(?: to)?|like|wish|prefer|please|must|disagree|object|agree|think so|think otherwise|see fit|are able|are ready|are free|are willing|feel like it|don'?t mind|do not mind|wouldn'?t mind|would not mind|could please|would please|get (?:a|the) chance|have (?:a )?(?:sec|second|moment|minute|chance|time)|have a better idea|think (?:it'?s|it is) (?:needed|necessary|worth it|best|better|wise))",
+      "you'?d (?:like|prefer|be so kind|rather|be willing|not mind)",
+      "you'?re (?:ready|able|free|ok|okay|happy|willing|up for it|good)(?: with (?:it|that|this))?",
+      "you are (?:ok|okay|happy|fine|good) with (?:it|that|this)",
       "i (?:say|tell you) (?:otherwise|so|to stop)",
-      "i change my mind",
+      "i (?:change my mind|change it|switch (?:it )?back)",
+      "(?:that|it) works(?: for you)?",
+      "it'?s all the same to you",
       "possible",
       "(?:that|it)(?:'?s| is) (?:ok|okay|fine|alright|all right|not too much(?: trouble)?)(?: with you)?",
     ].join("|") +
@@ -940,7 +944,13 @@ export function ceilingOf(raw: string | undefined): Ceiling {
   const whole = effortNamed(text);
   if (whole !== null) return ceilingAt(whole);
   // Commas, semicolons or spaces between the parts, as JEV_ROUTER_EXCLUDE.
-  for (const part of text.replace(/\s*:\s*/g, ":").split(/[\s,;]+/)) {
+  // Spaces around a colon folded by splitting, not `\s*:\s*`, which
+  // rescanned a long run of spaces from every position.
+  const joined = text
+    .split(":")
+    .map((s) => s.trim())
+    .join(":");
+  for (const part of joined.split(/[\s,;]+/)) {
     const [tierName, effortName] = part.split(":").map((s) => s.trim());
     if (tierName === undefined || effortName === undefined) continue;
     const effort = effortNamed(effortName);

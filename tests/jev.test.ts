@@ -428,3 +428,12 @@ describe("the footer's doubt follows the continued flag (2026-09-29)", () => {
     assert.equal(labelOf(d, true, "notify", true), "jev: opus, high effort");
   });
 });
+
+describe("shortError never quotes a key (2026-09-29)", () => {
+  test("a header error's Bearer value is redacted", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    const out = shortError('Headers.append: "Bearer ts_live_9f8e7d6c5b4a" is an invalid header value');
+    assert.ok(!out.includes("ts_live"), out);
+    assert.match(out, /Bearer …/);
+  });
+});

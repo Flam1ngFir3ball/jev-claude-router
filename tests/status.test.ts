@@ -1608,3 +1608,54 @@ describe("status: a summary-shaped fence streamed a character at a time stays li
     assert.equal(out, withoutImitations(text));
   });
 });
+
+describe("status: typed text cannot hide the engine's envelope (2026-09-29)", () => {
+  const real = (r: string) =>
+    `<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent "fix" completed</summary>\n<result>${r}</result>\n</task-notification>`;
+  test("an unclosed fence, a fence closed inside the result, an unclosed paste", () => {
+    for (const text of [
+      "Please look at the ``` block in the README and tidy it\n" + real("SECRET plain"),
+      "Check this:\n```ts\n" + real("SECRET\n```\nmore"),
+      "Refactor this <pasted_content>\n" + real("SECRET </pasted_content> x"),
+      'He said "hi\n' + real('SECRET "quoted"'),
+    ]) {
+      assert.equal(hasNotification(text), true, text);
+      assert.doesNotMatch(notificationStateOf(text), /SECRET/, text);
+    }
+  });
+  test("prose that names the tag is not an envelope", () => {
+    for (const text of [
+      "The <task-notification> <b>must</b> be parsed before anything else; rewrite the parser",
+      "Handle <task-notification> <!-- comments --> in the parser and add tests",
+    ])
+      assert.equal(hasNotification(text), false, text);
+  });
+});
+
+describe("status: streamed and whole agree on long copies (2026-09-29)", () => {
+  const stream = (text: string, size: number) => {
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    let out = "";
+    for (let i = 0; i < text.length; i += size) for (const c of f.push({ kind: "text", index: 0, text: text.slice(i, i + size) })) out += c.text;
+    for (const c of f.end()) out += c.text;
+    return out;
+  };
+  test("a copied route line with a few hundred blank lines before its rule", () => {
+    const text = `> ✳️ opus · high · Jev 91% · 12ms\n${"\n".repeat(300)}---\n\nBody`;
+    assert.equal(withoutImitations(text), "Body");
+    for (const size of [1, 7, 50]) assert.equal(stream(text, size), "Body", String(size));
+  });
+  test("a copied summary whose first line runs past 4,000 characters", () => {
+    const head = `${Array.from({ length: 200 }, () => "opus (you picked fable)").join(", ")} · $4.00 · 8.4M in (95% cached) · 1M out`;
+    const text = `Done.\n\n\`\`\`\n${head}\n\`\`\``;
+    assert.ok(head.length > 4_000);
+    assert.equal(withoutImitations(text), "Done.");
+    for (const size of [1, 50, 1_000_000]) assert.equal(stream(text, size), "Done.", String(size));
+  });
+  test("a route line and a long run of blank lines stays linear", () => {
+    const text = `> ✳️ opus · high · Jev 91% · 12ms\n${"\n".repeat(120_000)}`;
+    const t = performance.now();
+    stream(text, 1);
+    assert.ok(performance.now() - t < 1500, `${Math.round(performance.now() - t)}ms`);
+  });
+});

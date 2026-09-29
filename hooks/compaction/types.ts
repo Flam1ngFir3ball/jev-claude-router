@@ -109,6 +109,11 @@ export interface CompactOptions {
   maxRequestTokens?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
+  /**
+   * A message's text as Jev is shown it in the state (the output keeps the
+   * message's own); the text itself when absent.
+   */
+  textOf?: (message: Message) => string;
 }
 
 export interface ResolvedCompactOptions {
@@ -118,6 +123,7 @@ export interface ResolvedCompactOptions {
   maxStateTokens: number;
   maxRequestTokens: number;
   truncateHeadChars: number;
+  textOf?: (message: Message) => string;
 }
 
 export interface CompactResult {

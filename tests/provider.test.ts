@@ -236,3 +236,33 @@ describe("JEV_ROUTER_PROVIDER's other names (2026-09-29)", () => {
     assert.ok(d.ok && d.name === "typesafe");
   });
 });
+
+describe("keys and model ids a header or the route line cannot carry (2026-09-29)", () => {
+  it("a key with a line break inside is refused, naming the variable, not the key", () => {
+    for (const key of ["ts_live_abc\ndef", "ts_live_abc\rdef", "ts live", "ts_live_\u0000x"]) {
+      const p = providerOf({ TYPESAFE_API_KEY: key } as never);
+      assert.equal(p.ok, false);
+      if (!p.ok) {
+        assert.match(p.reason, /TYPESAFE_API_KEY/);
+        assert.ok(!p.reason.includes("ts_live"));
+      }
+    }
+    const g = providerOf({ AI_GATEWAY_API_KEY: "gw\nkey" } as never);
+    assert.equal(g.ok, false);
+  });
+  it("a key only padded with whitespace is still the key", () => {
+    const p = providerOf({ TYPESAFE_API_KEY: "  ts_live_abc\n" } as never);
+    assert.ok(p.ok && p.apiKey === "ts_live_abc");
+  });
+  it("a pinned Jev model that is not a model id is refused", () => {
+    const p = providerOf({ TYPESAFE_API_KEY: "k", JEV_ROUTER_JEV_MODEL: "jev\n# heading" } as never);
+    assert.equal(p.ok, false);
+    const q = providerOf({ TYPESAFE_API_KEY: "k", JEV_ROUTER_JEV_MODEL: "jev-2026-09" } as never);
+    assert.ok(q.ok && q.model === "jev-2026-09");
+  });
+  it("a long run of slashes in the base is quick", () => {
+    const t = performance.now();
+    typesafeBaseOf(`https://api.typesafe.ai/${"/".repeat(100_000)}x${"/".repeat(100_000)}`, undefined);
+    assert.ok(performance.now() - t < 200);
+  });
+});

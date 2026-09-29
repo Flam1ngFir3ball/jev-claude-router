@@ -56,6 +56,7 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
     ),
+    ...(options.textOf ? { textOf: options.textOf } : {}),
   };
 }
 

@@ -250,6 +250,31 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **A key with a line break or space inside it is refused** with the
+  variable's name, rather than sent: the request would fail with an error
+  quoting the header, key and all, into the route line and the store. Error
+  text that quotes a `Bearer` value is redacted wherever it is shown.
+- **A task's result stays out of compaction's requests to Jev**: a
+  notification in the transcript is shown by its summary, as at the turn.
+- **Typed text cannot hide the engine's notification**: a quote only keeps
+  a notification the person's own when it closes past the notification's
+  end, so an unclosed fence or paste cannot swallow the engine's envelope.
+  Prose that names the tag is sent whole.
+- A snapshot whose decision names one tier and another's model, whose
+  lists run far past what the router keeps, or whose session model is not
+  a model id, is refused or has that field dropped.
+- `/jev` drops escape sequences from prompts and agent descriptions, and
+  prints the surface, the session model and the Jev model plainly; a
+  `JEV_ROUTER_JEV_MODEL` that is not a model id is refused.
+- Compaction of a transcript whose calls alone cannot fit the budget is
+  refused at once rather than after seconds of cutting; merging a long run
+  of calls is linear. Long runs of spaces or slashes in
+  `JEV_ROUTER_CEILING` and `TYPESAFE_BASE_URL` are read in linear time.
+- More ways of asking politely are read as requests ("if you'd like",
+  "unless you think otherwise", "until I switch back").
+- A copied route line with many blank lines before its rule, or a copied
+  summary with a very long first line, is stripped when streamed as it is
+  whole.
 - A notification the person quotes (in code, a paste or double quotes) is
   theirs: the prompt is sent with the request after it, and a prompt with
   a mention before the engine's own envelope is cut at the envelope.

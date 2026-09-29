@@ -300,3 +300,45 @@ describe("the kept count includes calls kept for being recent (2026-09-29)", () 
     assert.equal(kept + cut, left, "every call still in the transcript is counted as kept or cut");
   });
 });
+
+describe("what compaction sends and says (2026-09-29)", () => {
+  test("a notification in the transcript is sent by its summary, never its result", async () => {
+    const input = transcript(10);
+    input.splice(1, 0, {
+      role: "user",
+      text: '<task-notification>\n<task-id>a1</task-id>\n<summary>Agent "reader" completed</summary>\n<result>AWS_SECRET_KEY=abc123</result>\n</task-notification>',
+      toolUses: [],
+      handle: "hn",
+    });
+    const bodies: string[] = [];
+    const inner = jev(["t1"]);
+    const r = await pruneTranscript({
+      messages: input,
+      provider: typesafe,
+      fetch: async (url: string, init?: { body?: string }) => (bodies.push(init?.body ?? ""), inner(url, init)),
+      sleep: never,
+      timeoutMs: 8000,
+      minReduction: 0.25,
+      options: { preserveRecentMessages: 2 },
+    });
+    assert.ok(bodies.length > 0);
+    for (const b of bodies) assert.doesNotMatch(b, /AWS_SECRET/);
+    assert.ok(r.ok);
+    if (r.ok) assert.ok(r.messages.some((m) => m.text.includes("AWS_SECRET")), "the transcript itself keeps it");
+  });
+  test("an error quoting the key or escape sequences is shown without them", async () => {
+    const r = await pruneTranscript({
+      messages: transcript(10),
+      provider: typesafe,
+      fetch: async () => {
+        throw new Error('Headers.append: "Bearer ts_live_9f8e7d6c" is invalid \u001b]52;c;ZWNobw==\u0007');
+      },
+      sleep: never,
+      timeoutMs: 8000,
+      minReduction: 0.25,
+    });
+    assert.equal(r.ok, false);
+    assert.ok(!r.compaction.fallback!.includes("ts_live"), r.compaction.fallback);
+    assert.doesNotMatch(r.compaction.fallback!, /[\u0000-\u001f\u007f]/);
+  });
+});

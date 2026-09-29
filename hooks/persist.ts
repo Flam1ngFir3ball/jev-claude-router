@@ -17,6 +17,17 @@
 
 import type { Compaction } from "./compactor.ts";
 import { EFFORTS, TIERS, type Ceiling, type Decision } from "./policy.ts";
+import { tierOfModel } from "./pricing.ts";
+
+/** A model id as the engine spells one: `claude-opus-5-5[1m]`, a Bedrock or Vertex id. */
+const MODEL_ID = /^[\w.:/@\[\]-]{1,120}$/;
+
+/**
+ * The most entries any list in a snapshot can hold: the router keeps far
+ * fewer (a few turns of history, 64 of a reply, 32-odd agents). A larger
+ * one did not come from it, and restoring it could overflow a spread.
+ */
+const LIST_MAX = 1_000;
 import type { Attempt } from "./status.ts";
 
 export const SNAPSHOT_VERSION = 1;
@@ -171,6 +182,10 @@ function isValidDecision(v: unknown): v is Decision {
     isRecord(v) &&
     (TIERS as readonly unknown[]).includes(v.tier) &&
     typeof v.model === "string" &&
+    // A model id of the tier it names: the route line says the tier and the
+    // request sends the model, so the two cannot be allowed to differ.
+    MODEL_ID.test(v.model) &&
+    tierOfModel(v.model) === v.tier &&
     (EFFORTS as readonly unknown[]).includes(v.effort) &&
     typeof v.confidence === "number" &&
     Number.isFinite(v.confidence) &&
@@ -222,7 +237,9 @@ export function unpack(raw: unknown): State | null {
   const pool = raw.pool;
   // Every attempt is checked as a decision is: a corrupt one reaches the
   // route line, the summary and the spend total, which trust its fields.
-  if (!Array.isArray(pool) || !pool.every(isValidAttempt)) return null;
+  if (!Array.isArray(pool) || pool.length > LIST_MAX || !pool.every(isValidAttempt)) return null;
+  for (const list of [raw.attempts, raw.reply, raw.spawned, raw.unrouted, raw.turns, raw.decisions, raw.pending, raw.stepped, raw.replyAgents])
+    if (Array.isArray(list) && list.length > LIST_MAX) return null;
   const at = (i: unknown): Attempt | null =>
     typeof i === "number" && Number.isInteger(i) && i >= 0 && i < pool.length
       ? (pool[i] as Attempt)
@@ -295,7 +312,7 @@ export function unpack(raw: unknown): State | null {
     latest: decision(raw.latest),
     lastUsage,
     sessionModel:
-      typeof raw.sessionModel === "string" ? raw.sessionModel : null,
+      typeof raw.sessionModel === "string" && MODEL_ID.test(raw.sessionModel) ? raw.sessionModel : null,
     spent: isCount(raw.spent) ? raw.spent : 0,
     enabled: raw.enabled !== false,
     announce: raw.announce !== false,

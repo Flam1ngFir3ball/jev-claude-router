@@ -25,6 +25,7 @@ import type {
 } from "./compaction/types.ts";
 import { messageOf, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
 import { flagOff, PLAIN_DECIMAL } from "./policy.ts";
+import { hasNotification, notificationOf, notificationStateOf } from "./status.ts";
 import type { ProviderResult } from "./provider.ts";
 
 /** Below this share removed, the engine's summary does better; its default. */
@@ -106,6 +107,12 @@ export type Compaction = {
 export type PruneResult =
   | { ok: true; messages: EngineMessage[]; compaction: Compaction }
   | { ok: false; compaction: Compaction };
+
+/** A message's text as the scoring shows it to Jev: a notification by its summary alone. */
+function stateTextOf(message: Message): string {
+  const notice = notificationOf(message.text) !== null || hasNotification(message.text);
+  return message.role === "user" && notice ? notificationStateOf(message.text) : message.text;
+}
 
 /** A `JevAsker` over the plugin's provider and the engine's fetch. */
 function askerOf(
@@ -229,7 +236,9 @@ export async function pruneTranscript(args: {
     const work = compact(
       args.messages,
       askerOf(args.provider, args.fetch, controller.signal),
-      resolveOptions(args.options ?? {}),
+      // A task's notification in the transcript is shown by its summary,
+      // never its result, as a notification turn is.
+      resolveOptions({ ...(args.options ?? {}), textOf: stateTextOf }),
       controller.signal,
     );
     const raced = await Promise.race([
@@ -261,7 +270,15 @@ export async function pruneTranscript(args: {
   } catch (error) {
     const detail = messageOf(error);
     // Shown in /jev and saved: plain words only, whatever the provider sent.
-    return none(detail.replace(/\s+/g, " ").replace(/[`*_#<>\[\]()|]/g, "").slice(0, 120));
+    return none(
+      detail
+        .replace(/\bBearer\s+\S+/gi, "Bearer …")
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/g, "")
+        .replace(/\s+/g, " ")
+        .replace(/[`*_#<>\[\]()|]/g, "")
+        .slice(0, 120),
+    );
   } finally {
     timer.abort();
   }

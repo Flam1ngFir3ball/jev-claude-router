@@ -101,3 +101,28 @@ describe("state cuts keep surrogate pairs whole (2026-09-29)", () => {
     assert.doesNotMatch(out, /[\ud800-\udbff](?![\udc00-\udfff])/);
   });
 });
+
+describe("state building at scale (2026-09-29)", async () => {
+  const { fitState } = await import("../hooks/compaction/state.ts");
+  test("calls that cannot fit are refused at once", () => {
+    const messages: Message[] = [{ role: "user", text: "go", toolUses: [] }];
+    const calls = Array.from({ length: 48_000 }, (_, i) => ({ id: `toolu_${i}`, tool: "Read", input: {}, callIndex: 0 }));
+    const t = performance.now();
+    assert.throws(() => fitState(messages, calls as never, { maxStateTokens: 25_000, preserveRecentMessages: 6, goal: "" }), /too large/);
+    assert.ok(performance.now() - t < 500);
+  });
+  test("a message's text as Jev is shown it can be replaced, the output untouched", () => {
+    const messages: Message[] = [
+      { role: "user", text: "audit", toolUses: [] },
+      { role: "user", text: "<task-notification><task-id>a</task-id><result>SECRET</result></task-notification>", toolUses: [] },
+    ];
+    const fitted = fitState(messages, [], {
+      maxStateTokens: 25_000,
+      preserveRecentMessages: 6,
+      goal: "",
+      textOf: (m) => (m.text.includes("SECRET") ? "task a" : m.text),
+    });
+    assert.doesNotMatch(JSON.stringify(fitted.state), /SECRET/);
+    assert.match(messages[1]!.text, /SECRET/);
+  });
+});

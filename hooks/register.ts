@@ -993,7 +993,7 @@ export function register(on: On) {
       return;
     }
     liveModelDue = { model: s.sessionModel ?? null };
-    attempts.splice(0, attempts.length, ...s.attempts);
+    attempts.splice(0, attempts.length, ...s.attempts.slice(0, HISTORY_LIMIT));
     reply = s.reply;
     replyAgents = new Set(s.replyAgents);
     spawned.clear();

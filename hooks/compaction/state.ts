@@ -147,10 +147,12 @@ function mergeCallRuns(history: readonly HistoryEntry[], pinned: (e: HistoryEntr
     const foldable = (e: HistoryEntry): boolean =>
       !pinned(e) && e.text.length === 0 && typeof e.tool_calls?.[0] === 'string';
     if (previous && foldable(previous) && foldable(entry) && previous.role === entry.role) {
-      previous.tool_calls = [...(previous.tool_calls as string[]), ...(entry.tool_calls as string[])];
+      // Appended in place (the array is this entry's own copy): copying it
+      // on every merge made a long run of calls quadratic.
+      for (const call of entry.tool_calls as string[]) (previous.tool_calls as string[]).push(call);
       continue;
     }
-    merged.push({ ...entry });
+    merged.push(entry.tool_calls ? { ...entry, tool_calls: [...entry.tool_calls] as HistoryEntry['tool_calls'] } : { ...entry });
   }
   return merged;
 }
@@ -212,9 +214,18 @@ export function goalFromMessages(messages: readonly Message[]): string {
 export function fitState(
   messages: readonly Message[],
   calls: readonly ToolCall[],
-  options: Pick<ResolvedCompactOptions, 'maxStateTokens' | 'preserveRecentMessages' | 'goal'>,
+  options: Pick<ResolvedCompactOptions, 'maxStateTokens' | 'preserveRecentMessages' | 'goal' | 'textOf'>,
 ): FittedState {
-  const goal = options.goal || goalFromMessages(messages);
+  // Every call ends at least as its id, tool and outcome, however hard the
+  // state is cut: a transcript whose calls alone outgrow the budget cannot
+  // fit, and is refused before the cutting, which would take seconds on it.
+  let floor = 0;
+  for (const call of calls) floor += estimateTokens(`"${call.id} ${call.tool} → ok",`);
+  if (floor > options.maxStateTokens)
+    throw new Error(`history too large for Jev (~${floor} tokens at the least, limit ${options.maxStateTokens})`);
+  const textOf = options.textOf;
+  const shown = textOf ? messages.map((m) => ({ ...m, text: textOf(m) })) : messages;
+  const goal = options.goal || goalFromMessages(shown);
   const stateOf = (history: HistoryEntry[]): CompactionState => ({
     context: STATE_CONTEXT,
     goal,
@@ -232,7 +243,7 @@ export function fitState(
   let perEntry: number[] = [];
   let tokens = 0;
   const rebuild = (inputChars: number): void => {
-    history = historyEntries(messages, calls, inputChars);
+    history = historyEntries(shown, calls, inputChars);
     perEntry = history.map(entryTokens);
     tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
   };

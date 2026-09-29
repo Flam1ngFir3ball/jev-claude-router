@@ -87,6 +87,8 @@ export function shortError(detail: string): string {
     .filter((t) => t !== "")
     .join(" ")
     .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "")
+    // An error that quotes the request's header quotes the key with it.
+    .replace(/\bBearer\s+\S+/gi, "Bearer …")
     .split(/[.?!]\s/)[0]!
     .replace(/^(\w+): \1\b:?\s*/, "$1: ")
     .replace(/:\s*$/, "")

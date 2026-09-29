@@ -281,30 +281,44 @@ export function notificationStateOf(text: string): string {
  * A notification's envelope, not a mention of the tag: an element follows
  * the opening tag (the engine's fields, in any order, or a comment).
  */
-const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z]|!--)/i;
+const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/gi;
 
 /**
  * Where the engine's notification starts in text the person typed ahead of
- * it, or -1. One quoted by the person — in code, a paste or double quotes —
- * is theirs, and their request after it is sent: the engine's own is never
- * inside those.
+ * it, or -1. One the person quotes whole — its closing tag inside the same
+ * closed code block, code span, paste or double quotes — is theirs, and
+ * their request after it is sent. Only a quote that closes, and closes past
+ * the envelope's own end, counts: an unclosed fence, or a paste opened in
+ * the typed text and closed inside a task's result, cannot hide the
+ * engine's envelope, so the result stays withheld.
  */
 function envelopeAt(text: string): number {
-  const blank = (m: string) => m.replace(/[^\n]/g, " ");
-  const masked = maskBlocks(text, "pasted_content")
-    .replace(/```[\s\S]*?(?:```|$)/g, blank)
-    .replace(/`[^`\n]*`/g, blank)
-    .replace(/"[^"\n]{0,400}"/g, blank)
-    .replace(/\u201c[^\u201d\n]{0,400}\u201d/g, blank);
-  return masked.search(ENVELOPE);
+  // Closed quotes, as [start, end) spans.
+  const spans: [number, number][] = [];
+  for (const re of [/```[\s\S]*?```/g, /`[^`\n]*`/g, /"[^"\n]{0,400}"/g, /\u201c[^\u201d\n]{0,400}\u201d/g])
+    for (const m of text.matchAll(re)) spans.push([m.index!, m.index! + m[0].length]);
+  spans.push(...pastedSpans(text));
+  spans.sort((a, b) => a[0] - b[0]);
+  // Swept in order: the furthest a quote opened so far reaches.
+  let next = 0;
+  let reach = -1;
+  for (const m of text.matchAll(ENVELOPE)) {
+    const at = m.index!;
+    const close = text.indexOf("</task-notification", at);
+    // Prose that names the tag has neither a close nor a result after it.
+    if (close === -1 && text.indexOf("<result", at) === -1) continue;
+    while (next < spans.length && spans[next]![0] <= at) reach = Math.max(reach, spans[next++]![1]);
+    if (close !== -1 && reach > close) continue;
+    return at;
+  }
+  return -1;
 }
 
-/** `text` with its `<tag …>…</tag>` blocks blanked, the same length; by hand, so linear. */
-function maskBlocks(text: string, tag: string): string {
-  const OPEN = `<${tag}`;
-  const CLOSE = `</${tag}`;
-  let out = "";
-  let pos = 0;
+/** The closed `<pasted_content …>…</pasted_content>` blocks, as spans; by hand, so linear. */
+function pastedSpans(text: string): [number, number][] {
+  const OPEN = "<pasted_content";
+  const CLOSE = "</pasted_content";
+  const spans: [number, number][] = [];
   let at = text.indexOf(OPEN);
   while (at !== -1) {
     const next = text[at + OPEN.length];
@@ -316,11 +330,10 @@ function maskBlocks(text: string, tag: string): string {
     if (close === -1) break;
     const closeEnd = text.indexOf(">", close);
     if (closeEnd === -1) break;
-    out += text.slice(pos, at) + text.slice(at, closeEnd + 1).replace(/[^\n]/g, " ");
-    pos = closeEnd + 1;
-    at = text.indexOf(OPEN, pos);
+    spans.push([at, closeEnd + 1]);
+    at = text.indexOf(OPEN, closeEnd + 1);
   }
-  return out + text.slice(pos);
+  return spans;
 }
 
 /** Whether `text` carries a task's notification anywhere, typed text before it or not. */
@@ -860,7 +873,9 @@ export function spawnAttemptOf(
 export const HISTORY_LIMIT = 5;
 
 function shorten(text: string, width = 44): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  // A prompt or an agent's description can carry a terminal's escape
+  // sequences (a model wrote it): dropped, with every line break folded.
+  const flat = text.replace(CONTROL, "").replace(/[\s\u0085\u2028\u2029]+/g, " ").trim();
   return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
 }
 
@@ -1112,7 +1127,7 @@ export function statusReport(status: Status): string {
   const lines: string[] = [""];
 
   lines.push(`  routing   ${status.enabled ? "on" : "off (/jev on)"}`);
-  lines.push(`  surface   ${status.surface ?? "unknown"}`);
+  lines.push(`  surface   ${status.surface === null ? "unknown" : plain(status.surface)}`);
 
   if (status.provider.ok) {
     const key =
@@ -1120,7 +1135,7 @@ export function statusReport(status: Status): string {
         ? "TYPESAFE_API_KEY"
         : "AI_GATEWAY_API_KEY";
     lines.push(
-      `  provider  ${status.provider.name} · ${key} is set · ${status.provider.model}`,
+      `  provider  ${status.provider.name} · ${key} is set · ${plain(status.provider.model)}`,
     );
   } else {
     // The reason names the fix: a missing key, a bad base URL, a provider
@@ -1200,7 +1215,7 @@ export function statusReport(status: Status): string {
 
 /** `claude-opus-5, running on fable` — the session's model and what is warm. */
 function sessionLine(status: Status): string {
-  const model = status.sessionModel ?? "unknown";
+  const model = status.sessionModel === null ? "unknown" : plain(status.sessionModel);
   if (status.running === null) return `${model}, nothing routed yet`;
   // `[1m]` and a date are spellings of the same model.
   return baseModel(status.running.model) === baseModel(model)
@@ -1431,8 +1446,11 @@ const SUMMARY_MAX = 16_000;
  */
 const ROUTE_LINE_MAX = 1_000;
 
-/** The longest first line a summary can have: one leg a turn, many turns. */
-const SUMMARY_HEAD_MAX = 4_000;
+/** The longest first line a summary can have: all of one, at most. */
+const SUMMARY_HEAD_MAX = SUMMARY_MAX;
+
+/** Blank lines after a copied rule waited for, before the text after it streams. */
+const RULE_TAIL_MAX = 1_024;
 
 /** A summary's first line, once the fence has opened. */
 const SUMMARY_HEAD = /^[^\n`]*\(\d+% cached\)/;
@@ -1454,6 +1472,8 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
   private settled = false;
   private held = "";
   private carrier: C | null = null;
+  /** How far past a copied route line's newline the held text is blank lines. */
+  private blanksTo = 0;
   /**
    * `held` opens with a fence already found to be a summary's start, as long
    * as it was when checked: text added after it is checked on its own,
@@ -1467,6 +1487,7 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
     if (chunk.index !== this.block) {
       this.block = chunk.index;
       this.settled = false;
+      this.blanksTo = 0;
     }
     this.held += chunk.text;
     this.carrier = chunk;
@@ -1503,14 +1524,19 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
           return this.release(false);
         }
         if (eol !== -1) {
-          const rest = h.slice(eol + 1);
-          // The rule under it may still be arriving, in either shape.
+          // The rule under it may still be arriving, in either shape: any
+          // number of blank lines, then a rule. The blank lines are counted
+          // as they arrive, not rescanned for each piece.
+          if (this.blanksTo < eol + 1) this.blanksTo = eol + 1;
+          while (this.blanksTo < h.length && h[this.blanksTo] === "\n") this.blanksTo++;
+          const tail = h.slice(this.blanksTo);
+          // Waited through a screenful or so of them at most: holding a long
+          // run costs a copy of it per piece, and a model does not copy one.
           if (
             !final &&
-            // Blank lines, then a rule arriving: a screenful of blank lines
-            // before it at most, so a long run is not rescanned per piece.
-            rest.length <= 128 &&
-            /^\n*(?:-{1,2}|---\n*)?$/.test(rest)
+            this.blanksTo - eol <= RULE_TAIL_MAX &&
+            tail.length <= RULE_TAIL_MAX &&
+            /^(?:-{1,2}|---\n*)?$/.test(tail)
           )
             return "";
         }

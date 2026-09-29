@@ -82,7 +82,11 @@ export function typesafeBaseOf(
   }
   // The endpoint's own path is added after the base; a base that already
   // carries it (copied from the docs' full URL) would otherwise double it.
-  const path = url.pathname.replace(/\/+$/, "").replace(/\/v1(?:\/systemone)?$/, "");
+  // Trailing slashes trimmed by hand: `\/+$` rescanned a long run of them
+  // from every position.
+  let end = url.pathname.length;
+  while (end > 0 && url.pathname[end - 1] === "/") end--;
+  const path = url.pathname.slice(0, end).replace(/\/v1(?:\/systemone)?$/, "");
   return { ok: true, base: `${url.origin}${path}` };
 }
 
@@ -119,6 +123,17 @@ export function providerOf(raw: ProviderEnv): ProviderResult {
     TYPESAFE_API_KEY: keyOf(raw.TYPESAFE_API_KEY),
     AI_GATEWAY_API_KEY: keyOf(raw.AI_GATEWAY_API_KEY),
   };
+  // A key with a line break or other character inside it cannot go in a
+  // header: the request would fail with an error quoting the header, key
+  // and all, into the route line and the store. Refused up front instead.
+  for (const name of ["TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"] as const) {
+    const key = env[name];
+    if (key !== undefined && !/^[\x21-\x7e]+$/.test(key))
+      return { ok: false, reason: `${name} has a line break, space or other character a key cannot have` };
+  }
+  const pinned = (env.JEV_ROUTER_JEV_MODEL ?? "").trim();
+  if (pinned !== "" && !/^[\w.:/@-]{1,100}$/.test(pinned))
+    return { ok: false, reason: "JEV_ROUTER_JEV_MODEL is not a model id" };
   const named = (env.JEV_ROUTER_PROVIDER ?? "").toLowerCase().trim();
   // The gateway's other names are read as the gateway; anything else
   // unknown falls back to choosing by the keys set, as before.

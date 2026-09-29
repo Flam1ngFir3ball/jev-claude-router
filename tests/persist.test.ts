@@ -226,3 +226,23 @@ describe("persist: fields /jev prints from are checked (2026-09-29)", () => {
     assert.deepEqual(roundTrip(stateWith(a))!.attempts, [a]);
   });
 });
+
+describe("persist: a snapshot the router could not have written is refused (2026-09-29)", () => {
+  test("a decision whose model is not of its tier", () => {
+    const d = { ...decision, tier: "haiku" as const, model: "claude-opus-4-1[1m]" };
+    const s = stateWith({ prompt: "p", ms: 1, decision });
+    assert.equal(roundTrip({ ...s, continueFrom: d })?.continueFrom ?? null, null);
+    const odd = { ...decision, model: "claude-fable-5-1\n```\n# x" };
+    assert.equal(roundTrip({ ...s, running: odd })?.running ?? null, null);
+  });
+  test("a list far longer than the router keeps", () => {
+    const a: Attempt = { prompt: "p", ms: 1, decision };
+    const packed = JSON.parse(JSON.stringify(pack(stateWith(a))));
+    packed.attempts = new Array(5_000).fill(0);
+    assert.equal(unpack(packed), null);
+  });
+  test("a session model that is not a model id is dropped", () => {
+    const s = stateWith({ prompt: "p", ms: 1, decision });
+    assert.equal(roundTrip({ ...s, sessionModel: "claude-opus-5\n# x" })!.sessionModel, null);
+  });
+});
