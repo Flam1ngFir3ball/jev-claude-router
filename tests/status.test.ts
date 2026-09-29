@@ -1337,3 +1337,15 @@ describe("status: round-3 audit (2026-09-29)", () => {
     assert.equal(notificationStateOf(text), 'Agent "x" completed\nnow fix it');
   });
 });
+
+describe("a named tier that did not run is not called your pick (2026-09-29)", () => {
+  test("kept on the running tier, or stepped up, it says what was named", () => {
+    const kept: Attempt = { prompt: "use haiku", ms: 0, decision: { tier: "opus", model: "claude-opus-5-5", effort: "medium", confidence: 0, forced: true, held: "haiku", heldWindow: 250_000 } };
+    addUsage(kept, usageOf("claude-opus-5-5"));
+    assert.match(liveLine(kept), /you picked haiku/);
+    assert.doesNotMatch(liveLine(kept), /your pick/);
+    assert.doesNotMatch(replySummary([kept])!, /your pick/);
+    const ran: Attempt = { prompt: "use opus", ms: 0, decision: { tier: "opus", model: "claude-opus-5-5", effort: "medium", confidence: 0, forced: true } };
+    assert.match(liveLine(ran), /your pick/);
+  });
+});

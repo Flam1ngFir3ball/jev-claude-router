@@ -2546,7 +2546,10 @@ describe("register: audit regressions (2026-09-23)", () => {
     assert.match(same.text, /haiku too long, moved up only to sonnet/);
     assert.doesNotMatch(same.text, /Jev wanted haiku/);
     const named = await turn(hooks, $, "lb3", "use haiku for this");
-    assert.match(named.text, /your pick/);
+    // Haiku was named but did not fit: the line says what was named, and
+    // never calls sonnet the person's pick.
+    assert.match(named.text, /you picked haiku/);
+    assert.doesNotMatch(named.text, /your pick/);
   });
 
   test("a resume into another session starts from that session's own state", async () => {

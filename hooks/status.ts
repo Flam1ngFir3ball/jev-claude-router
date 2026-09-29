@@ -148,7 +148,7 @@ export function reasonsOf(attempt: Attempt): string[] {
       `kept ${d.effort}: Jev ${pct(d.effortConfidence ?? 0)} on ${d.heldEffort}`,
     );
   }
-  if (d.forced) out.push("your pick");
+  if (d.forced) out.push(pickOf(d));
   // The ceiling, and the engine running the capped effort higher on a
   // conversation's first request, read as one fact: what Jev wanted, what
   // the ceiling allowed, what actually ran. A first request that ran what
@@ -187,6 +187,17 @@ function stepUp(
         fitsWindow(t, contextTokens),
     ) ?? null
   );
+}
+
+/**
+ * How a named tier reads: `your pick` when the turn runs on it, `you picked
+ * haiku` when it did not fit and the turn ran elsewhere (kept on the running
+ * tier, or stepped up), so the tier shown is never called the person's pick
+ * when it was not.
+ */
+function pickOf(d: Decision): string {
+  const named = d.held ?? d.wanted ?? d.outgrew ?? d.tier;
+  return named === d.tier ? "your pick" : `you picked ${named}`;
 }
 
 /** The tier a step-up says was too long: the running one if it was, else Jev's pick. */
@@ -890,7 +901,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
       // A held turn's confidence is in the tier it did not move to; the
       // note under this line says so, so none is shown here.
       const how = d.forced
-        ? "your pick"
+        ? pickOf(d)
         : only.kind === "continue" || only.kind === "nudge"
           ? "continuing"
           : d.held !== undefined
@@ -905,7 +916,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
     // A tier the person named is marked, as the single-turn line says "your pick".
     const legs = main.map((t) =>
       "decision" in t
-        ? `${t.decision.tier}${t.decision.forced ? " (your pick)" : ""}${t.usage && !answeredBy(t).endsWith("✓") ? " ⚠" : ""}`
+        ? `${t.decision.tier}${t.decision.forced ? ` (${pickOf(t.decision)})` : ""}${t.usage && !answeredBy(t).endsWith("✓") ? " ⚠" : ""}`
         : "session",
     );
     const woken = main.filter((t) => t.kind === "notify").length;
@@ -959,7 +970,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
   // (How the tier was settled is on the first line already; a multi-turn
   // reply counts its wake-ups and nudges there.)
   main.forEach((t, i) => {
-    const why = reasonsOf(t).filter((r) => r !== "your pick");
+    const why = reasonsOf(t).filter((r) => !r.startsWith("your pick") && !r.startsWith("you picked"));
     if (why.length === 0) return;
     rows.push(`${main.length > 1 ? `turn ${i + 1}: ` : ""}${why.join("; ")}`);
   });

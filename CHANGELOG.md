@@ -157,6 +157,9 @@ Ready and merged, held back from a version bump until approved:
   are the sticky bar and the last context size; old snapshots are pruned by
   when they were last saved, so a long-running session is never the one
   dropped.
+- **A tier you named that did not fit** (kept on the running tier, or
+  stepped up past it) reads "you picked haiku", not "your pick" on the tier
+  that actually ran.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids.
 
