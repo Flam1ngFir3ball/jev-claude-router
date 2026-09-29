@@ -175,7 +175,17 @@ function isValidDecision(v: unknown): v is Decision {
     typeof v.confidence === "number" &&
     Number.isFinite(v.confidence) &&
     v.confidence >= 0 &&
-    v.confidence <= 1
+    v.confidence <= 1 &&
+    // What `/jev` and the route line print from: a number where one is read.
+    [v.effortConfidence, v.heldWindow, v.heldBar].every((n) => n === undefined || isCount(n)) &&
+    (v.heldCost === undefined ||
+      (isRecord(v.heldCost) &&
+        isCount(v.heldCost.stay) &&
+        isCount(v.heldCost.go) &&
+        (v.heldCost.limit === undefined || isCount(v.heldCost.limit)))) &&
+    [v.jevFailed, v.heldModel].every((t) => t === undefined || typeof t === "string") &&
+    [v.held, v.outgrew, v.wanted].every((t) => t === undefined || (TIERS as readonly unknown[]).includes(t)) &&
+    [v.heldEffort, v.cappedEffort].every((t) => t === undefined || (EFFORTS as readonly unknown[]).includes(t))
   );
 }
 
@@ -184,6 +194,11 @@ function isValidAttempt(v: unknown): boolean {
   if (!isRecord(v) || typeof v.prompt !== "string" || typeof v.ms !== "number" || !Number.isFinite(v.ms)) return false;
   if ("decision" in v ? !isValidDecision(v.decision) : typeof v.skipped !== "string") return false;
   if (v.cost !== undefined && !isCount(v.cost)) return false;
+  if (
+    v.agent !== undefined &&
+    !(isRecord(v.agent) && typeof v.agent.label === "string" && (v.agent.type === undefined || typeof v.agent.type === "string"))
+  )
+    return false;
   if (v.usage !== undefined) {
     const u = v.usage;
     if (

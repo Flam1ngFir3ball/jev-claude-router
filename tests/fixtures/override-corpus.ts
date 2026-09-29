@@ -180,4 +180,19 @@ export const OVERRIDE_CORPUS_ROUND7: readonly (readonly [string, string | null])
   ["use `opus` for this", "opus"],
   ["// TODO: use opus when complexity > 0.8\nimplement this TODO", null],
   ["the config has `use opus` in it", null],
+  // a clause under a condition describes behaviour; manners are not conditions
+  ["if the context is over 200k, switch to opus", null],
+  ["When it's trivial, use haiku.", null],
+  ["Otherwise, use opus", null],
+  ["Write a rule: when the prompt is short, use haiku", null],
+  ["Add a fallback: if Jev times out, switch to sonnet", null],
+  ["when compaction fails, fall back and use sonnet", null],
+  ["write a function: if cost > 10 then use haiku", null],
+  ["if you can, use opus", "opus"],
+  ["If possible, use opus for this", "opus"],
+  ["when you are ready, switch to opus", "opus"],
+  ["Thanks! If you could, switch to haiku", "haiku"],
+  // a tier naming something else
+  ["make sure to use sonnet pricing", null],
+  ["try to use haiku ids in the test", null],
 ];

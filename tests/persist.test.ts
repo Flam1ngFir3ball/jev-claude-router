@@ -209,3 +209,20 @@ describe("persist: round-3 audit (2026-09-29)", () => {
     assert.deepEqual(staleKeys(keys, "session:new", savedAt), ["session:s1", "session:s2"]);
   });
 });
+
+describe("persist: fields /jev prints from are checked (2026-09-29)", () => {
+  test("a held cost that is not numbers rejects the snapshot", () => {
+    const held = { ...decision, heldCost: { stay: 0.01, go: null as unknown as number } };
+    const a: Attempt = { prompt: "2+2", ms: 1, decision: held };
+    assert.equal(roundTrip(stateWith(a)), null);
+  });
+  test("an agent tag whose type is not text rejects the snapshot", () => {
+    const a = { prompt: "task", ms: 1, decision, agent: { type: { x: 1 }, label: "agent" } } as unknown as Attempt;
+    assert.equal(roundTrip(stateWith(a)), null);
+  });
+  test("well-formed held and agent fields still come back", () => {
+    const held = { ...decision, heldCost: { stay: 0.01, go: 0.6, limit: 0.3 }, heldWindow: 300_000, jevFailed: "timed out" };
+    const a: Attempt = { prompt: "task", ms: 1, decision: held, agent: { type: "Explore", label: "Explore agent" } };
+    assert.deepEqual(roundTrip(stateWith(a))!.attempts, [a]);
+  });
+});

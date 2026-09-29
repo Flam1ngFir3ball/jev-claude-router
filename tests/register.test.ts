@@ -3476,6 +3476,34 @@ describe("register: audit regressions (2026-09-23)", () => {
       assert.ok(shown >= 6 && shown < 10, `system and tools stay counted: ${shown}k`);
     });
 
+    test("an output the engine's messages carry more than once is taken off once", async () => {
+      // The engine's messages repeat a tool's output on the call and on the
+      // reply (`text` and `result` on both): counted each time, the removal
+      // came out up to four times what the scoring removed.
+      const engineShaped = (n: number) =>
+        transcript(n).map((m) => ({
+          ...m,
+          toolUses: (m.toolUses as Record<string, unknown>[]).map((u) => ({ ...u, text: "x".repeat(2000), result: "x".repeat(2000) })),
+          ...(m.toolResults
+            ? { toolResults: (m.toolResults as Record<string, unknown>[]).map((r) => ({ ...r, result: r.text })) }
+            : {}),
+        }));
+      const shownAfter = async (messages: unknown[], id: string) => {
+        const kit = await withJev({}, { store: new Map<string, unknown>(), id });
+        kit.setTier("fable", 0.95, 3);
+        kit.setContext(20_000);
+        await turn(kit.hooks, kit.$, "dup1", "plan it");
+        await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages }, async () => ({ messages: [] }));
+        kit.setContext(null);
+        const status = (await run(kit.hooks, kit.$, "")).text;
+        return Number(status.match(/cache\s+1h writes · (\d+)k context/)?.[1]);
+      };
+      const plainShown = await shownAfter(transcript(10), "sess-DUP1");
+      const engineShown = await shownAfter(engineShaped(10), "sess-DUP2");
+      assert.ok(plainShown > 0);
+      assert.equal(engineShown, plainShown);
+    });
+
     test("a subagent's compaction does not become /jev's last", async () => {
       const kit = await withJev();
       await kit.hooks.get("session.compact")!(kit.$, { ...compactEvent(), agentId: "agent-9" }, async () => ({ messages: [] }));
@@ -4695,5 +4723,77 @@ describe("register: the copy that lost a same-stamp tie does not release the win
       Date.now = realNow;
       Math.random = realRandom;
     }
+  });
+});
+
+describe("register: round-9 findings (2026-09-29)", () => {
+  test("session B's first turn does not depend on whether session A had a snapshot", async () => {
+    const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };
+    const run = async (withSnapshotA: boolean) => {
+      g.__jevRouterNewest = undefined;
+      g.__jevRouterLive = undefined;
+      const shared = { store: new Map<string, unknown>(), id: "sess-SA" };
+      const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "0.8" };
+      if (withSnapshotA) {
+        const p1 = load(env, shared);
+        await p1.hooks.get("session.start")!(p1.$, {}, async (e: unknown) => e);
+        await p1.hooks.get("turn.start")!(p1.$, { text: "x", turnId: "a1" }, async (e: unknown) => e);
+        await collect(p1.hooks.get("turn.step")!(p1.$, { turnId: "a1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+        await p1.hooks.get("session.end")!(p1.$, {}, async (e: unknown) => e);
+        g.__jevRouterNewest = undefined;
+        g.__jevRouterLive = undefined;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const kit = load(env, shared);
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      shared.id = "sess-SB";
+      kit.setSessionModel("claude-sonnet-5-5");
+      kit.setContext(100_000);
+      await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-opus-5-5", context_tokens: 100_000 }, async (e: unknown) => e);
+      kit.setTier("haiku", 0.5);
+      let sent = "";
+      await kit.hooks.get("turn.start")!(kit.$, { text: "rename this variable", turnId: "b1" }, async (e: unknown) => e);
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "b1", index: 0 }, (e: { model: string }) => ((sent = e.model ?? "(session)"), answeredBy(sent))));
+      return sent;
+    };
+    assert.equal(await run(true), await run(false));
+  });
+
+  test("a typed prompt that mentions the notification tag is sent to Jev whole", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const text = "Refactor the parser so each <task-notification> block is read with a real XML parser, then add tests";
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: "tg1" }, async (e: unknown) => e);
+    assert.equal(kit.lastState(), text);
+  });
+
+  test("malformed events pass through without throwing", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    const pass = async (e: unknown) => e;
+    await kit.hooks.get("session.start")!(kit.$, {}, pass);
+    await kit.hooks.get("turn.start")!(kit.$, { text: 42, turnId: "m1" }, pass);
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: null, description: "d" }, async () => ({ agentId: "ag-m" }));
+    const out = await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, {}, pass);
+    assert.equal(typeof (out as { text?: unknown }).text, "string");
+    await kit.hooks.get('ui.render:{"component":"SessionMode"}')!(kit.$, { props: {} }, pass);
+    let fellThrough = false;
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: [null] }, async () => ((fellThrough = true), { messages: [] }));
+    assert.ok(fellThrough, "a transcript with a hole is the engine's to compact");
+  });
+
+  test("an error with a carriage return does not break the route line", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.$.http.fetch = async () => {
+      throw new Error("jev: $.http.fetch(x) failed: boom\r```\r# INJECTED");
+    };
+    await kit.hooks.get("turn.start")!(kit.$, { text: "implement it", turnId: "cr1" }, async (e: unknown) => e);
+    const chunks = (await collect(
+      kit.hooks.get("turn.step")!(kit.$, { turnId: "cr1", index: 0 }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5-5")),
+    )) as { kind: string; text?: string }[];
+    const t = { text: chunks.filter((c) => c.kind === "text").map((c) => c.text).join("") };
+    const first = t.text.split("\n")[0]!;
+    assert.match(first, /^> ⚠️ not routed: request failed: boom # INJECTED/);
+    assert.doesNotMatch(t.text, /\r/);
   });
 });

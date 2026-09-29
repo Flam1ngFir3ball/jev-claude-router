@@ -57,6 +57,7 @@ import {
   shortOf,
   type Compaction,
 } from "./compactor.ts";
+import { messageChars } from "./compaction/compact.ts";
 import {
   addUsage,
   announceReply,
@@ -73,6 +74,7 @@ import {
   REPLY_SEPARATOR,
   notificationOf,
   notificationStateOf,
+  hasNotification,
   notificationTaskOf,
   replySummary,
   spawnAttemptOf,
@@ -918,6 +920,8 @@ export function register(on: On) {
    * compaction forgets only what was warm; see session.compact.)
    */
   const clearRouting = () => {
+    // A restored model to check belongs to the state being dropped.
+    liveModelDue = null;
     decisions.clear();
     byTurn.clear();
     pending.clear();
@@ -986,6 +990,7 @@ export function register(on: On) {
     // Nothing to restore: a resume's reported model has nothing to correct.
     if (s === null) {
       resumedOn = null;
+      liveModelDue = null;
       return;
     }
     liveModelDue = { model: s.sessionModel ?? null };
@@ -1258,7 +1263,9 @@ export function register(on: On) {
     let reduction = 0;
     // Characters removed from the transcript, for what the next turn carries.
     let removedChars = 0;
-    const transcript = Array.isArray(e.messages) ? e.messages : [];
+    // A transcript with anything but messages in it is left to the engine.
+    const transcript =
+      Array.isArray(e.messages) && e.messages.every((m) => typeof m === "object" && m !== null) ? e.messages : [];
     // `/compact <what to keep>` is an instruction to the summariser; Jev's
     // pruning has no way to follow it, so the summary runs.
     const instructed = typeof e.instructions === "string" && e.instructions.trim() !== "";
@@ -1288,8 +1295,12 @@ export function register(on: On) {
       };
       // The scoring's reduction covers the part it scored; the appended
       // tail is kept whole, so the share removed overall is smaller.
+      // Measured as the scoring measures (each output once), so the share
+      // and the size it is taken of agree: the engine's messages carry an
+      // output up to four times, and counting those made the removal up to
+      // four times too large.
       const size = (ms: readonly (typeof e.messages)[number][]) =>
-        ms.reduce((n, m) => n + m.text.length + JSON.stringify(m.toolUses).length + JSON.stringify(m.toolResults ?? []).length, 0);
+        ms.reduce((n, m) => n + messageChars(m), 0);
       const all = size(transcript);
       reduction = all > 0 ? cached.reduction * (1 - size(tail) / all) : cached.reduction;
       removedChars = Math.round(reduction * all);
@@ -1339,17 +1350,8 @@ export function register(on: On) {
           compaction: result.compaction,
         };
         reduction = result.compaction.reduction;
-        removedChars = Math.round(
-          reduction *
-            transcript.reduce(
-              (n, m) =>
-                n +
-                m.text.length +
-                JSON.stringify(m.toolUses).length +
-                JSON.stringify(m.toolResults ?? []).length,
-              0,
-            ),
-        );
+        // Of the size the scoring measured, not the engine's (see `size`).
+        removedChars = Math.round(reduction * transcript.reduce((n, m) => n + messageChars(m), 0));
       }
     }
     // A copy that does not own the session leaves its state alone.
@@ -1429,7 +1431,7 @@ export function register(on: On) {
     }
     // One space between words, whatever was typed (tabs, runs of spaces),
     // and a leading dash or two dropped with any space after it: `/jev -- off`.
-    const arg = e.args.trim().toLowerCase().replace(/\s+/g, " ");
+    const arg = (typeof e.args === "string" ? e.args : "").trim().toLowerCase().replace(/\s+/g, " ");
     const sub = arg.replace(/^-+\s*/, "");
 
     // The dash-stripped spelling throughout, so `/jev --on` works as
@@ -1559,6 +1561,8 @@ export function register(on: On) {
   });
 
   on("turn.start", async ($, e, next) => {
+    // Nothing to grade: the turn is the engine's to run as it is.
+    if (typeof e.text !== "string") return next(e);
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
@@ -1629,7 +1633,7 @@ export function register(on: On) {
           // the notification's result is not sent with it.
           : classify(
               $,
-              /<task-notification\b/.test(e.text) ? notificationStateOf(e.text) : e.text,
+              hasNotification(e.text) ? notificationStateOf(e.text) : e.text,
               offered,
               settings,
               askAbort.signal,
@@ -2214,7 +2218,7 @@ export function register(on: On) {
   on("agent.spawn", async ($, e, next) => {
     // A spawn the router leaves alone still belongs to the reply that made
     // it, and the reply's summary waits for it like any other.
-    if (!enabled || e.fork || e.model !== undefined) {
+    if (!enabled || e.fork || e.model !== undefined || typeof e.prompt !== "string") {
       const started = await next(e);
       if (started.agentId !== undefined) replyAgents.add(started.agentId);
       return started;
@@ -2289,7 +2293,7 @@ export function register(on: On) {
     // The last turn's own outcome: one that went unrouted says so, rather
     // than showing the route of the turn before it.
     const label = enabled && last !== undefined && "skipped" in last ? "jev: not routed" : labelOf(latest, enabled, last?.kind, last?.continued);
-    const modes = withLabel(e.props.modes, label);
+    const modes = withLabel(Array.isArray(e.props?.modes) ? e.props.modes : [], label);
     return next({ ...e, props: { ...e.props, modes } });
   });
 }

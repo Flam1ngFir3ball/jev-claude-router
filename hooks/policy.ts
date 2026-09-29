@@ -605,10 +605,38 @@ function normalizeQuotes(text: string): string {
  * and quoted lines. A handoff or log pasted in can say "use opus" as an
  * example; that is not an instruction to route there.
  */
+/**
+ * `text` without its `<tag …>…</tag>` blocks, found by hand: the pattern
+ * this replaces rescanned to the end from every unclosed opening (a paste
+ * of 100k `<pasted_content ` took half a second).
+ */
+function withoutBlocks(text: string, tag: string): string {
+  const OPEN = `<${tag}`;
+  const CLOSE = `</${tag}`;
+  let out = "";
+  let pos = 0;
+  let at = text.indexOf(OPEN);
+  while (at !== -1) {
+    const next = text[at + OPEN.length];
+    if (next !== undefined && /\w/.test(next)) {
+      at = text.indexOf(OPEN, at + 1);
+      continue;
+    }
+    const openEnd = text.indexOf(">", at);
+    if (openEnd === -1) break;
+    const close = text.indexOf(CLOSE, openEnd + 1);
+    if (close === -1) break;
+    const closeEnd = text.indexOf(">", close);
+    if (closeEnd === -1) break;
+    out += `${text.slice(pos, at)} `;
+    pos = closeEnd + 1;
+    at = text.indexOf(OPEN, pos);
+  }
+  return out + text.slice(pos);
+}
+
 export function ownWords(text: string): string {
-  return text
-    .replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/g, " ")
-    .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, " ")
+  return withoutBlocks(withoutBlocks(text, "pasted_content"), "task-notification")
     .replace(/```[\s\S]*?(?:```|$)/g, " ")
     // A tier alone in backticks after a route verb is the person's own ask
     // ("use `opus`"), not code: unwrapped before code spans go.
@@ -649,6 +677,7 @@ export function parseOverride(
     const previous = matches[i - 1];
     const from = previous ? (previous.index ?? 0) + previous[0].length : 0;
     if (!addressedAt(normalized, from, at)) continue;
+    if (TIER_AS_NAME.test(normalized.slice(at + match[0].length, at + match[0].length + 40))) continue;
     const tier = match[1]?.toLowerCase() as Tier | undefined;
     if (tier !== undefined && offered.includes(tier)) named = tier;
   }
@@ -708,6 +737,15 @@ function addressedAt(text: string, from: number, at: number): boolean {
   let start = from;
   for (const brk of text.slice(from, at).matchAll(CLAUSE_BREAK))
     start = from + (brk.index ?? 0) + brk[0].length;
+  // A clause under a condition describes what happens then, not what to do
+  // now: "if it runs long, switch to opus", "otherwise use opus".
+  let sentence = from;
+  for (const brk of text.slice(from, start).matchAll(/[.!?\n]/g)) sentence = from + (brk.index ?? 0) + 1;
+  // Any clause of the sentence so far: "Add a fallback: if it times out, …".
+  for (const part of text.slice(sentence, start).toLowerCase().split(/[,;:—–]|\s-\s/)) {
+    const clause = part.trim().replace(BULLET, "");
+    if (CONDITION.test(clause) && !POLITE_CONDITION.test(clause)) return false;
+  }
   let lead = text.slice(start, at).trim().toLowerCase().replace(/\s+/g, " ").replace(BULLET, "");
   for (let guard = 0; lead !== "" && guard < 12; guard++) {
     const m = lead.match(OPENER);
@@ -716,6 +754,20 @@ function addressedAt(text: string, from: number, at: number): boolean {
   }
   return lead === "";
 }
+
+/** A clause that sets a condition, ahead of the one naming the tier. */
+const CONDITION = /^(?:if|when|whenever|unless|once|until|in case|otherwise|else)\b/;
+
+/** A condition that is only manners: "if you can, use opus". */
+const POLITE_CONDITION =
+  /^(?:if|when)\s+(?:you\s+(?:can|could|would|will|may|don'?t mind|do not mind|get a chance|have (?:a )?(?:chance|moment|minute|time))|you'?re ready|you are ready|possible|(?:that|it)(?:'s| is) (?:ok|okay|fine|alright))\s*(?:then)?\s*$/;
+
+/**
+ * Words after the tier that make it a name for something else: "use sonnet
+ * pricing" is about a price table, "use haiku ids in the test" about ids.
+ */
+const TIER_AS_NAME =
+  /^\s+(?:pricing|prices?|rates?|ids?|names?|constants?|strings?|labels?|values?|keys?|entr(?:y|ies)|fields?|columns?|tables?|fixtures?|mocks?|stubs?|numbers?|figures?|tokens?|limits?|windows?|costs?)\b/i;
 
 /** True when the gap is only light bridge words and no clause break. */
 function proximityOk(gap: string): boolean {

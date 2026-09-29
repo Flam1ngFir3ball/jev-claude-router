@@ -968,3 +968,16 @@ describe("backticked tier after any route verb (2026-09-29)", () => {
     for (const text of ["switch over to `opus`", "run this on `opus`", "route to `opus`", "switch the model to `opus`"]) assert.equal(parseOverride(text), "opus", text);
   });
 });
+
+describe("ownWords is linear on unclosed openings (2026-09-29)", () => {
+  test("100k of '<pasted_content ' or '<task-notification ' is quick, and closed blocks still go", async () => {
+    const { ownWords } = await import("../hooks/policy.ts");
+    for (const open of ["<pasted_content ", "<task-notification "]) {
+      const t = performance.now();
+      ownWords(open.repeat(100_000 / open.length));
+      assert.ok(performance.now() - t < 200, open);
+    }
+    assert.equal(ownWords("a <pasted_content id=1>use opus</pasted_content> b").includes("opus"), false);
+    assert.equal(ownWords("a <pasted_contents>use opus").includes("opus"), true);
+  });
+});

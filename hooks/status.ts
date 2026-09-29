@@ -142,7 +142,7 @@ export function reasonsOf(attempt: Attempt): string[] {
   // Kept, unless the tier it was on had outgrown its window: then the
   // step-up below says where it went.
   if (d.jevFailed !== undefined)
-    out.push(d.outgrew !== undefined ? `Jev ${d.jevFailed}` : `kept ${d.tier}: Jev ${d.jevFailed}`);
+    out.push(d.outgrew !== undefined ? `Jev ${words(d.jevFailed)}` : `kept ${d.tier}: Jev ${words(d.jevFailed)}`);
   if (d.outgrew !== undefined)
     out.push(
       `${d.outgrew} too long, moved up only to ${d.tier}` +
@@ -219,7 +219,7 @@ function outgrownOf(running: Decision | null, decision: Decision, contextTokens:
 export function plain(text: string): string {
   // Only what can close the fence or open a tag: inside a fence and on one
   // line, `#`, `|`, `_` and `[1m]` are plain text and stay.
-  const flat = oneLine(String(text)).replace(/[`<>]/g, "");
+  const flat = oneLine(String(text).replace(/\t/g, " ")).replace(/[`<>]/g, "");
   return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
 }
 
@@ -236,8 +236,17 @@ export function originOf(
 }
 
 const NOTIFICATION = /^\s*<task-notification>/;
-const tagOf = (text: string, tag: string) =>
-  text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1]?.trim();
+/**
+ * A tag's text, found by hand: the lazy pattern it replaces rescanned to the
+ * end from every opening tag, quadratic on a run of openings with no close.
+ */
+const tagOf = (text: string, tag: string): string | undefined => {
+  const open = text.indexOf(`<${tag}>`);
+  if (open === -1) return undefined;
+  const from = open + tag.length + 2;
+  const close = text.indexOf(`</${tag}>`, from);
+  return close === -1 ? undefined : text.slice(from, close).trim();
+};
 
 /**
  * Reads the engine's task notification, when the turn's text is one: what
@@ -250,22 +259,32 @@ export function notificationOf(text: string): string | null {
 
 /**
  * What Jev is told about a notification turn: the task's one-line summary,
- * and any text after the envelope, never the task's result, which can quote
- * whatever the agent read.
+ * and any text typed before the envelope, never the task's result, which
+ * can quote whatever the agent read.
  */
 export function notificationStateOf(text: string): string {
   // Only what cannot be a result: the text before the first notification,
-  // and each notification's summary, read before its result starts. Nothing
-  // after a notification's opening is sent otherwise: a result can quote
-  // `</task-notification>` itself (an agent reading this very code), and
-  // whatever followed that would read as text outside the envelope.
-  const first = text.search(/<task-notification\b/);
-  const before = first === -1 ? text.trim() : text.slice(0, first).trim();
-  const summaries = (first === -1 ? [] : text.slice(first).split(/<task-notification\b/).slice(1)).map((piece) => {
-    const head = piece.split(/<result\b/)[0]!;
-    return plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
-  });
-  return [before, ...summaries].filter((p) => p !== "").join("\n");
+  // and that notification's summary, read before its result starts. Nothing
+  // after the result's opening is sent: a result can quote a whole envelope,
+  // `</task-notification>` and all (an agent reading this very code), so
+  // nothing after it can be told from the result.
+  const first = text.search(ENVELOPE);
+  if (first === -1) return text.trim();
+  const before = text.slice(0, first).trim();
+  const head = text.slice(first).split(/<result\b/)[0]!;
+  const summary = plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
+  return [before, summary].filter((p) => p !== "").join("\n");
+}
+
+/**
+ * A notification's envelope, not a mention of the tag: it opens a line and
+ * the task's id follows it, as the engine writes one.
+ */
+const ENVELOPE = /(?:^|\n)[ \t]*<task-notification>\s*<task-id>/;
+
+/** Whether `text` carries a task's notification anywhere, typed text before it or not. */
+export function hasNotification(text: string): boolean {
+  return ENVELOPE.test(text);
 }
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
@@ -340,6 +359,9 @@ export function carriedOf(usage: Usage): number {
   );
 }
 
+/** No usage count past this: ten times the largest window. */
+const MAX_COUNT = 10_000_000;
+
 /**
  * A usage record with every count a number. The API omits the cache fields
  * on some paths; summed unchecked they made NaN of the turn's cost, the
@@ -354,7 +376,10 @@ export function normalUsage(usage: {
 }): Usage {
   // A count the API could never mean (negative, NaN) is none: a negative
   // one would make a cost negative and the snapshot unloadable.
-  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  // One larger than any window could carry is capped, so a cost or a
+  // snapshot cannot overflow to Infinity (saved as null, the snapshot lost).
+  const n = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.min(v, MAX_COUNT) : 0;
   return {
     model: typeof usage.model === "string" ? usage.model : "",
     input_tokens: n(usage.input_tokens),
@@ -826,8 +851,8 @@ function attemptLine(attempt: Attempt): string {
     // A subagent's row names the agent first, then why: "under the bar"
     // and "Jev timed out" are different stories.
     return attempt.kind === "agent"
-      ? `  ${when}  not routed — ${what} · ${attempt.skipped}`
-      : `  ${when}  not routed — ${attempt.skipped}`;
+      ? `  ${when}  not routed — ${what} · ${words(attempt.skipped)}`
+      : `  ${when}  not routed — ${words(attempt.skipped)}`;
   }
   const d = attempt.decision;
   // A held turn's reason carries the confidence; saying it twice is noise.
@@ -951,7 +976,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
       if (how !== "") head.push(how);
     } else {
       head.push(only.usage ? answeredBy(only) : "session model");
-      head.push(`not routed: ${only.skipped}`);
+      head.push(`not routed: ${words(only.skipped)}`);
     }
   } else {
     // A tier the person named is marked, as the single-turn line says "your pick".
@@ -1059,7 +1084,7 @@ export function statusReport(status: Status): string {
   } else {
     // The reason names the fix: a missing key, a bad base URL, a provider
     // forced without its key. "No keys" alone sent people after the wrong one.
-    lines.push(`  provider  NOT SET UP — ${status.provider.reason}; nothing will route`);
+    lines.push(`  provider  NOT SET UP — ${words(status.provider.reason)}; nothing will route`);
   }
 
   lines.push(`  budget    ${status.timeoutMs}ms`);
@@ -1203,7 +1228,7 @@ export function liveLine(attempt: Attempt): string {
   // One line, always: a reason carrying a newline (an engine error, say)
   // would break the blockquote and no longer read as this line.
   if ("skipped" in attempt) {
-    return `> ⚠️ not routed: ${oneLine(attempt.skipped)}`;
+    return `> ⚠️ not routed: ${words(attempt.skipped)}`;
   }
   const d = attempt.decision;
   const parts = [
@@ -1261,21 +1286,44 @@ const IMITATED_SUMMARY = /```\n[^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\
  * ending in many blank lines quadratic (100k of them took eight seconds).
  */
 function withoutSummary(text: string): string {
-  const m = IMITATED_SUMMARY.exec(text);
+  // A summary is a few short lines: only the tail is looked at, so a long
+  // summary-shaped line cannot make the pattern quadratic in the reply.
+  const from = Math.max(0, text.length - SUMMARY_MAX);
+  const m = IMITATED_SUMMARY.exec(from === 0 ? text : text.slice(from));
   if (m === null) return text;
-  let end = m.index;
+  let end = from + m.index;
   while (end > 0 && text[end - 1] === "\n") end--;
   return text.slice(0, end);
 }
 
 /** One line: newlines and the space around them become a single space. */
 function oneLine(text: string): string {
-  if (!text.includes("\n")) return text;
-  return text
-    .split("\n")
+  // Every line break a renderer honours, not only `\n`: a `\r` or U+2028
+  // ends the route line early as surely. Other control characters (a
+  // terminal's escape sequences) are dropped.
+  const bare = text.replace(CONTROL, "");
+  if (!LINE_BREAK.test(bare)) return bare;
+  return bare
+    .split(LINE_BREAK)
     .map((t) => t.trim())
     .filter((t) => t !== "")
     .join(" ");
+}
+
+/** What a renderer may take for a line break. */
+const LINE_BREAK = /[\n\r\v\f\u0085\u2028\u2029]/;
+/** Control characters that are not line breaks (tabs are spaces). */
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\x00-\x08\x0e-\x1f\x7f-\x84\x86-\x9f]/g;
+
+/**
+ * A reason from outside the plugin (an error's text, a provider's word) as
+ * plain words for the route line, the summary and `/jev`: one line, with
+ * nothing that closes a fence or opens a tag.
+ */
+export function words(text: string): string {
+  const flat = oneLine(String(text).replace(/\t/g, " ")).replace(/[`<>]/g, "").replace(/ {2,}/g, " ");
+  return flat.length > 160 ? `${flat.slice(0, 159)}…` : flat;
 }
 
 /**
@@ -1297,7 +1345,7 @@ const LINE_STARTS = ["> ⚠️ not routed: ", ...TIERS.map((t) => `> ✳️ ${t}
 
 /** Whether a first line still being streamed could turn out to be a route line. */
 function couldBeRouteLine(partial: string): boolean {
-  const line = partial.split("\n", 1)[0]!;
+  const line = partial.slice(0, ROUTE_LINE_MAX + 1).split("\n", 1)[0]!;
   return LINE_STARTS.some((s) => s.startsWith(line) || line.startsWith(s));
 }
 
@@ -1314,6 +1362,19 @@ function couldBeRouteLine(partial: string): boolean {
  */
 const LINE_RULE = "\n---\n\n";
 const LINE_RULE_BARE = "---\n\n";
+
+/**
+ * The most a summary the model copied can run to. The plugin's own is a
+ * line a turn under a head line; past this a fence is the model's own code,
+ * streamed rather than held, and left alone at the end.
+ */
+const SUMMARY_MAX = 4_000;
+
+/**
+ * The longest first line a route line can have. Past it the block's start
+ * is ordinary text, streamed rather than held for a newline.
+ */
+const ROUTE_LINE_MAX = 600;
 
 /** A summary's first line, once the fence has opened. */
 const SUMMARY_HEAD = /^[^\n`]*\(\d+% cached\)/;
@@ -1370,7 +1431,13 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
         if (!final && LINE_OPENERS.some((o) => o.startsWith(h))) return "";
       } else {
         const eol = h.indexOf("\n");
-        if (eol === -1 && !final) return "";
+        // Still waiting for the line to end, while it is short enough to be one.
+        if (eol === -1 && !final && h.length <= ROUTE_LINE_MAX) return "";
+        if (eol === -1 && !final) {
+          // Too long to be a route line: ordinary text, streamed as it is.
+          this.settled = true;
+          return this.release(false);
+        }
         if (eol !== -1) {
           const rest = h.slice(eol + 1);
           // The rule under it may still be arriving, in either shape.
@@ -1403,6 +1470,8 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
       if (p > 0 && text[p - 1] !== "\n") continue;
       const after = text.slice(p + 3);
       if (!"\n".startsWith(after.slice(0, 1))) continue; // ```bash and the like
+      // Too long for a summary: the model's own fence, and it streams.
+      if (after.length > SUMMARY_MAX) continue;
       if (after === "") return this.backToBlankLines(text, p);
       const eol = after.indexOf("\n", 1);
       const head = after.slice(1, eol === -1 ? undefined : eol);

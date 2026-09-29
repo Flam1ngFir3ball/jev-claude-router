@@ -76,11 +76,13 @@ export function minReductionOf(raw: string | undefined): number {
 
 /** Why a pruning that removed too little does not stand; undefined when it does. */
 export function shortOf(reduction: number, minReduction: number): string | undefined {
-  return reduction < minReduction
-    ? // Rounded down, so it never reads "only 25% removed, needs 25%".
-      // (the epsilon keeps 0.29 × 100 = 28.999… at 29).
-      `only ${Math.floor(reduction * 100 + 1e-9)}% removed, needs ${Math.round(minReduction * 100)}%`
-    : undefined;
+  if (reduction >= minReduction) return undefined;
+  // The removed share rounded down and the needed one up, so they never
+  // read "only 25% removed, needs 25%" (a bar of 25.4% needs 26%); the
+  // epsilons keep 0.29 × 100 = 28.999… at 29 and 0.25 × 100 at 25.
+  const needs = Math.ceil(minReduction * 100 - 1e-9);
+  const removed = Math.min(Math.floor(reduction * 100 + 1e-9), needs - 1);
+  return `only ${Math.max(0, removed)}% removed, needs ${needs}%`;
 }
 
 /** A transcript message as the engine hands it to `session.compact`. */

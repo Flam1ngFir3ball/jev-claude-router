@@ -250,6 +250,31 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **After a Jev prune, the context estimate takes off what the scoring
+  removed, once.** The engine's messages carry a tool's output on the call
+  and on the reply; counted each time, the estimate could fall to nothing,
+  turning off the window guard and the price holds (a 340k context sent to
+  haiku).
+- **Text from outside the plugin cannot break the route line or the
+  summary's fence**: every line break a renderer honours (`\r`, U+2028 and
+  the like) is folded, control characters are dropped, and error reasons go
+  through the same cleaning as model names.
+- **A background task's result stays out of what Jev is sent** when it
+  quotes a whole notification: only the first notification's summary is
+  sent. A typed prompt that only mentions the tag is sent whole.
+- A route under a condition ("if it runs long, switch to opus", "otherwise
+  use opus") or a tier naming something else ("use sonnet pricing") is not
+  read as naming a tier.
+- A snapshot with a held cost or agent type of the wrong kind is refused
+  rather than making `/jev` throw; usage counts past any window are capped,
+  so a cost cannot overflow and lose the snapshot.
+- Long or malformed text no longer slows a turn: the streamed copy filter,
+  the paste and notification strippers, tag reading and model-name suffixes
+  are linear. Events missing their text, prompt or arguments pass through.
+- A compaction that removed too little shows the needed share rounded up
+  (`needs 26%` for a bar of 25.4%), so the two figures never read the same.
+- A restored session model's check is dropped with the state it came from
+  on a resume or `/clear`.
 - **A session model restored from a snapshot is checked against the
   engine's** on the next turn: a resume that did not name the model, or a
   second process on another one, no longer holds to the old model's

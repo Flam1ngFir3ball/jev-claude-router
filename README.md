@@ -223,7 +223,10 @@ skips Jev, runs at medium effort and shows `your pick`. The phrase has to be
 said to the model: at the start of a sentence or clause, or after "please",
 "just", "let's", "can you" and the like. Talk about a tier is not a route:
 "search for opus docs", "should I use opus or sonnet?", "make production use
-sonnet by default" and "I told you not to use haiku" are ordinary prompts. A negation cancels the next route ("don't use haiku, use
+sonnet by default" and "I told you not to use haiku" are ordinary prompts, and
+so is a route under a condition ("if it runs long, switch to opus",
+"otherwise use opus"), or a tier naming something else ("use sonnet pricing");
+"if you can, use opus" is still a request. A negation cancels the next route ("don't use haiku, use
 opus" goes to opus). Pasted content, code, quoted lines, text in double
 quotes (a short single-quoted phrase too) and background-task notifications are not read for this, so a pasted document that says "use
 opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier turned off

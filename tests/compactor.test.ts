@@ -273,4 +273,9 @@ describe("shortOf rounds down without float error (2026-09-29)", async () => {
   test("0.29 is 29%", () => {
     assert.equal(shortOf(0.29, 0.3), "only 29% removed, needs 30%");
   });
+  test("a bar between whole percents is shown rounded up", () => {
+    assert.equal(shortOf(0.252, 0.254), "only 25% removed, needs 26%");
+    assert.equal(shortOf(0.002, 0.004), "only 0% removed, needs 1%");
+    assert.equal(shortOf(0.25 - 1e-12, 0.25), "only 24% removed, needs 25%");
+  });
 });

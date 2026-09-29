@@ -152,7 +152,10 @@ export function fitsWindow(tier: Tier, contextTokens: number): boolean {
 
 /** `claude-opus-5-5[1m]` and `claude-opus-5-5` are one model: the suffix is the engine's. */
 export function baseModel(model: string): string {
-  return model.replace(/\[[^\]]*\]$/, "");
+  // By hand, not `/\[[^\]]*\]$/`, which rescans to the end from every `[`.
+  if (!model.endsWith("]")) return model;
+  const open = model.indexOf("[", model.lastIndexOf("]", model.length - 2) + 1);
+  return open === -1 || open === model.length - 1 ? model : model.slice(0, open);
 }
 
 /** The model a spelling names: without `[1m]` or a date suffix, so both read as one. */

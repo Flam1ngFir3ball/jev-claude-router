@@ -80,7 +80,9 @@ export function shortError(detail: string): string {
   // on a long run of spaces with no newline in it.
   const bare = detail
     .slice(0, 2000)
-    .split("\n")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0e-\x1f\x7f-\x84\x86-\x9f]/g, "")
+    .split(/[\n\r\v\f\u0085\u2028\u2029]/)
     .map((t) => t.trim())
     .filter((t) => t !== "")
     .join(" ")

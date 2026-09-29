@@ -173,3 +173,22 @@ describe("round-4 audit (2026-09-29)", () => {
     assert.equal(priceOfModel("claude-opus-4@20250514")?.input, 15);
   });
 });
+
+describe("baseModel: linear, same answers (2026-09-29)", () => {
+  test("strips the engine's suffix as before", async () => {
+    const { baseModel } = await import("../hooks/pricing.ts");
+    assert.equal(baseModel("claude-opus-5-5[1m]"), "claude-opus-5-5");
+    assert.equal(baseModel("claude-opus-5-5"), "claude-opus-5-5");
+    assert.equal(baseModel("a[b[c]"), "a");
+    assert.equal(baseModel("a]b[c]"), "a]b");
+    assert.equal(baseModel("x[]"), "x");
+    assert.equal(baseModel("x]"), "x]");
+  });
+  test("a run of brackets is quick", async () => {
+    const { baseModel } = await import("../hooks/pricing.ts");
+    const t = performance.now();
+    baseModel("[".repeat(100_000));
+    baseModel(`${"[".repeat(100_000)}]`);
+    assert.ok(performance.now() - t < 100);
+  });
+});
