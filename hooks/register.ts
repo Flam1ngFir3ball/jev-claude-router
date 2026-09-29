@@ -254,6 +254,16 @@ const PRUNE_TAIL_REUSED = 6;
  * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
  * Null for an id off the ladder or not a string.
  */
+/**
+ * Whether a model the engine names is what `running` already runs: the
+ * same model, or a tier's own alias (`opus`) for a decision on that tier,
+ * whose version the alias does not say and so cannot contradict.
+ */
+function speaksFor(model: string, running: Decision): boolean {
+  const alias = TIER_ALIAS.exec(model);
+  return sameModelAs(running.model, model) || (alias !== null && alias[1]!.toLowerCase() === running.tier);
+}
+
 /** Marks the end of a step's stream, after its last chunk. */
 const STEP_END = Symbol("step-end");
 
@@ -1016,6 +1026,9 @@ export function register(on: On) {
       return;
     }
     liveModelDue = { model: s.sessionModel ?? null };
+    // A placeholder made before the restore (a resume event first) is gone,
+    // and its guess with it: the snapshot says what runs.
+    aliasGuess = null;
     attempts.splice(0, attempts.length, ...s.attempts.slice(0, HISTORY_LIMIT));
     reply = s.reply;
     replyAgents = new Set(s.replyAgents);
@@ -1048,7 +1061,7 @@ export function register(on: On) {
     // A resume that reported another model than the snapshot's: the session
     // is on that one now, and what was warm under the snapshot's is not.
     if (resumedOn !== null) {
-      if (running !== null && !sameModelAs(running.model, resumedOn)) {
+      if (running !== null && !speaksFor(resumedOn, running)) {
         running = placeholderOf(resumedOn);
         unconfirmed = null;
       }
@@ -1251,7 +1264,7 @@ export function register(on: On) {
       else {
         // Restored already (session.start in a fresh process came first):
         // the reported model is applied here, over what the snapshot held.
-        if (running !== null && !sameModelAs(running.model, e.model)) {
+        if (running !== null && !speaksFor(e.model, running)) {
           running = placeholderOf(e.model);
           unconfirmed = null;
         }
@@ -1699,9 +1712,10 @@ export function register(on: On) {
         // Only for a model it can read and name: an alias (`opus`,
         // `opusplan`) or one off the ladder says nothing about the cache,
         // and dropping the placeholder for it would lose a warm hold.
-        const now = placeholderOf(live);
+        // Checked without making the placeholder: one made records an
+        // alias's guess, which must not stand over a routed decision kept.
         if (
-          now !== null &&
+          sessionDecision(live) !== null &&
           running !== null &&
           running.effortConfidence === undefined &&
           running.forced === undefined &&
@@ -1709,7 +1723,7 @@ export function register(on: On) {
           running.jevFailed === undefined &&
           !sameModelAs(running.model, live)
         )
-          running = now;
+          running = placeholderOf(live);
         sessionModel = live;
       }
     }

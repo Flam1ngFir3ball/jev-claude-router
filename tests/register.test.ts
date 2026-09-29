@@ -5265,6 +5265,33 @@ describe("register: a tier's own alias stands for its model (2026-09-29)", () =>
     const status = (await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "" }, async (e: unknown) => e)) as { text: string };
     assert.doesNotMatch(status.text, /asked/);
   });
+  for (const mode of ["reload", "resume"] as const)
+    test(`a warm Opus Jev routed stays after a ${mode} of an \`opus\` session`, async () => {
+      const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };
+      const store = new Map<string, unknown>();
+      const mk = () => {
+        const k = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined }, { store, id: "sess-RR" });
+        k.setContext(800);
+        k.setSessionModel("opus");
+        return k;
+      };
+      const a = mk();
+      await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+      a.setTier("sonnet", 0.95, 2);
+      await stepOn(a, "rr1", "implement it", "claude-opus-4-1");
+      a.setTier("opus", 0.9, 2);
+      await stepOn(a, "rr2", "plan it", "claude-opus-4-1");
+      g.__jevRouterNewest = undefined;
+      g.__jevRouterLive = undefined;
+      await new Promise((r) => setTimeout(r, 5));
+      const b = mk();
+      if (mode === "resume")
+        await b.hooks.get("classic.SessionStart")!(b.$, { source: "resume", model: "opus", context_tokens: 800 }, async (e: unknown) => e);
+      await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+      b.setTier("opus", 0.9, 2);
+      const t3 = await stepOn(b, "rr3", "and the next part", "claude-opus-4-1");
+      assert.equal(t3.sent, "claude-opus-5-5", "the routed Opus is warm; the engine's older one is not");
+    });
   test("after a resume naming `opus`, a held turn goes out as the engine's own Opus", async () => {
     // A process started by the resume itself: no session.start first.
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
