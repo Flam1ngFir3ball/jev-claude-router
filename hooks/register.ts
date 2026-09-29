@@ -1183,8 +1183,18 @@ export function register(on: On) {
     // after this puts back is checked against it.
     // Only when a restore is still to come (a resume into another session),
     // or it would linger for a later one.
-    if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string" && snapshotKey === undefined && restoreOnKey)
-      resumedOn = e.model;
+    if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string") {
+      if (snapshotKey === undefined && restoreOnKey) resumedOn = e.model;
+      else {
+        // Restored already (session.start in a fresh process came first):
+        // the reported model is applied here, over what the snapshot held.
+        if (running !== null && baseModel(running.model) !== baseModel(e.model)) {
+          running = sessionDecision(e.model);
+          unconfirmed = null;
+        }
+        sessionModel = e.model;
+      }
+    }
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&
@@ -2218,7 +2228,10 @@ export function register(on: On) {
   on("ui.render", { component: "SessionMode" }, async ($, e, next) => {
     if (inert) return next(e);
     const last = attempts.find((a) => a.kind !== "agent");
-    const modes = withLabel(e.props.modes, labelOf(latest, enabled, last?.kind, last?.continued));
+    // The last turn's own outcome: one that went unrouted says so, rather
+    // than showing the route of the turn before it.
+    const label = enabled && last !== undefined && "skipped" in last ? "jev: not routed" : labelOf(latest, enabled, last?.kind, last?.continued);
+    const modes = withLabel(e.props.modes, label);
     return next({ ...e, props: { ...e.props, modes } });
   });
 }

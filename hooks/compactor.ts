@@ -39,7 +39,7 @@ export const MIN_REDUCTION = 0.25;
 export const DEFAULT_COMPACT_TIMEOUT_MS = 8_000;
 const MAX_COMPACT_TIMEOUT_MS = 8_000;
 
-/** `JEV_ROUTER_COMPACT`: on unless `0`, `false`, `no` or `off`. */
+/** `JEV_ROUTER_COMPACT`: on unless `0`, `false`, `no`, `off` or `none`. */
 export function compactOnOf(raw: string | undefined): boolean {
   return !flagOff(raw);
 }
@@ -77,7 +77,8 @@ export function minReductionOf(raw: string | undefined): number {
 /** Why a pruning that removed too little does not stand; undefined when it does. */
 export function shortOf(reduction: number, minReduction: number): string | undefined {
   return reduction < minReduction
-    ? `only ${Math.round(reduction * 100)}% removed, needs ${Math.round(minReduction * 100)}%`
+    ? // Rounded down, so it never reads "only 25% removed, needs 25%".
+      `only ${Math.floor(reduction * 100)}% removed, needs ${Math.round(minReduction * 100)}%`
     : undefined;
 }
 

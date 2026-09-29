@@ -92,7 +92,7 @@ Ready and merged, held back from a version bump until approved:
   "- use opus", "feel free to use opus"). Prose that only mentions a tier
   ("should I use opus or sonnet?", "they want to use opus", "the job will
   switch to haiku", "I told you not to use haiku", a `// use opus` comment)
-  is an ordinary prompt. Held to a labelled set of 234 prompts in the tests;
+  is an ordinary prompt. Held to a labelled set of 241 prompts in the tests;
   typos and shorthand ("plz", "can u"), `@claude`, and list markers
   (`+`, `- [ ]`, `(1)`, `a)`) are read as requests, as are "switch over
   to", "switch the model to" and a backticked tier (``use `opus` ``). A
@@ -236,6 +236,15 @@ Ready and merged, held back from a version bump until approved:
   resume's reported model is not undone by a cut-short switch the resumed
   snapshot still held, and `seen:` records left behind by an earlier
   version are swept once old.
+- **Two task notifications in one turn** send Jev both summaries and
+  neither result (the second's result used to ride along).
+- **A resume's reported model applies in a fresh process** too, where the
+  snapshot was restored before the resume event arrived.
+- **The footer says `jev: not routed`** for a turn that went unrouted,
+  instead of the route of the turn before it.
+- A copied route line with blank lines before its `---` rule is dropped
+  with the rule when it streams, as when it arrives whole; the compaction
+  fallback never reads "only 25% removed, needs 25%".
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 

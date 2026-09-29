@@ -2225,7 +2225,8 @@ describe("register: a session that was already running", () => {
     const t = await turn(hooks, $, "s2");
     assert.equal(t.sent.model, "claude-opus-5");
     assert.match(t.text, /kept claude-opus-5: claude-opus-5-5 costs \$/);
-    assert.match((await run(hooks, $, "")).text, /session\s+claude-opus-5-5, running on opus/);
+    // The resume's model is the session's now, whatever was read before it.
+    assert.match((await run(hooks, $, "")).text, /session\s+claude-opus-5, still on it/);
   });
 
   test("an expired cache on resume is nothing to protect", async () => {
@@ -4486,5 +4487,40 @@ describe("register: round-7 findings (2026-09-29)", () => {
     await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "w1" }, async (e: unknown) => e);
     await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "w1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
     assert.equal(shared.store.has("seen:session:GONE"), false);
+  });
+});
+
+describe("register: round-7 full-read findings (2026-09-29)", () => {
+  test("in a fresh process that restored first, a resume's reported model still applies", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-FR" };
+    const a = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    a.setTier("fable", 0.95, 3);
+    await a.hooks.get("turn.start")!(a.$, { text: "plan", turnId: "f1" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "f1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    await a.hooks.get("session.end")!(a.$, {}, async (e: unknown) => e);
+    (globalThis as { __jevRouterLive?: unknown }).__jevRouterLive = undefined;
+    const b = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    b.setSessionModel("claude-sonnet-5-5");
+    b.setContext(30_000);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    await b.hooks.get("classic.SessionStart")!(b.$, { source: "resume", model: "claude-sonnet-5-5", context_tokens: 30_000 }, async (e: unknown) => e);
+    b.setTier("haiku", 0.4, 1);
+    let sent = "";
+    await b.hooks.get("turn.start")!(b.$, { text: "next", turnId: "f2" }, async (e: unknown) => e);
+    await collect(b.hooks.get("turn.step")!(b.$, { turnId: "f2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-sonnet-5-5");
+  });
+  test("the footer says a turn went unrouted instead of showing the route before it", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "g1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "g1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    // /model leaves nothing running to stay on, so a Jev failure is unrouted.
+    await kit.hooks.get("classic.PostModelSwitch")!(kit.$, { from_model: "claude-opus-5-5", to_model: "claude-sonnet-5-5", source: "user" }, async (e: unknown) => e);
+    kit.fail();
+    await kit.hooks.get("turn.start")!(kit.$, { text: "y", turnId: "g2" }, async (e: unknown) => e);
+    const out = await kit.hooks.get('ui.render:{"component":"SessionMode"}')!(kit.$, { props: { modes: [] } }, async (e: { props: { modes: string[] } }) => e);
+    assert.deepEqual(out.props.modes, ["jev: not routed"]);
   });
 });

@@ -1412,3 +1412,30 @@ describe("plain keeps what is harmless in a fence (2026-09-29)", () => {
     assert.equal(plain("a`b\nc"), "ab c");
   });
 });
+
+describe("round-7 full-read findings (2026-09-29)", () => {
+  test("two notifications in one text give both summaries and neither result", () => {
+    const text =
+      '<task-notification><task-id>a</task-id><summary>Agent "A" completed</summary><result>SECRET-A</result></task-notification>' +
+      '<task-notification><task-id>b</task-id><summary>Agent "B" completed</summary><result>SECRET-B api_key=sk-123</result></task-notification>';
+    const state = notificationStateOf(text);
+    assert.doesNotMatch(state, /SECRET|sk-123/);
+    assert.match(state, /Agent "A" completed/);
+    assert.match(state, /Agent "B" completed/);
+  });
+  test("a copied line with blank lines before its rule is dropped with the rule, however it streams", () => {
+    const text = "> ✳️ opus · high · Jev 91% · 12ms\n\n\n---\n\nHello";
+    assert.equal(withoutImitations(text), "Hello");
+    for (const cuts of [[33, 36], [34], [35, 37], [36]]) {
+      const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+      let out = "";
+      let from = 0;
+      for (const at of [...cuts, text.length]) {
+        for (const c of f.push({ kind: "text", index: 0, text: text.slice(from, at) })) out += c.text;
+        from = at;
+      }
+      for (const c of f.end()) out += c.text;
+      assert.equal(out, "Hello", JSON.stringify(cuts));
+    }
+  });
+});

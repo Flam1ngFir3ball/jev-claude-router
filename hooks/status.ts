@@ -254,9 +254,13 @@ export function notificationOf(text: string): string | null {
  * whatever the agent read.
  */
 export function notificationStateOf(text: string): string {
-  const summary = notificationOf(text) ?? "";
-  const after = text.split("</task-notification>").slice(1).join(" ").trim();
-  return [summary, after].filter((p) => p !== "").join("\n");
+  // Every notification in the text gives its summary alone; what is left
+  // once they are all taken out is the text around them. A second
+  // notification's result must not ride along after the first's end tag.
+  const blocks = text.match(/<task-notification\b[\s\S]*?(?:<\/task-notification>|$)/g) ?? [];
+  const summaries = blocks.map((b) => plain(tagOf(b, "summary") ?? `task ${tagOf(b, "task-id") ?? "?"}`));
+  const rest = text.replace(/<task-notification\b[\s\S]*?(?:<\/task-notification>|$)/g, " ").trim();
+  return [...summaries, rest].filter((p) => p !== "").join("\n");
 }
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
@@ -1367,8 +1371,9 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
           // The rule under it may still be arriving, in either shape.
           if (
             !final &&
-            (LINE_RULE.startsWith(rest) || LINE_RULE_BARE.startsWith(rest)) &&
-            rest.length < LINE_RULE.length
+            // Blank lines, then a rule arriving: any number of blank lines
+            // before it, as IMITATED_LINE takes them.
+            /^\n*(?:-{1,2}|---\n?)?$/.test(rest)
           )
             return "";
         }

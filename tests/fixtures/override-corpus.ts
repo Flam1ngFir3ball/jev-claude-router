@@ -1,6 +1,6 @@
 /**
  * Labelled prompts for parseOverride: a tier the person asked to run on, or
- * null for prose that only mentions one. Gathered from three audits; the
+ * null for prose that only mentions one. Gathered over several audits; the
  * tests hold the parser to a minimum accuracy on it rather than to every
  * case, since phrasing is open-ended and a regex cannot get all of it.
  */

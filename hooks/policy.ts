@@ -963,7 +963,7 @@ export function upgradeMaxOf(raw: string | undefined): number | null {
 
 /**
  * `JEV_ROUTER_PRICE_CHECK`: the downgrade and upgrade price checks, on
- * unless `0`, `false`, `no` or `off`. Separate from sticky, which is the
+ * unless `0`, `false`, `no`, `off` or `none`. Separate from sticky, which is the
  * confidence bar alone.
  */
 export function priceCheckOf(raw: string | undefined): boolean {

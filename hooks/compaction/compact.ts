@@ -145,11 +145,10 @@ async function askBatch(
  * this is a true `map`, not a fire-and-forget pool). Useful for controlling
  * resource use when scoring large transcript fragments in many batches.
  *
- * If `signal` aborts, no new work starts and the promise rejects. Aborted
- * while waiting for a free slot, it first waits for every started call to
- * settle; aborted before the next item starts, it rejects straight away.
- * Either way no call becomes an unhandled rejection, since each already has
- * handlers attached; calls already sent to the network complete regardless, since aborting the
+ * If `signal` aborts, no new work starts and the promise rejects straight
+ * away, with calls already started left to settle on their own. None of
+ * them becomes an unhandled rejection, since each already has handlers
+ * attached; calls already sent to the network complete regardless, since aborting the
  * signal only cancels a fetch that itself honours it (see askJev's note —
  * the engine's own fetch today does not).
  */

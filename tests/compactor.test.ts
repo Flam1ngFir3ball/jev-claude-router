@@ -260,3 +260,10 @@ describe("minReductionOf takes plain decimals only (2026-09-29)", () => {
     assert.equal(minReductionOf("30"), 0.3);
   });
 });
+
+describe("shortOf never contradicts itself (2026-09-29)", async () => {
+  const { shortOf } = await import("../hooks/compactor.ts");
+  test("just under the bar reads under it", () => {
+    assert.equal(shortOf(0.2496, 0.25), "only 24% removed, needs 25%");
+  });
+});
