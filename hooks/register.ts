@@ -10,6 +10,7 @@ import {
 import { labelOf, withLabel } from "./label.ts";
 import {
   TIER_ALIAS,
+  MODEL_ID,
   asAsked,
   capTo,
   ceilingAt,
@@ -2045,6 +2046,32 @@ export function register(on: On) {
     // response has come back, later steps of the same turn are deep in the
     // conversation and get what Jev asked.
     if (decision !== undefined && e.agentId === undefined && answered) decision = asAsked(decision);
+    // A decision that holds to a version guessed from a tier's alias learns
+    // the version at the turn's first step: the engine's own model of that
+    // tier. The turn's decision, and what is running, take it, so every
+    // later step, the history and the next turn use the model that runs.
+    if (
+      decision !== undefined &&
+      e.agentId === undefined &&
+      aliasGuess !== null &&
+      decision.model === aliasGuess &&
+      typeof e.model === "string" &&
+      MODEL_ID.test(e.model) &&
+      !sameModelAs(decision.model, e.model) &&
+      tierOfModel(e.model) === decision.tier
+    ) {
+      const guessed = aliasGuess;
+      const actual = e.model;
+      const resolve = (d: Decision): Decision => (d.model === guessed ? { ...d, model: actual } : d);
+      decision = resolve(decision);
+      const own = decisions.get(e.turnId);
+      if (own !== undefined) decisions.set(e.turnId, resolve(own));
+      if (attempt && "decision" in attempt) attempt.decision = resolve(attempt.decision);
+      if (running !== null) running = resolve(running);
+      if (continueFrom !== null) continueFrom = resolve(continueFrom);
+      if (latest !== null) latest = resolve(latest);
+      aliasGuess = null;
+    }
     const step = decision
       ? next({
           ...e,
@@ -2052,16 +2079,7 @@ export function register(on: On) {
           // turn is not respelled to `[1m]` or a provider id it did not use.
           // And its own model of the tier when the decision holds to a
           // version guessed from an alias.
-          model:
-            typeof e.model === "string" &&
-            (sameModelAs(decision.model, e.model) ||
-              // Not once the session names a model of its own.
-              (aliasGuess !== null &&
-                (sessionModel === null || TIER_ALIAS.test(sessionModel)) &&
-                decision.model === aliasGuess &&
-                tierOfModel(e.model) === decision.tier))
-              ? e.model
-              : decision.model,
+          model: typeof e.model === "string" && sameModelAs(decision.model, e.model) ? e.model : decision.model,
           effort: decision.effort,
         })
       : next(e);

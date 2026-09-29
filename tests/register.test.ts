@@ -5243,6 +5243,28 @@ describe("register: a tier's own alias stands for its model (2026-09-29)", () =>
     const t = await stepOn(kit, "oo1", "implement it", "claude-opus-4-1");
     assert.equal(t.sent, "claude-opus-4-1", "kept is kept: no cold switch to another Opus");
   });
+  test("every step of a turn held on `opus` goes out as the engine's own Opus, and the history says so", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
+    kit.setSessionModel("opus");
+    kit.setContext(120_000);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("sonnet", 0.6, 2);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "implement it", turnId: "ms1" }, async (e: unknown) => e);
+    const sent: string[] = [];
+    for (let i = 0; i < 3; i++)
+      await collect(
+        kit.hooks.get("turn.step")!(kit.$, { turnId: "ms1", index: i, model: "claude-opus-4-1", effort: "medium" }, (e: { model: string }) => {
+          sent.push(e.model);
+          return (async function* () {
+            yield { kind: "text", index: 0, text: "ok", ref: i + 1 };
+            yield { kind: "stop", stopReason: i < 2 ? "tool_use" : "end_turn", usage: { model: e.model, input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 120_000, cache_creation_input_tokens: 0 } };
+          })();
+        }),
+      );
+    assert.deepEqual(sent, ["claude-opus-4-1", "claude-opus-4-1", "claude-opus-4-1"]);
+    const status = (await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "" }, async (e: unknown) => e)) as { text: string };
+    assert.doesNotMatch(status.text, /asked/);
+  });
   test("after a resume naming `opus`, a held turn goes out as the engine's own Opus", async () => {
     // A process started by the resume itself: no session.start first.
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });

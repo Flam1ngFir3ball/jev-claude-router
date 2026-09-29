@@ -292,8 +292,9 @@ Ready and merged, held back from a version bump until approved:
   outside plan mode; `default`) makes no placeholder, rather than holding
   to "opus" with a cold switch priced as a stay. The session model is read
   afresh when a placeholder is made. An alias names the tier, not the
-  version: a turn held on it goes out as the engine's own model of that
-  tier (an older Opus behind `opus` included), so "kept" is a stay.
+  version: a turn held on it takes the engine's own model of that tier at
+  its first step (an older Opus behind `opus` included), for every step
+  after and the turns that follow, so "kept" is a stay.
 - A provider's spelling of the session model (`…@date`, `us.anthropic.…`)
   is not priced as a switch to itself, marked "⚠ asked" in the summary, or
   shown as "running on" another tier in `/jev`.
