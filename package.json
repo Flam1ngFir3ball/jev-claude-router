@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --experimental-strip-types --test 'tests/*.test.ts'",
     "typecheck": "tsc -p .",
-    "types": "mkdir -p .claude/types && curl -sSL -o .claude/types/claude-code.d.ts https://raw.githubusercontent.com/anthropics/claude-code/56f36532530f88b572854538d685fcf781141e8c/mods/types/claude-code.d.ts",
+    "setup": "npm run types && git config core.hooksPath scripts/githooks",
+    "types": "mkdir -p .claude/types && curl -fsSL -o .claude/types/claude-code.d.ts https://raw.githubusercontent.com/anthropics/claude-code/56f36532530f88b572854538d685fcf781141e8c/mods/types/claude-code.d.ts",
     "validate": "claude plugin validate .",
     "check": "npm run typecheck && npm test && npm run validate",
     "check-jev": "node --experimental-strip-types scripts/check-jev.mjs",

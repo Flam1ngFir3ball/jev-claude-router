@@ -133,8 +133,10 @@ export function reasonsOf(attempt: Attempt): string[] {
             (d.heldBar !== undefined ? `, needs ${pct(d.heldBar)}` : ""),
     );
   }
+  // Kept, unless the tier it was on had outgrown its window: then the
+  // step-up below says where it went.
   if (d.jevFailed !== undefined)
-    out.push(`kept ${d.tier}: Jev ${d.jevFailed}`);
+    out.push(d.outgrew !== undefined ? `Jev ${d.jevFailed}` : `kept ${d.tier}: Jev ${d.jevFailed}`);
   if (d.outgrew !== undefined)
     out.push(
       `${d.outgrew} too long, moved up only to ${d.tier}` +

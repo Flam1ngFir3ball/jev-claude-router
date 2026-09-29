@@ -175,3 +175,64 @@ describe("minReductionOf: a percentage sign means a percentage (2026-09-28)", ()
     assert.equal(minReductionOf("%"), 0.25);
   });
 });
+
+describe("pruneTranscript: what /jev counts and what the engine gets back (2026-09-29)", () => {
+  // Every call kept, every result marked for cutting.
+  const cutResults = async (_url: string, init?: { body?: string }) => {
+    const questions = JSON.parse(init?.body ?? "{}").questions as Record<string, unknown>;
+    const answers: Record<string, { noul: number }> = {};
+    for (const name of Object.keys(questions)) answers[name] = { noul: name.startsWith("call_") ? 0.9 : 0.1 };
+    return { ok: true, status: 200, headers: {}, text: JSON.stringify({ answers }) };
+  };
+  const mixed = () => {
+    const t = transcript(10);
+    for (const m of t) for (const r of m.toolResults ?? []) if (Number(r.tool_use_id.slice(1)) % 2 === 0) r.text = "short";
+    return t;
+  };
+  test("a short result marked for cutting, and so left whole, is not counted as cut", async () => {
+    const input = mixed();
+    const r = await pruneTranscript({ messages: input, provider: typesafe, fetch: cutResults, sleep: never, timeoutMs: 8000, minReduction: 0, options: { preserveRecentMessages: 2 } });
+    assert.ok(r.ok);
+    if (!r.ok) return;
+    const inputResults = new Set(input.flatMap((m) => m.toolResults ?? []));
+    const changed = r.messages.flatMap((m) => m.toolResults ?? []).filter((x) => !inputResults.has(x)).length;
+    assert.equal(r.compaction.calls.cut, changed);
+    assert.ok(changed < 10, `only the long ones changed: ${changed}`);
+  });
+  test("a rebuilt result keeps isError: false, which the engine's type requires", async () => {
+    const r = await pruneTranscript({ messages: transcript(10), provider: typesafe, fetch: cutResults, sleep: never, timeoutMs: 8000, minReduction: 0, options: { preserveRecentMessages: 2 } });
+    assert.ok(r.ok);
+    if (!r.ok) return;
+    const rebuilt = r.messages.filter((m) => m.handle === undefined).flatMap((m) => m.toolResults ?? []);
+    assert.ok(rebuilt.length > 0);
+    for (const x of rebuilt) assert.equal(x.isError, false);
+  });
+  test("the timeout's timer is ended once the scoring is in", async () => {
+    let ended = false;
+    const sleep = (_ms: number, o?: { signal?: AbortSignal }) =>
+      new Promise<void>((_, reject) => o?.signal?.addEventListener("abort", () => ((ended = true), reject(new Error("aborted")))));
+    await pruneTranscript({ messages: transcript(3), provider: typesafe, fetch: jev(["t1"]), sleep, timeoutMs: 8000, minReduction: 0 });
+    assert.equal(ended, true);
+  });
+  test("a provider's error text is kept as plain words", async () => {
+    const r = await pruneTranscript({
+      messages: transcript(3),
+      provider: typesafe,
+      fetch: async () => ({ ok: false, status: 422, headers: {}, text: "**bad** [click](https://x.example) <b>x</b>" }),
+      sleep: never,
+      timeoutMs: 8000,
+      minReduction: 0,
+      options: { preserveRecentMessages: 0 },
+    });
+    assert.equal(r.ok, false);
+    assert.doesNotMatch(r.compaction.fallback ?? "", /[*\[\]()<>]/);
+  });
+});
+
+describe("compactTimeoutOf: seconds written by mistake (2026-09-29)", () => {
+  test("below 500ms, or not a plain number, is the default", () => {
+    assert.equal(compactTimeoutOf("8"), DEFAULT_COMPACT_TIMEOUT_MS);
+    assert.equal(compactTimeoutOf("0x1F40"), DEFAULT_COMPACT_TIMEOUT_MS);
+    assert.equal(compactTimeoutOf("2000"), 2000);
+  });
+});

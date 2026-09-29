@@ -882,3 +882,20 @@ describe("parseOverride: talk about a tier is not a request to run on it (2026-0
       assert.equal(parseOverride(text), tier, text);
   });
 });
+
+describe("env parsers (2026-09-29)", () => {
+  test("JEV_ROUTER_EXCLUDE takes commas, semicolons or spaces", () => {
+    assert.deepEqual([...excludedTiers("haiku;sonnet")].sort(), ["haiku", "sonnet"]);
+    assert.deepEqual([...excludedTiers("haiku sonnet")].sort(), ["haiku", "sonnet"]);
+  });
+  test("JEV_ROUTER_UPGRADE_MAX refuses negatives and hex", () => {
+    assert.equal(upgradeMaxOf("-1"), UPGRADE_MAX_USD);
+    assert.equal(upgradeMaxOf("0x10"), UPGRADE_MAX_USD);
+    assert.equal(upgradeMaxOf("$2.5"), 2.5);
+    assert.equal(upgradeMaxOf("off"), null);
+  });
+  test("JEV_ROUTER_STICKY_CONFIDENCE: 60.5 is a percentage, 1.5 is refused", () => {
+    assert.equal(thresholdOf("60.5"), 0.605);
+    assert.equal(thresholdOf("1.5"), DEFAULT_STICKY_CONFIDENCE);
+  });
+});

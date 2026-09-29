@@ -54,7 +54,13 @@ const DEFAULTS = [
 ]
 
 const prompts = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULTS
-const sleep = ms => new Promise(r => setTimeout(r, ms))
+// Honours askJev's signal, so the timer ends with the call instead of
+// holding the process open for the whole timeout.
+const sleep = (ms, { signal } = {}) =>
+  new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms)
+    signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')) })
+  })
 
 console.log('  ms  tier    effort  conf  prompt')
 console.log('  ──  ──────  ──────  ────  ──────')

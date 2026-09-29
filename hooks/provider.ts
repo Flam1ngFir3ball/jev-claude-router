@@ -119,7 +119,15 @@ export function providerOf(raw: ProviderEnv): ProviderResult {
     TYPESAFE_API_KEY: keyOf(raw.TYPESAFE_API_KEY),
     AI_GATEWAY_API_KEY: keyOf(raw.AI_GATEWAY_API_KEY),
   };
-  const forced = (env.JEV_ROUTER_PROVIDER ?? "").toLowerCase().trim();
+  const named = (env.JEV_ROUTER_PROVIDER ?? "").toLowerCase().trim();
+  // The gateway's other names are read as the gateway; anything else
+  // unknown falls back to choosing by the keys set, as before.
+  const forced =
+    named === "vercel" || named === "ai-gateway" || named === "ai_gateway"
+      ? "gateway"
+      : named === "direct"
+        ? "typesafe"
+        : named;
 
   if (forced === "typesafe") {
     if (!env.TYPESAFE_API_KEY) {

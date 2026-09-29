@@ -226,3 +226,13 @@ describe("audit regressions (2026-09-28)", () => {
     assert.deepStrictEqual(typesafeBaseOf("https://proxy.typesafe.ai/jev", undefined), { ok: true, base: "https://proxy.typesafe.ai/jev" });
   });
 });
+
+describe("JEV_ROUTER_PROVIDER's other names (2026-09-29)", () => {
+  it("vercel means the gateway, direct means TypeSafe", () => {
+    const env = { TYPESAFE_API_KEY: "ts", AI_GATEWAY_API_KEY: "gw", TYPESAFE_BASE_URL: undefined };
+    const v = providerOf({ ...env, JEV_ROUTER_PROVIDER: "vercel" });
+    assert.ok(v.ok && v.name === "gateway");
+    const d = providerOf({ ...env, JEV_ROUTER_PROVIDER: "direct" });
+    assert.ok(d.ok && d.name === "typesafe");
+  });
+});

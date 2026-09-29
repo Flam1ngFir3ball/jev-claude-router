@@ -89,7 +89,7 @@ type Engine = {
   http: {
     fetch: (url: string, init?: HttpInitLike) => Promise<HttpResponseLike>;
   };
-  clock: { sleep: (ms: number) => Promise<unknown> };
+  clock: { sleep: (ms: number, options?: { signal?: AbortSignal }) => Promise<unknown> };
 };
 
 /** Whether two ceilings cap every tier the same. */
@@ -303,7 +303,7 @@ async function classify(
 ) {
   return askJev({
     fetch: (url, init) => $.http.fetch(url, init),
-    sleep: (ms) => $.clock.sleep(ms),
+    sleep: (ms, options) => $.clock.sleep(ms, options),
     provider: settings.provider,
     state: text,
     offered,
@@ -1056,7 +1056,7 @@ export function register(on: On) {
         messages: transcript,
         provider: settings.provider,
         fetch: (url, init) => $.http.fetch(url, init),
-        sleep: (ms) => $.clock.sleep(ms),
+        sleep: (ms, options) => $.clock.sleep(ms, options),
         timeoutMs: settings.compactTimeoutMs,
         minReduction: settings.compactMinReduction,
       });
@@ -1926,7 +1926,7 @@ export function register(on: On) {
   // carries on surfaces that draw no footer, which is most of them.
   on("ui.render", { component: "SessionMode" }, async ($, e, next) => {
     if (inert) return next(e);
-    const modes = withLabel(e.props.modes, labelOf(latest, enabled));
+    const modes = withLabel(e.props.modes, labelOf(latest, enabled, attempts.find((a) => a.kind !== "agent")?.kind));
     return next({ ...e, props: { ...e.props, modes } });
   });
 }

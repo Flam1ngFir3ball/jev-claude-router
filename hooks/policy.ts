@@ -164,8 +164,9 @@ export const EFFORT_CRITERIA: readonly string[] = [
 
 /** Tiers dropped from the question entirely, lowercase, from the env var. */
 export function excludedTiers(raw: string | undefined): Set<Tier> {
+  // Commas, semicolons or spaces between the names.
   const names = (raw ?? "")
-    .split(",")
+    .split(/[\s,;]+/)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   return new Set(
@@ -357,9 +358,9 @@ export function thresholdOf(raw: string | undefined): number {
  * A confidence bar as a share strictly between 0 and 1, or null. `0.6`,
  * `60` and `60%` are the same bar; anything written with `%` is a
  * percentage, so `0.5%` is half a percent, not half. Without `%`, a number
- * past 1 must be a whole percentage: `1.5` is refused rather than read as
- * 1.5%, a bar so low it is as good as none. Plain decimals only (`Number`
- * alone reads `0x40` as 64).
+ * past 1 is a percentage, but one between 1 and 10 must be whole: `1.5` is
+ * refused rather than read as 1.5%, a bar so low it is as good as none.
+ * Plain decimals only (`Number` alone reads `0x40` as 64).
  */
 export function confidenceShareOf(raw: string | undefined): number | null {
   const trimmed = (raw ?? "").trim();
@@ -367,7 +368,8 @@ export function confidenceShareOf(raw: string | undefined): number | null {
   const v = percent ? trimmed.slice(0, -1).trim() : trimmed;
   if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return null;
   const n = Number(v);
-  if (!percent && n > 1 && !Number.isInteger(n)) return null;
+  // `1.5` could be 1.5% or a slip for 0.15; `60.5` can only be a percentage.
+  if (!percent && n > 1 && n < 10 && !Number.isInteger(n)) return null;
   const ratio = percent || n > 1 ? n / 100 : n;
   return ratio > 0 && ratio < 1 ? ratio : null;
 }
@@ -914,8 +916,9 @@ export const UPGRADE_MAX_USD = 1;
 export function upgradeMaxOf(raw: string | undefined): number | null {
   const v = (raw ?? "").trim().toLowerCase().replace(/^\$/, "");
   if (v === "off" || v === "none") return null;
-  const n = Number(v);
-  return v !== "" && Number.isFinite(n) && n >= 0 ? n : UPGRADE_MAX_USD;
+  // Plain dollars only: `-1` or `0x10` is a mistake, not a limit.
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return UPGRADE_MAX_USD;
+  return Number(v);
 }
 
 /**

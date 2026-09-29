@@ -369,3 +369,32 @@ describe("shortError flattens newlines (2026-09-29)", () => {
     assert.doesNotMatch(shortError("plugin: $.http.fetch(https://x) failed: getaddrinfo ENOTFOUND\n# boom"), /\n/);
   });
 });
+
+describe("audit regressions (2026-09-29)", () => {
+  const d = { tier: "fable" as const, model: "claude-fable-5-1", effort: "high" as const, confidence: 0.4 };
+  test("the label shows no doubt for a held turn or a continued one", () => {
+    assert.equal(labelOf({ ...d, held: "haiku" }, true), "jev: fable, high effort");
+    assert.equal(labelOf({ ...d, confidence: 0 }, true, "continue"), "jev: fable, high effort");
+    assert.equal(labelOf(d, true), "jev: fable, high effort, only 40% sure");
+  });
+  test("a cut never leaves half an emoji", async () => {
+    const { stateOf, MAX_STATE_CHARS } = await import("../hooks/jev.ts");
+    const text = `${"a".repeat(MAX_STATE_CHARS - 1)}😀 and more`;
+    assert.doesNotMatch(stateOf(text), /[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+  test("the timeout's timer is ended once the answer is in", async () => {
+    let ended = false;
+    const sleep = (_ms: number, o?: { signal?: AbortSignal }) =>
+      new Promise<void>((_, reject) => o?.signal?.addEventListener("abort", () => ((ended = true), reject(new Error("aborted")))));
+    const got = await askJev({ ...base, sleep, fetch: async () => answered({ answers: { tier: { type: "choice", choice: "opus", confidence: 0.9 } } }) });
+    assert.equal(got.ok, true);
+    assert.equal(ended, true);
+  });
+  test("a fetch that throws at once is a failure, not a rejection", async () => {
+    const got = await askJev({ ...base, fetch: () => { throw new Error("bad init"); } });
+    assert.equal(got.ok, false);
+  });
+  test("a timeout in hex is refused", () => {
+    assert.equal(timeoutOf("0x1F40"), DEFAULT_TIMEOUT_MS);
+  });
+});

@@ -1,6 +1,7 @@
 // Vendored from fast-jev-compaction (https://github.com/tamaratran/fast-jev-compaction)
 // commit e3f262a7f4d4, MIT licensed; see LICENSE-fast-jev-compaction. Imports
-// renamed to .ts; otherwise unchanged.
+// renamed to .ts. `truncate` and `abridge` no longer split a surrogate pair;
+// otherwise unchanged.
 
 import type {
   CompactionState,
@@ -41,14 +42,26 @@ export function estimateTokens(text: string): number {
   return Math.ceil(tokens);
 }
 
+// Local edit: cuts never split a surrogate pair (half an emoji is invalid
+// Unicode, which a strict JSON parser refuses).
+const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const isLow = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
 export function truncate(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
+  if (text.length <= limit) return text;
+  let n = Math.max(0, limit - 1);
+  if (n > 0 && isHigh(text.charCodeAt(n - 1))) n--;
+  return `${text.slice(0, n)}…`;
 }
 
 function abridge(text: string, head: number, tail: number): string {
   if (text.length <= head + tail + 40) return text;
-  const omitted = text.length - head - tail;
-  return `${text.slice(0, head)}\n[… ${omitted} chars omitted …]\n${text.slice(-tail)}`;
+  let h = head;
+  if (h > 0 && isHigh(text.charCodeAt(h - 1))) h--;
+  let t = text.length - tail;
+  if (isLow(text.charCodeAt(t))) t++;
+  const omitted = t - h;
+  return `${text.slice(0, h)}\n[… ${omitted} chars omitted …]\n${text.slice(t)}`;
 }
 
 export function isPinned(

@@ -36,12 +36,24 @@ export const DEFAULT_TIMEOUT_MS = 1500;
  */
 export const MAX_STATE_CHARS = 12_000;
 
+/**
+ * The first `n` UTF-16 units of `text`, one fewer when the cut would split a
+ * surrogate pair: half an emoji is not valid Unicode, and a strict JSON
+ * parser on the other end refuses the whole body.
+ */
+export function headOf(text: string, n: number): string {
+  if (n <= 0) return "";
+  if (text.length <= n) return text;
+  const last = text.charCodeAt(n - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? n - 1 : n);
+}
+
 /** The state Jev is sent: the prompt, cut at MAX_STATE_CHARS. */
 export function stateOf(text: string): string {
   const trimmed = text.trim();
   return trimmed.length <= MAX_STATE_CHARS
     ? trimmed
-    : `${trimmed.slice(0, MAX_STATE_CHARS)}…`;
+    : `${headOf(trimmed, MAX_STATE_CHARS)}…`;
 }
 
 /** A timeout from the environment, or the default when it is unusable. */
@@ -68,8 +80,9 @@ export function shortError(detail: string): string {
 export const MIN_TIMEOUT_MS = 100;
 
 export function timeoutOf(raw: string | undefined): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
+  const v = (raw ?? "").trim();
+  const parsed = Number(v);
+  if (!/^\d+(?:\.\d+)?$/.test(v) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
   return Math.min(parsed, MAX_TIMEOUT_MS);
 }
 
@@ -97,7 +110,8 @@ export type JevResult =
 
 export type AskArgs = {
   fetch: (url: string, init?: HttpInitLike) => Promise<HttpResponseLike>;
-  sleep: (ms: number) => Promise<unknown>;
+  /** The engine's `$.clock.sleep`; `signal` ends the wait early, so no timer outlives the call. */
+  sleep: (ms: number, options?: { signal?: AbortSignal }) => Promise<unknown>;
   provider: ProviderResult;
   state: string;
   offered: readonly Tier[];
@@ -200,21 +214,30 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     model: provider.model,
   };
 
-  const call = fetch(provider.endpoint, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${provider.apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
+  // Called inside an async function, so a fetch that throws at once is a
+  // rejection handled below, not an escape past the finally.
+  const call = (async () =>
+    fetch(provider.endpoint, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${provider.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    }))();
+  // Ended in the finally, so the timeout does not keep running (and a
+  // script's process alive) after the answer is in.
+  const timer = new AbortController();
 
   let response: HttpResponseLike;
   try {
     const raced = await Promise.race([
       call,
-      sleep(timeoutMs).then(() => TIMED_OUT),
+      sleep(timeoutMs, { signal: timer.signal }).then(
+        () => TIMED_OUT,
+        () => new Promise<never>(() => {}),
+      ),
       ceded,
     ]);
     if (raced === CEDED) {
@@ -245,6 +268,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
     const detail = error instanceof Error ? error.message : String(error);
     return { ok: false, reason: `request failed: ${shortError(detail)}`, ms: since() };
   } finally {
+    timer.abort();
     if (onCeded) args.signal?.removeEventListener("abort", onCeded);
   }
 

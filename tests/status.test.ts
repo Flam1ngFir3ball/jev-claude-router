@@ -1276,3 +1276,13 @@ describe("liveLine is always one line of the shape it is recognised by (2026-09-
     assert.equal(withoutImitations(`${skew}\n\n---\n\nText.`), "Text.");
   });
 });
+
+describe("a failed Jev call on an outgrown tier says it moved, not kept (2026-09-29)", () => {
+  test("the line names the step up, not a hold", () => {
+    const a: Attempt = { prompt: "p", ms: 5, decision: { tier: "sonnet", model: "claude-sonnet-5-5", effort: "low", confidence: 0, jevFailed: "timed out after 1500ms", outgrew: "haiku" } };
+    const line = liveLine(a);
+    assert.doesNotMatch(line, /kept sonnet/);
+    assert.match(line, /Jev timed out after 1500ms/);
+    assert.match(line, /haiku too long, moved up only to sonnet/);
+  });
+});

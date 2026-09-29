@@ -44,11 +44,15 @@ export function compactOnOf(raw: string | undefined): boolean {
   return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
 }
 
+/** Below this a scoring budget is taken for a mistake (seconds written as `8`). */
+export const MIN_COMPACT_TIMEOUT_MS = 500;
+
 /** `JEV_ROUTER_COMPACT_TIMEOUT_MS`, clamped; the default when unset or bad. */
 export function compactTimeoutOf(raw: string | undefined): number {
   const v = (raw ?? "").trim();
   const n = Number(v);
-  if (v === "" || !Number.isFinite(n) || n <= 0) return DEFAULT_COMPACT_TIMEOUT_MS;
+  if (!/^\d+(?:\.\d+)?$/.test(v) || !Number.isFinite(n) || n < MIN_COMPACT_TIMEOUT_MS)
+    return DEFAULT_COMPACT_TIMEOUT_MS;
   return Math.min(n, MAX_COMPACT_TIMEOUT_MS);
 }
 
@@ -147,12 +151,13 @@ export function toEngineMessages(
       toolUses: m.toolUses.map((t) => (uses.has(t) ? t : withoutFalse(t))),
     };
     if (m.toolResults && m.toolResults.length > 0)
-      rebuilt.toolResults = m.toolResults.map((r) => (results.has(r) ? r : withoutFalse(r)));
+      // A result's isError is a plain boolean to the engine, false included.
+      rebuilt.toolResults = m.toolResults.map((r) => (results.has(r) ? r : { ...r, isError: r.isError === true }));
     return rebuilt;
   });
 }
 
-/** A rebuilt block without `isError: false`: the engine spells it `true | undefined`. */
+/** A rebuilt tool use without `isError: false`: the engine spells a use's `true | undefined`. */
 function withoutFalse<T extends { isError?: boolean }>(block: T): T {
   if (block.isError) return { ...block };
   const { isError: _, ...rest } = block;
@@ -183,7 +188,7 @@ export async function pruneTranscript(args: {
   messages: readonly EngineMessage[];
   provider: ProviderResult;
   fetch: (url: string, init?: HttpInitLike) => Promise<HttpResponseLike>;
-  sleep: (ms: number) => Promise<unknown>;
+  sleep: (ms: number, options?: { signal?: AbortSignal }) => Promise<unknown>;
   timeoutMs: number;
   minReduction: number;
   options?: CompactOptions;
@@ -209,6 +214,8 @@ export async function pruneTranscript(args: {
 
   const TIMED_OUT = Symbol("timed-out");
   const controller = new AbortController();
+  // Ended in the finally, so the timeout does not run on after the scoring.
+  const timer = new AbortController();
   try {
     const work = compact(
       args.messages,
@@ -218,7 +225,10 @@ export async function pruneTranscript(args: {
     );
     const raced = await Promise.race([
       work,
-      args.sleep(args.timeoutMs).then(() => TIMED_OUT),
+      args.sleep(args.timeoutMs, { signal: timer.signal }).then(
+        () => TIMED_OUT,
+        () => new Promise<never>(() => {}),
+      ),
     ]);
     if (raced === TIMED_OUT) {
       controller.abort();
@@ -227,12 +237,24 @@ export async function pruneTranscript(args: {
     }
     const result = raced as CompactResult;
     const compaction = compactionOf(result, now() - started);
+    // A result the library marked for cutting is left whole when it is
+    // already short: count what actually changed, not what was marked.
+    const originals = new Set<ToolResult>(args.messages.flatMap((m) => m.toolResults ?? []));
+    const cut = result.messages.flatMap((m) => m.toolResults ?? []).filter((r) => !originals.has(r)).length;
+    compaction.calls = {
+      kept: compaction.calls.kept + compaction.calls.cut - cut,
+      cut,
+      dropped: compaction.calls.dropped,
+    };
     const short = shortOf(compaction.reduction, args.minReduction);
     if (short !== undefined) return { ok: false, compaction: { ...compaction, fallback: short } };
     return { ok: true, messages: toEngineMessages(args.messages, result.messages), compaction };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return none(detail.replace(/\s+/g, " ").slice(0, 120));
+    // Shown in /jev and saved: plain words only, whatever the provider sent.
+    return none(detail.replace(/\s+/g, " ").replace(/[`*_#<>\[\]()|]/g, "").slice(0, 120));
+  } finally {
+    timer.abort();
   }
 }
 

@@ -419,10 +419,10 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | --- | --- | --- |
 | `TYPESAFE_API_KEY` | | TypeSafe direct key. |
 | `AI_GATEWAY_API_KEY` | | Vercel AI Gateway key. |
-| `JEV_ROUTER_PROVIDER` | TypeSafe if its key is set | `typesafe` or `gateway`. |
+| `JEV_ROUTER_PROVIDER` | TypeSafe if its key is set | `typesafe` (or `direct`) or `gateway` (or `vercel`); anything else chooses by the keys set. |
 | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | Must be https. Only `*.typesafe.ai` is accepted unless `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`. A trailing `/v1/systemone` is dropped, since the router adds it. |
 | `JEV_ROUTER_ALLOW_CUSTOM_BASE` | off | `1` lets `TYPESAFE_BASE_URL` name any https host. That host receives your key and prompts, so set both only in your own `~/.claude/settings.json`, and check that a project's settings do not set them. |
-| `JEV_ROUTER_JEV_MODEL` | `jev-latest` | Pin a Jev version (e.g. `jev-1.13.0`) so confidences stay stable across releases. |
+| `JEV_ROUTER_JEV_MODEL` | `jev-latest` | Pin a Jev version (e.g. `jev-1.13.0`) so confidences stay stable across releases. TypeSafe direct only; the gateway serves its own. |
 | `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev, in milliseconds. At least 100 (anything less is taken for a mistake and the default used), at most 8000. |
 
 **Routing**
@@ -432,10 +432,10 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `JEV_ROUTER_STICKY` | on | `0` removes the confidence bar. |
 | `JEV_ROUTER_STICKY_CONFIDENCE` | `0.75` | The confidence bar: `0.6`, `60` or `60%`. |
 | `JEV_ROUTER_PRICE_CHECK` | on | `0` turns both price checks off. |
-| `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying, or `off`. |
+| `JEV_ROUTER_UPGRADE_MAX` | `1` | Dollars an upgrade may cost over staying (a plain number, `$` allowed), or `off`. |
 | `JEV_ROUTER_CACHE_TTL` | `1h` | Cache lifetime used for pricing: `1h` (what Claude Code writes) or `5m`. |
 | `JEV_ROUTER_CEILING` | `xhigh` | Effort ceiling: an effort for all tiers, or per tier, e.g. `fable:medium,opus:high`. |
-| `JEV_ROUTER_EXCLUDE` | | Tiers not offered to Jev at session start, e.g. `fable,haiku`; `/jev tiers` toggles this per session. |
+| `JEV_ROUTER_EXCLUDE` | | Tiers not offered to Jev at session start, e.g. `fable,haiku` (commas, semicolons or spaces); `/jev tiers` toggles this per session. |
 | `JEV_ROUTER_ALLOW_OVERRIDE` | on | `0` ignores tiers named in prompts. |
 | `JEV_ROUTER_NOTIFY_CONTINUE` | on | `0` asks Jev about finished-task turns. |
 
@@ -496,9 +496,9 @@ scripts/            check-jev, try-prompts, measure-switch-cost, bench-overhead
 ### Working on it
 
 ```
-npm run types    # once: fetch Claude Code's type definitions into .claude/types
+npm run setup    # once per clone: fetch Claude Code's type definitions into
+                 # .claude/types, and validate the plugin before every commit
 npm run check    # typecheck, tests, plugin validate
-git config core.hooksPath scripts/githooks   # once per clone: validate before every commit
 ```
 
 Always run `claude plugin validate`. It checks the engine's load-time rules
@@ -548,7 +548,7 @@ backends. This fork keeps that design and adds:
   `hooks/compaction/`, with its MIT licence in
   [LICENSE-fast-jev-compaction](LICENSE-fast-jev-compaction) — unchanged
   apart from a batch-concurrency cap and an abort signal added in
-  `compact.ts`. This fork
+  `compact.ts`, and cuts in `state.ts` that no longer split an emoji. This fork
   adds the wiring to its provider and settings, the toggle, the fallback
   rules, the reuse across the engine's two compaction passes, and the `/jev`
   reporting.

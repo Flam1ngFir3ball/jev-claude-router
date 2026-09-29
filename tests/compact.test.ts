@@ -93,3 +93,11 @@ describe("compact: batch concurrency", () => {
     assert.equal(last?.reason, "call_dropped", "the last batch's calls keep its own answer (0), not swapped");
   });
 });
+
+describe("state cuts keep surrogate pairs whole (2026-09-29)", () => {
+  test("truncate does not leave half an emoji", async () => {
+    const { truncate } = await import("../hooks/compaction/state.ts");
+    const out = truncate(`${"a".repeat(9)}😀tail`, 11);
+    assert.doesNotMatch(out, /[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+});

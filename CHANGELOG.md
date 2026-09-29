@@ -86,11 +86,51 @@ Ready and merged, held back from a version bump until approved:
   text lists `tiers`; the sticky line names `/jev sticky on`; the cache
   line skips tiers turned off and a subagent's output.
 
+- **Naming a tier only routes when it is said to the model.** "should I
+  use opus or sonnet?", "make production use sonnet by default" and "I
+  told you not to use haiku" no longer force a tier; "use opus", "please
+  switch to fable" and "can you use sonnet" still do. Single-quoted
+  phrases and indented code are not read for it.
+- **A finished task's result is not sent to Jev.** A notification that
+  asks Jev sends only the task's one-line summary. The README has a new
+  "What leaves your machine" section.
+- **Resuming another session in the same process** no longer carries the
+  previous session's `/jev` settings or on/off state into it, and releases
+  the previous session's claim so another process can route it later.
+  Day-old claims on sessions that never saved are cleaned up.
+- **A task finishing after its reply was summarised** no longer writes a
+  second route line and summary when the earlier turn went unrouted or
+  `JEV_ROUTER_NOTIFY_CONTINUE=0`.
+- **The subagent record is trimmed** to running agents past its limit; it
+  used to keep every finished one and grow the snapshot without bound.
+- **A switch counts as warm once the new model starts answering**, even
+  if the turn is interrupted before usage arrives, and a switch still
+  awaiting its first answer survives a reload.
+- **Route lines are always one line**, whatever the failure reason says,
+  and never show a negative latency.
+- **Footer label:** no "only N% sure" on a held turn (that confidence is
+  in the tier it did not move to) or on a go-ahead. A failed Jev call on an
+  outgrown tier reads as a step up, not "kept".
+- **Compaction:** `/jev` counts only results that were actually cut, and
+  rebuilt tool results keep `isError: false`. Cuts in the Jev request and
+  the compaction state no longer split an emoji. The timeout's timer ends
+  with the call (so `npm run try-prompts` no longer waits out the full
+  timeout), a fetch that throws at once is a failure rather than a
+  rejection, and a provider's error text is kept as plain words.
+- **Settings:** `JEV_ROUTER_COMPACT_TIMEOUT_MS` below 500 is taken for a
+  mistake; `JEV_ROUTER_EXCLUDE` accepts semicolons and spaces;
+  `JEV_ROUTER_UPGRADE_MAX` refuses negatives and hex, as the timeouts now
+  do; `JEV_ROUTER_STICKY_CONFIDENCE=60.5` is 60.5% again (only `1`–`10`
+  must be whole); `JEV_ROUTER_PROVIDER` accepts `vercel` and `direct`.
+
 ### Chores
 
 - `npm run check-gateway`, a duplicate of `check-jev`, is removed.
 - `check-jev` and `try-prompts` fall back to the shell's environment when
   `~/.claude/settings.json` is missing, instead of crashing.
+- `npm run setup` fetches the types and turns on the pre-commit hook in
+  one step; `npm run types` fails on an HTTP error instead of writing the
+  error page into the type file.
 
 ## 1.0.2 — 2026-09-25
 

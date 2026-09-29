@@ -20,13 +20,23 @@ const JEV_MODE = /^jev( →|:| off)/;
 export function labelOf(
   decision: Decision | null,
   enabled: boolean,
+  /** How the turn got its decision, as the attempt's `kind` says. */
+  kind?: "notify" | "agent" | "continue" | "nudge",
 ): string | null {
   if (!enabled) return "jev off";
   if (!decision) return null;
 
   // A named tier and a failed Jev call carry 0 as a placeholder, not a
   // score: Jev was not asked, or did not answer, so there is no doubt to show.
-  const scored = !(decision.forced && decision.confidence === 0) && decision.jevFailed === undefined;
+  // A held turn's confidence is Jev's in the tier it did not move to, and a
+  // continued turn's was an earlier turn's: neither is doubt about this one.
+  const scored =
+    !(decision.forced && decision.confidence === 0) &&
+    decision.jevFailed === undefined &&
+    decision.held === undefined &&
+    kind !== "continue" &&
+    kind !== "nudge" &&
+    kind !== "notify";
   const doubt =
     scored && decision.confidence < LOW_CONFIDENCE
       ? `, only ${Math.round(decision.confidence * 100)}% sure`
