@@ -96,6 +96,19 @@ type Engine = {
   clock: { sleep: (ms: number, options?: { signal?: AbortSignal }) => Promise<unknown> };
 };
 
+/** The stamp of the copy that holds a session, from its owner record, or null. */
+async function ownerOf(
+  $: { store: { get: (key: string) => Promise<unknown> } },
+  key: string,
+): Promise<number | null> {
+  try {
+    const stamp = await $.store.get(`${OWNER_PREFIX}${key}`);
+    return typeof stamp === "number" ? stamp : null;
+  } catch {
+    return null;
+  }
+}
+
 /** How much later than a copy's own last save a stored snapshot must be to count as another's. */
 const HANDOFF_SLACK_MS = 1000;
 
@@ -627,7 +640,7 @@ export function register(on: On) {
   const runtime = globalThis as {
     __jevRouterNewest?: number;
     /** The newest copy's live state, for the copy that replaces it. */
-    __jevRouterLive?: () => { key: string; state: unknown; savedAt: number } | null;
+    __jevRouterLive?: () => { key: string; state: unknown; savedAt: number; birth: number } | null;
   };
   const birth = Math.max(
     Date.now() + Math.random() * 0.001,
@@ -640,18 +653,27 @@ export function register(on: On) {
   // for the same session, once, over the store's older snapshot.
   let previousLive = runtime.__jevRouterLive;
   runtime.__jevRouterLive = () =>
-    snapshotKey ? { key: snapshotKey, state: pack(stateNow()), savedAt: lastSavedAt } : null;
-  // Only over a snapshot the store holds for the key: a copy for a session
-  // that was never saved is a fresh one, not a reload of the last.
-  // And only when the store's snapshot is the replaced copy's own last save:
-  // one saved later came from another process that went on in the session,
-  // and is newer than anything this process holds.
-  const restoredFrom = (key: string, stored: State | null): State | null => {
+    snapshotKey ? { key: snapshotKey, state: pack(stateNow()), savedAt: lastSavedAt, birth } : null;
+  // Only from the copy that holds the session in this store (its claim is
+  // the owner record), so a copy for another store or a session that was
+  // never this one's is not taken for a reload; and only when the store's
+  // snapshot is no newer than that copy's own last save: one saved later
+  // came from another process that went on in the session.
+  // Whatever is restored, its save time is this copy's starting point, so
+  // the next reload can tell it from a newer one in turn.
+  const restoredFrom = (key: string, stored: State | null, owner: number | null): State | null => {
     const previous = previousLive?.();
     previousLive = undefined;
-    if (stored === null || !previous || previous.key !== key) return stored;
-    if (stored.savedAt !== undefined && stored.savedAt > previous.savedAt + HANDOFF_SLACK_MS) return stored;
-    return unpack(JSON.parse(JSON.stringify(previous.state))) ?? stored;
+    const fromStore = () => {
+      lastSavedAt = stored?.savedAt ?? lastSavedAt;
+      return stored;
+    };
+    if (!previous || previous.key !== key || owner !== previous.birth) return fromStore();
+    if (stored?.savedAt !== undefined && stored.savedAt > previous.savedAt + HANDOFF_SLACK_MS) return fromStore();
+    const live = unpack(JSON.parse(JSON.stringify(previous.state)));
+    if (live === null) return fromStore();
+    lastSavedAt = previous.savedAt;
+    return live;
   };
   /** True once a newer copy has claimed the session: this one stands aside. */
   let inert = false;
@@ -939,7 +961,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     // A reloaded copy gets its own session.start, so it claims the session
@@ -964,7 +986,9 @@ export function register(on: On) {
   // `/clear` starts a new conversation: nothing is running.
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear") {
-      // The old conversation's claim goes; the next lookup claims afresh.
+      // The old conversation is saved as it stands, and its claim goes; the
+      // next lookup claims afresh.
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
       // A new conversation, and a new transcript id: its state is saved
       // under that, so a later resume of the old session restores the old
@@ -998,11 +1022,15 @@ export function register(on: On) {
     // A resume or fork into a different session, in a process already
     // running one: the old session's routing must not carry over. Its state
     // is dropped, and the next hook restores the resumed session's own.
-    if ((e.source === "resume" || e.source === "fork") && snapshotKey !== undefined) {
+    // Also right after a /clear, which left the key to be looked up again
+    // and the restore off: a resume is a restore, whatever came before it.
+    if (e.source === "resume" || e.source === "fork") {
       const key = await snapshotKeyOf($);
-      if (key !== snapshotKey) {
-        // This copy leaves the old session: its claim goes with it, or a
-        // process that resumes that session later stands aside for good.
+      if (snapshotKey === undefined || key !== snapshotKey) {
+        // This copy leaves the old session: what it has not saved is saved
+        // first, and its claim goes with it, or a process that resumes that
+        // session later stands aside for good.
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
         if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
         // Settings too: what a command set in the old session is not the
         // resumed one's. The environment seeds them again, and the resumed
@@ -1065,7 +1093,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     // Jev prunes the transcript instead of the engine summarising it:
@@ -1216,7 +1244,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     if (typeof e.to_model === "string") sessionModel = e.to_model;
@@ -1232,7 +1260,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     // An older copy hands /jev to the owner: answering itself would report
@@ -1381,7 +1409,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     // After the restore: a resumed session's own /jev off or on is what
@@ -1659,7 +1687,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     if (
@@ -1995,7 +2023,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey), await ownerOf($, snapshotKey)));
       restoreOnKey = true;
     }
     if (

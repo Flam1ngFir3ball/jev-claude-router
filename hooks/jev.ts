@@ -70,7 +70,6 @@ export function messageOf(error: unknown): string {
   }
 }
 
-/** A timeout from the environment, or the default when it is unusable. */
 /**
  * An engine fetch error as a few words for the route line: without the
  * engine's "<plugin>: $.http.fetch(<url>) failed:" preamble, repeats and
@@ -93,6 +92,7 @@ export function shortError(detail: string): string {
  */
 export const MIN_TIMEOUT_MS = 100;
 
+/** A timeout from the environment, or the default when it is unusable. */
 export function timeoutOf(raw: string | undefined): number {
   const v = (raw ?? "").trim();
   const parsed = Number(v);

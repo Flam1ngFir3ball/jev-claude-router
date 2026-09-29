@@ -1366,3 +1366,15 @@ describe("round-4 audit (2026-09-29)", () => {
     assert.equal(normalUsage({ model: "m", input_tokens: -1000 }).input_tokens, 0);
   });
 });
+
+describe("round-5 audit (2026-09-29)", () => {
+  test("a notification that continued the route shows no Jev confidence of its own", () => {
+    const running = { tier: "fable" as const, model: "claude-fable-5-1", effort: "medium" as const, confidence: 0.97, effortConfidence: 0.9 };
+    const a = continuationOf("<task-notification/>", running);
+    a.kind = "notify";
+    assert.doesNotMatch(liveLine(a), /Jev 97%/);
+    addUsage(a, usageOf("claude-fable-5-1"));
+    assert.doesNotMatch(replySummary([a])!, /Jev 97%/);
+    assert.doesNotMatch(statusReport({ ...base, attempts: [a] }), /Jev 97%/);
+  });
+});

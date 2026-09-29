@@ -88,6 +88,12 @@ export type Attempt = {
    * announced nowhere but here.
    */
   kind?: "notify" | "agent" | "continue" | "nudge";
+  /**
+   * Carried on from an earlier turn's decision without asking Jev: a
+   * go-ahead, the engine's nudge, or a task's notification that continued
+   * the reply's route. Its decision's confidence is that earlier turn's.
+   */
+  continued?: true;
   /** For `kind: 'agent'`: which subagent, as `$.agent.list()` describes it. */
   agent?: AgentTag;
 } & ({ decision: Decision } | { skipped: string });
@@ -694,6 +700,7 @@ export function continuationOf(
       prompt: kept(text),
       ms: 0,
       kind: "continue",
+      continued: true,
       decision: capTo(
         { tier: step, model: MODEL_OF[step], effort, confidence, effortConfidence, outgrew: tier },
         ceiling,
@@ -704,6 +711,7 @@ export function continuationOf(
     prompt: kept(text),
     ms: 0,
     kind: "continue",
+    continued: true,
     decision: capTo(
       { tier, model, effort, confidence, effortConfidence },
       ceiling,
@@ -773,7 +781,9 @@ function shorten(text: string, width = 44): string {
  * `Jev 57%`: how sure Jev was of the tier. Empty when Jev was not asked this
  * turn: a named tier, a go-ahead, or the engine's nudge.
  */
-function sureOf(d: Decision, kind?: Attempt["kind"]): string {
+function sureOf(d: Decision, kind?: Attempt["kind"], continued?: boolean): string {
+  // A notification that carried the reply's route on was not asked about.
+  if (continued) return "";
   if (kind === "continue" || kind === "nudge") return "";
   if (d.forced && d.confidence === 0) return "";
   if (d.jevFailed !== undefined) return "";
@@ -801,7 +811,7 @@ function attemptLine(attempt: Attempt): string {
   const d = attempt.decision;
   // A held turn's reason carries the confidence; saying it twice is noise.
   const notes = [
-    ...(d.held === undefined ? [sureOf(d, attempt.kind)] : []),
+    ...(d.held === undefined ? [sureOf(d, attempt.kind, attempt.continued)] : []),
     ...reasonsOf(attempt),
   ].filter((n) => n !== "");
   return `  ${when}  ${d.tier}·${d.effort}  ${notes.join("; ")}  ${what}`;
@@ -916,7 +926,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
           ? "continuing"
           : d.held !== undefined
             ? ""
-            : sureOf(d, only.kind);
+            : sureOf(d, only.kind, only.continued);
       if (how !== "") head.push(how);
     } else {
       head.push(only.usage ? answeredBy(only) : "session model");
@@ -1179,7 +1189,7 @@ export function liveLine(attempt: Attempt): string {
   const parts = [
     d.tier,
     d.effort,
-    ...(d.held === undefined ? [sureOf(d, attempt.kind)] : []),
+    ...(d.held === undefined ? [sureOf(d, attempt.kind, attempt.continued)] : []),
     ...reasonsOf(attempt),
     ...(originOf(attempt) ? [originOf(attempt)!] : []),
     // A clock stepped back mid-call gives a negative span; it reads as 0.

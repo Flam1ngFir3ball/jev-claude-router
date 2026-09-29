@@ -251,3 +251,12 @@ describe("pruneTranscript never rejects (2026-09-29)", () => {
     assert.equal(typeof r.compaction.fallback, "string");
   });
 });
+
+describe("minReductionOf takes plain decimals only (2026-09-29)", () => {
+  test("hex and exponents are refused", () => {
+    assert.equal(minReductionOf("0x19"), 0.25);
+    assert.equal(minReductionOf("0x1"), 0.25);
+    assert.equal(minReductionOf("1e1"), 0.25);
+    assert.equal(minReductionOf("30"), 0.3);
+  });
+});

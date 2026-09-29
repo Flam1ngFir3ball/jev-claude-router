@@ -68,8 +68,9 @@ export function minReductionOf(raw: string | undefined): number {
   const trimmed = (raw ?? "").trim();
   const percent = trimmed.endsWith("%");
   const v = percent ? trimmed.slice(0, -1).trim() : trimmed;
+  // Plain decimals, as the other settings: `0x19` or `1e1` is a mistake.
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return MIN_REDUCTION;
   const n = Number(v);
-  if (v === "" || !Number.isFinite(n) || n < 0) return MIN_REDUCTION;
   return percent || n > 1 ? Math.min(n / 100, 1) : n;
 }
 

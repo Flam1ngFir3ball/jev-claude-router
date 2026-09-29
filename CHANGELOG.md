@@ -177,6 +177,19 @@ Ready and merged, held back from a version bump until approved:
 - **A negative token count** from the API counts as none, instead of a
   negative cost and a snapshot that can no longer load. A fetch that
   rejects with something other than an Error is still a named failure.
+- **Reloads in a row, and a reload before a session's first save**, keep
+  what the replaced copy held: the handoff follows the copy that holds the
+  session in the store, and each copy carries on the save time it took over.
+- **`/clear` then `/resume` into the old session** restores it instead of
+  starting it empty and overwriting its snapshot; leaving a session (by
+  `/clear` or a resume elsewhere) saves it first.
+- **A notification that continued the route** no longer shows the earlier
+  turn's "Jev N%" as if Jev had scored it.
+- **`JEV_ROUTER_COMPACT_MIN_REDUCTION`** refuses hex and exponents, as the
+  other settings do.
+- README examples now match what the plugin prints: the effort-cap
+  diagram under the `xhigh` default, the summary and `/jev` costs, the
+  agents line and dollar formats.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 

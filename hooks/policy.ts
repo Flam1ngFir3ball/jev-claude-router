@@ -376,9 +376,10 @@ export function confidenceShareOf(raw: string | undefined): number | null {
 
 /**
  * Holds a switch on the tier the last turn used when Jev is not sure enough
- * of it, or when it is a downgrade that would cost more than it saves
- * (`verdict`, computed by the caller from the context size; null when the
- * switch is an upgrade, whose worth is a question of capability, not price).
+ * of it, or when the move costs more than it is worth (`verdict`, computed
+ * by the caller from the context size: for a downgrade, whether it saves
+ * anything; for an upgrade, whether it costs more than the upgrade limit
+ * over staying; null when price checks are off or nothing is known).
  *
  * Only the model is held here. The effort Jev asked for is applied either
  * way: on Opus and Haiku it is sent per request and costs no cache, so a

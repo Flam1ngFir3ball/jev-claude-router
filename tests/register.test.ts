@@ -2755,12 +2755,15 @@ describe("register: audit regressions (2026-09-23)", () => {
     const { hooks, $, setTier, shared } = await boot();
     setTier("fable", 0.95, 3);
     await turn(hooks, $, "k1");
-    const before = JSON.stringify(shared.store.get("session:sess-R"));
+    // Its content, not when it was written: /clear saves the old session as
+    // it stands before leaving it.
+    const content = () => JSON.stringify({ ...(shared.store.get("session:sess-R") as object), savedAt: 0 });
+    const before = content();
     shared.id = "sess-R2";
     await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
     setTier("opus", 0.9, 1);
     await turn(hooks, $, "k2", "something new");
-    assert.equal(JSON.stringify(shared.store.get("session:sess-R")), before);
+    assert.equal(content(), before);
     assert.ok(shared.store.has("session:sess-R2"));
   });
 
@@ -2768,12 +2771,13 @@ describe("register: audit regressions (2026-09-23)", () => {
     const { hooks, $, setTier, shared } = await boot();
     setTier("fable", 0.95, 3);
     await turn(hooks, $, "l1");
-    const before = JSON.stringify(shared.store.get("session:sess-R"));
+    const content = () => JSON.stringify({ ...(shared.store.get("session:sess-R") as object), savedAt: 0 });
+    const before = content();
     await hooks.get("classic.SessionStart")!($, { source: "clear" }, async (e: unknown) => e);
     shared.id = "sess-R3";
     setTier("opus", 0.9, 1);
     await turn(hooks, $, "l2", "something new");
-    assert.equal(JSON.stringify(shared.store.get("session:sess-R")), before);
+    assert.equal(content(), before);
     assert.ok(shared.store.has("session:sess-R3"));
   });
 
@@ -4188,5 +4192,54 @@ describe("register: round-4 audit (2026-09-29)", () => {
     await run(kit.hooks, kit.$, "quiet");
     const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "qq", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
     assert.doesNotMatch(chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""), /^> ✳️/);
+  });
+});
+
+describe("register: round-4 session driver findings (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const spend = async (kit: ReturnType<typeof load>) => (await run(kit.hooks, kit.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1];
+  test("two reloads in a row keep what neither copy saved", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-TWO" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await a.hooks.get("turn.start")!(a.$, { text: "work", turnId: "w1" }, async (e: unknown) => e);
+    for (let i = 0; i < 3; i++)
+      await collect(a.hooks.get("turn.step")!(a.$, { turnId: "w1", index: i }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    const before = await spend(a);
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    const c = load(undefined, shared);
+    await c.hooks.get("session.start")!(c.$, {}, async (e: unknown) => e);
+    assert.equal(await spend(c), before);
+  });
+  test("/clear then /resume into the old session restores it, not an empty one", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-CA" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "c1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "c1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    const before = await spend(kit);
+    shared.id = "sess-CB";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "clear" }, async (e: unknown) => e);
+    shared.id = "sess-CA";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume" }, async (e: unknown) => e);
+    assert.equal(await spend(kit), before);
+    assert.doesNotMatch((await run(kit.hooks, kit.$, "")).text, /No turns yet/);
+  });
+  test("a reload before a new session's first save keeps that session's state", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-FS" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    // Nothing saved yet under this key; the copy holds the session and has spent.
+    shared.store.clear();
+    await a.hooks.get("turn.start")!(a.$, { text: "work", turnId: "f1" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "f1", index: 0 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "f1", index: 1 }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    const before = await spend(a);
+    shared.store.delete("session:sess-FS");
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    assert.equal(await spend(b), before);
   });
 });

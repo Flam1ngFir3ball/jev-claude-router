@@ -39,13 +39,13 @@ goes out, and rewrites each model request in the turn to the result.
 ```
 you type a prompt
       ↓
-turn.start   ask Jev          →  tier: fable, effort: xhigh
+turn.start   ask Jev          →  tier: fable, effort: max
       ↓      apply the checks →  window, confidence, price, ceiling
-turn.step    each request     →  model: claude-fable-5-1, effort: medium
+turn.step    each request     →  model: claude-fable-5-1, effort: xhigh
       ↓
-reply        > ✳️ fable · medium · Jev 97% · capped from xhigh · 641ms
+reply        > ✳️ fable · xhigh · Jev 97% · capped from max · 641ms
              …your reply…
-             fable-5-1 ✓ medium · Jev 97% · $0.14 · 130k in (91% cached) · 2k out
+             fable-5-1 ✓ xhigh · Jev 97% · $0.35 · 130k in (91% cached) · 2k out
 ```
 
 The four tiers:
@@ -132,10 +132,10 @@ When a check changed Jev's pick, the reason is written in plain words:
 | --- | --- |
 | `kept fable: Jev 61% on haiku, needs 75%` | Jev wanted haiku but was not sure enough to switch. |
 | `kept fable: haiku costs $4.41 vs $0.13` | Moving down would have cost more than staying, cache included. |
-| `kept opus: fable costs $5.03 vs $0.08, over the $1.00 limit` | Moving up would have cost more than the upgrade limit over staying. |
+| `kept opus: fable costs $5.03 vs $0.080, over the $1.00 limit` | Moving up would have cost more than the upgrade limit over staying. |
 | `kept fable: too long for haiku (310k)` | The conversation does not fit haiku's window. |
 | `haiku too long, moved up only to sonnet (Jev wanted fable)` | The running tier outgrew its window; the turn went to the cheapest tier that fits. |
-| `capped from xhigh` | Jev asked for more effort than the ceiling allows. |
+| `capped from max` | Jev asked for more effort than the ceiling allows. |
 | `your pick` | You named the tier in your prompt. |
 | `1st request runs medium as high` | Fable runs `medium` as `high` on a conversation's first request, so that is what is sent. |
 | `kept opus: Jev timed out after 1500ms` | Jev did not answer in time; the turn stayed on the tier already running. |
@@ -153,7 +153,7 @@ Under each finished reply, one block reports what the API says actually
 answered and what it cost at Anthropic's list price:
 
 ```
-fable-5-1 ✓ xhigh · Jev 97% · $0.14 · 130k in (91% cached) · 2k out
+fable-5-1 ✓ xhigh · Jev 97% · $0.35 · 130k in (91% cached) · 2k out
 ```
 
 `✓` means the model that answered is the one the router asked for; a
@@ -164,8 +164,8 @@ A reply that launched background agents spans several turns and still gets
 one summary, written once every agent has finished:
 
 ```
-3 turns: fable, opus, fable (2 woken by tasks) · $28.10 · 7.4M in (99% cached) · 61k out
-agents: Explore haiku $0.020, general-purpose opus $0.31
+3 turns: fable, opus, fable (2 woken by tasks) · $6.16 · 7.4M in (99% cached) · 61k out
+agents: Explore haiku-4-5 $0.029, general-purpose opus-5-5 $0.36
 turn 2: kept fable: haiku costs $4.41 vs $0.13
 ```
 
@@ -194,11 +194,11 @@ jev-claude-router:
 
   Recent turns, newest first:
      0ms  fable·medium    [task finished] Agent "Review library-sync…
-          → fable-5-1 ✓ · $0.061 · 45k in (98% cached) · 1k out
-   641ms  fable·medium  Jev 97%; capped from xhigh  help me plan the architecture
-          → fable-5-1 ✓ · $0.14 · 130k in (91% cached) · 2k out
+          → fable-5-1 ✓ · $0.076 · 45k in (98% cached) · 1k out
+   641ms  fable·xhigh  Jev 97%; capped from max  help me plan the architecture
+          → fable-5-1 ✓ · $0.35 · 130k in (91% cached) · 2k out
    352ms  fable·low  kept fable: haiku costs $1.02 vs $0.020  what is 2+2
-          → fable-5-1 ✓ · $0.020 · 47k in (99% cached) · 0k out
+          → fable-5-1 ✓ · $0.034 · 47k in (99% cached) · 0k out
     12ms  not routed — gateway said HTTP 403 (customer_verification_required)
 ```
 
