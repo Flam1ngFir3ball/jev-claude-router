@@ -911,7 +911,7 @@ describe("parseOverride: requests phrased every which way still route (2026-09-2
 });
 
 describe("parseOverride against the labelled corpus (2026-09-29)", async () => {
-  const { OVERRIDE_CORPUS, OVERRIDE_CORPUS_MORE, OVERRIDE_CORPUS_ROUND5 } = await import("./fixtures/override-corpus.ts");
+  const { OVERRIDE_CORPUS, OVERRIDE_CORPUS_MORE, OVERRIDE_CORPUS_ROUND5, OVERRIDE_CORPUS_ROUND7 } = await import("./fixtures/override-corpus.ts");
   // Phrasings a regex reads wrong on purpose, each for a reason: a question
   // that ends in an order, a quoted route with a clause break inside it,
   // code with a colon, and "can we" asked about an example. Any other
@@ -928,7 +928,7 @@ describe("parseOverride against the labelled corpus (2026-09-29)", async () => {
     "The docs say: use opus for refactors",
   ]);
   test("every labelled prompt reads as labelled, bar the known few", () => {
-    const wrong = [...OVERRIDE_CORPUS, ...OVERRIDE_CORPUS_MORE, ...OVERRIDE_CORPUS_ROUND5]
+    const wrong = [...OVERRIDE_CORPUS, ...OVERRIDE_CORPUS_MORE, ...OVERRIDE_CORPUS_ROUND5, ...OVERRIDE_CORPUS_ROUND7]
       .filter(([text, tier]) => !KNOWN.has(text) && parseOverride(text) !== tier)
       .map(([text, tier]) => `${JSON.stringify(text)}: want ${tier}, got ${parseOverride(text)}`);
     assert.deepEqual(wrong, []);

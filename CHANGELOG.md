@@ -94,7 +94,9 @@ Ready and merged, held back from a version bump until approved:
   switch to haiku", "I told you not to use haiku", a `// use opus` comment)
   is an ordinary prompt. Held to a labelled set of 234 prompts in the tests;
   typos and shorthand ("plz", "can u"), `@claude`, and list markers
-  (`+`, `- [ ]`, `(1)`, `a)`) are read as requests.
+  (`+`, `- [ ]`, `(1)`, `a)`) are read as requests, as are "switch over
+  to", "switch the model to" and a backticked tier (``use `opus` ``). A
+  `// …` code comment line outside a fence is not read for it.
 - **A finished task's result is not sent to Jev.** A notification that
   asks Jev sends only the task's one-line summary. The README has a new
   "What leaves your machine" section.

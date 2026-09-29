@@ -557,7 +557,7 @@ export const PLAIN_DECIMAL = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
  * tier too. Returns the tier, or null when none is named or not offered.
  */
 const OVERRIDE =
-  /\b(?:use|do (?:it |this )?using|switch(?:ing)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+  /\b(?:use|do (?:it |this )?using|switch(?:ing)?(?: over| back)?(?: (?:the )?model)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
 
 /**
  * Bare `using <tier>` is not an override, but it can absorb a negation so a
@@ -604,7 +604,12 @@ export function ownWords(text: string): string {
     .replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/g, " ")
     .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, " ")
     .replace(/```[\s\S]*?(?:```|$)/g, " ")
+    // A tier alone in backticks after a route verb is the person's own ask
+    // ("use `opus`"), not code: unwrapped before code spans go.
+    .replace(/\b(use|switch to|go with|run on)\s+`((?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*)`/gi, "$1 $2")
     .replace(/`[^`\n]*`/g, " ")
+    // A code comment on a line of its own, outside a fence: `// use opus`.
+    .replace(/^[ \t]*\/\/.*$/gm, " ")
     // A phrase in double quotes is being quoted, not said: "use opus".
     .replace(/"[^"\n]{1,200}"/g, " ")
     .replace(/\u201c[^\u201d\n]{1,200}\u201d/g, " ")

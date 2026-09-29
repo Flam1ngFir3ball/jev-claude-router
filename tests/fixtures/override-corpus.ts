@@ -171,3 +171,13 @@ export const OVERRIDE_CORPUS_ROUND5: readonly (readonly [string, string | null])
   ["We need to switch to haiku in the nightly job", null],
   ["The docs say: use opus for refactors", null],
 ];
+
+export const OVERRIDE_CORPUS_ROUND7: readonly (readonly [string, string | null])[] = [
+  ["switch over to opus", "opus"],
+  ["switch the model to fable", "fable"],
+  ["switch model to sonnet", "sonnet"],
+  ["please switch back to haiku", "haiku"],
+  ["use `opus` for this", "opus"],
+  ["// TODO: use opus when complexity > 0.8\nimplement this TODO", null],
+  ["the config has `use opus` in it", null],
+];
