@@ -5244,8 +5244,8 @@ describe("register: a tier's own alias stands for its model (2026-09-29)", () =>
     assert.equal(t.sent, "claude-opus-4-1", "kept is kept: no cold switch to another Opus");
   });
   test("after a resume naming `opus`, a held turn goes out as the engine's own Opus", async () => {
+    // A process started by the resume itself: no session.start first.
     const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
-    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
     kit.setSessionModel("opus");
     kit.setContext(120_000);
     await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "opus", context_tokens: 120_000 }, async (e: unknown) => e);
