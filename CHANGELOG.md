@@ -259,6 +259,14 @@ Ready and merged, held back from a version bump until approved:
   words.
 - A spawn with no description or type, and a streamed chunk that is not
   text, pass through rather than throw or print "undefined".
+- **A failed request's reason never carries the configured key**, however
+  the error quotes it; a `Bearer` value that reads as a credential is also
+  redacted, and "Bearer required" or "Missing bearer token" stay as words.
+- A notification's row reads its summary and task id from before the
+  result, so a result that quotes either is not listed or stored; a
+  subagent's prompt is cut at a notification as a typed one is.
+- Looking for a notification in a long line of unclosed openings is
+  linear.
 - **A prompt is cut at its first notification envelope, wherever it is and
   however it is quoted**: nothing after one reaches Jev or the store, since
   a result can quote closing tags and fences, and a trailer or a queued
@@ -271,8 +279,6 @@ Ready and merged, held back from a version bump until approved:
 - A saved model id is one of the characters model ids use (ARNs, Vertex
   paths, `[1m]`, `+`), so one from a tampered store cannot carry markdown
   into the route line.
-- "Missing bearer token." in an error is kept; any other value after
-  `Bearer`, quoted or short, is redacted.
 - `/jev` compares a long Bedrock or Vertex session model whole, not as cut
   for the line; "if it works, switch to haiku" is a condition again.
 - A summary fence whose long first line streams in small pieces is held

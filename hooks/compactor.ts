@@ -23,7 +23,7 @@ import type {
   ToolResult,
   ToolUse,
 } from "./compaction/types.ts";
-import { BEARER_VALUE, messageOf, providerNoteOf, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
+import { BEARER_VALUE, messageOf, providerNoteOf, withoutKey, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
 import { flagOff, PLAIN_DECIMAL } from "./policy.ts";
 import { hasNotification, notificationOf, notificationStateOf, words } from "./status.ts";
 import type { ProviderResult } from "./provider.ts";
@@ -271,7 +271,7 @@ export async function pruneTranscript(args: {
     if (short !== undefined) return { ok: false, compaction: { ...compaction, fallback: short } };
     return { ok: true, messages: toEngineMessages(args.messages, result.messages), compaction };
   } catch (error) {
-    const detail = messageOf(error);
+    const detail = withoutKey(messageOf(error), args.provider.ok ? args.provider.apiKey : undefined);
     // Shown in /jev and saved: plain words only, whatever the provider sent.
     return none(
       detail

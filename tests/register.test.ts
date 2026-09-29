@@ -4977,3 +4977,14 @@ describe("register: off-contract spawn fields and chunks (2026-09-29)", () => {
     assert.match(text, /ok/);
   });
 });
+
+describe("register: a subagent's prompt is cut at a notification (2026-09-29)", () => {
+  test("a result pasted into a task does not reach Jev", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const prompt = "Continue from this:\n<task-notification>\n<task-id>a</task-id>\n<summary>done</summary>\n<result>AWS_SECRET=abc</result>\n</task-notification>\nand follow up";
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt, description: "follow up", subagentType: "general-purpose" }, async () => ({ agentId: "ag-p" }));
+    assert.doesNotMatch(kit.lastState() ?? "", /AWS_SECRET/);
+    assert.match(kit.lastState() ?? "", /Continue from this/);
+  });
+});

@@ -74,11 +74,18 @@ export function messageOf(error: unknown): string {
 }
 
 /**
- * A `Bearer` value, for redacting from error text: whatever follows the
- * word, quoted or not, short or long, except the words an error uses when
- * it talks about one ("Missing bearer token").
+ * A `Bearer` value that reads as a credential, for redacting from error
+ * text: one with a digit or a separator in it, or long, or mixed case —
+ * not the plain words an error uses about one ("Bearer required", "Missing
+ * bearer token"). The key itself is redacted by `withoutKey` wherever it is.
  */
-export const BEARER_VALUE = /\bBearer\s+(?!(?:tokens?|auth|authentication|authorization|header|scheme)\b)["']?[^\s"']+["']?/gi;
+export const BEARER_VALUE =
+  /\bBearer\s+["']?(?=[^\s"']*(?:[\d_\-.~+/=]|[a-z][^\s"']*[A-Z]|[A-Z][^\s"']*[a-z][^\s"']*[A-Z])|[^\s"']{16})[^\s"']+["']?/g;
+
+/** `text` with every occurrence of `key` taken out: an error can quote it anywhere. */
+export function withoutKey(text: string, key: string | undefined): string {
+  return key && key.length >= 4 ? text.split(key).join("…") : text;
+}
 
 /**
  * An engine fetch error as a few words for the route line: without the
@@ -321,7 +328,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
         ms: since(),
       };
     }
-    return { ok: false, reason: `request failed: ${shortError(messageOf(error))}`, ms: since() };
+    return { ok: false, reason: `request failed: ${shortError(withoutKey(messageOf(error), provider.apiKey))}`, ms: since() };
   } finally {
     timer.abort();
     if (onCeded) args.signal?.removeEventListener("abort", onCeded);

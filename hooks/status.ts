@@ -239,7 +239,7 @@ export function originOf(
  * A turn that is a task's notification: it opens with the envelope, an
  * element after the tag (prose that opens with the tag is a prompt).
  */
-const NOTIFICATION = /^\s*<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
+const NOTIFICATION = /^\s*<task-notification\b[^>\n]{0,200}>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
 /**
  * A tag's text, found by hand: the lazy pattern it replaces rescanned to the
  * end from every opening tag, quadratic on a run of openings with no close.
@@ -258,7 +258,10 @@ const tagOf = (text: string, tag: string): string | undefined => {
  */
 export function notificationOf(text: string): string | null {
   if (!NOTIFICATION.test(text)) return null;
-  return plain(tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`);
+  // Read before the result, as what Jev is sent is: a result can quote a
+  // summary or a task id of its own.
+  const head = text.split(/<result\b/)[0]!;
+  return plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
 }
 
 /**
@@ -285,7 +288,9 @@ export function notificationStateOf(text: string): string {
  * A notification's envelope, not a mention of the tag: an element follows
  * the opening tag (the engine's fields, in any order, or a comment).
  */
-const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
+// The tag's attributes are bounded: unbounded, every opening on a long line
+// with no `>` rescanned the rest of it (400k characters took seven seconds).
+const ENVELOPE = /<task-notification\b[^>\n]{0,200}>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
 
 /**
  * Where a notification starts in text the person typed, or -1: the first
@@ -308,7 +313,7 @@ export function hasNotification(text: string): boolean {
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
 export function notificationTaskOf(text: string): string | null {
   if (!NOTIFICATION.test(text)) return null;
-  return tagOf(text, "task-id") ?? null;
+  return tagOf(text.split(/<result\b/)[0]!, "task-id") ?? null;
 }
 
 /**

@@ -2268,7 +2268,16 @@ export function register(on: On) {
     const description = typeof e.description === "string" ? e.description : "";
     const attempt = spawnAttemptOf(
       description,
-      await classify($, e.prompt, settings.offered, settings, undefined, "task"),
+      // A task's prompt can carry a notification (the model pasting one in):
+      // cut as a typed prompt is, so no result reaches Jev.
+      await classify(
+        $,
+        hasNotification(e.prompt) ? notificationStateOf(e.prompt) : e.prompt,
+        settings.offered,
+        settings,
+        undefined,
+        "task",
+      ),
       settings.offered,
       { ...(typeof e.subagentType === "string" ? { type: e.subagentType } : {}), label: description },
       settings.ceiling,

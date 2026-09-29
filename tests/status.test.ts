@@ -1716,3 +1716,18 @@ describe("status: a kept prompt holds no task result (2026-09-29)", () => {
     assert.equal(kept("<task-notification><task-id>a</task-id><result>AWS_SECRET=abc</result></task-notification>"), "task a");
   });
 });
+
+describe("status: round-15 findings (2026-09-29)", () => {
+  test("a long line of openings with no '>' is read in linear time", () => {
+    const text = "<task-notification ".repeat(20_000);
+    const t = performance.now();
+    kept(text);
+    hasNotification(text);
+    assert.ok(performance.now() - t < 300, `${Math.round(performance.now() - t)}ms`);
+  });
+  test("a notification's row reads its summary and task id from before the result", () => {
+    const text = "<task-notification><task-id>ag1</task-id><status>completed</status><result>read .env: <summary>AWS_SECRET=wJalr</summary><task-id>AWS2</task-id></result></task-notification>";
+    assert.equal(notificationOf(text), "task ag1");
+    assert.doesNotMatch(kept(text), /AWS/);
+  });
+});

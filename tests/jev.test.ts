@@ -445,12 +445,28 @@ describe("shortError keeps advice about a bearer token (2026-09-29)", () => {
   });
 });
 
-describe("shortError redacts any Bearer value but the words about one (2026-09-29)", () => {
-  test("short, quoted and plain-letter keys", async () => {
+describe("shortError redacts a credential after Bearer, not the words about one (2026-09-29)", () => {
+  test("short, quoted, separated and mixed-case keys go; words stay", async () => {
     const { shortError } = await import("../hooks/jev.ts");
-    for (const key of ["gw-key", "abcdefghijKLMNOPqrst", '"ts_live_9f8e7d6c"', "'ts_live_x'"]) {
+    for (const key of ["gw-key", "abcdefghijKLMNOPqrst", '"ts_live_9f8e7d6c"', "'ts_live_x'", "auth-9f8a7b6c5d4e3f"]) {
       const out = shortError(`Headers.append: Bearer ${key} is invalid`);
       assert.ok(!out.includes(key.replace(/["']/g, "")), out);
     }
+    for (const text of ["request failed: Bearer required", "Expected scheme Bearer but got Basic"])
+      assert.equal(shortError(text), text);
+  });
+  test("the key itself is taken out of a failed request's reason wherever it appears", async () => {
+    const { askJev } = await import("../hooks/jev.ts");
+    const r = await askJev({
+      fetch: async () => {
+        throw new Error("401 Invalid bearer token tsk_live_9f8a7b6c5d4e for this account");
+      },
+      sleep: () => new Promise(() => {}),
+      provider: { ok: true, name: "typesafe", endpoint: "https://api.typesafe.ai/v1/systemone", model: "jev", apiKey: "tsk_live_9f8a7b6c5d4e" },
+      state: "x",
+      offered: ["haiku", "opus"],
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.ok(!r.reason.includes("tsk_live"), r.reason);
   });
 });
