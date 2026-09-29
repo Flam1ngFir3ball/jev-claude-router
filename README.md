@@ -296,6 +296,10 @@ The price follows the cache that is actually warm:
 - A turn that ran unrouted (Jev timed out) warms the session model.
 - A resumed session whose cache the engine reports as expired prices staying
   as a rewrite too, until the first response writes the cache again.
+- A `/model` alias names a tier, not a version: `opus` is held as Opus and a
+  kept turn goes out as the engine's own Opus, but until the first response
+  says which Opus answered, staying is priced at the current Opus's rates.
+  `opusplan` and `default` name no single model, so nothing is held to them.
 - A session on a model outside the ladder (say `claude-opus-5`) is treated
   the same way: moving it to `claude-opus-5-5` means a cold cache.
 - A compaction by Jev keeps the start of the conversation verbatim, so the
