@@ -271,13 +271,16 @@ export async function pruneTranscript(args: {
     if (short !== undefined) return { ok: false, compaction: { ...compaction, fallback: short } };
     return { ok: true, messages: toEngineMessages(args.messages, result.messages), compaction };
   } catch (error) {
-    const detail = withoutBearer(withoutKey(messageOf(error), args.provider.ok ? args.provider.apiKey : undefined).slice(0, 2000));
+    // Control characters go first, so none can sit between "Bearer" and a
+    // token and hide it; the token is judged whole, before any cut.
+    const detail = withoutBearer(
+      withoutKey(messageOf(error), args.provider.ok ? args.provider.apiKey : undefined)
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/g, " "),
+    );
     // Shown in /jev and saved: plain words only, whatever the provider sent.
     return none(
       detail
-        .slice(0, 2000)
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/g, "")
         .replace(/\s+/g, " ")
         .replace(/[`*_#<>\[\]()|]/g, "")
         .slice(0, 120),

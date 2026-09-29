@@ -1746,3 +1746,20 @@ describe("status: an envelope's attributes can be any length (2026-09-29)", () =
     assert.ok(performance.now() - t < 300, `${Math.round(performance.now() - t)}ms`);
   });
 });
+
+describe("status: the tag is matched case-insensitively in the text itself (2026-09-29)", () => {
+  const env = (tag: string) => `<${tag}>\n<task-id>t9</task-id>\n<summary>Agent done</summary>\n<result>SECRET-RESULT</result>\n</${tag}>`;
+  test("characters that lowercase to two before the envelope do not move the cut", () => {
+    const text = `Bu İSTEK İÇİN İŞİ İNCELE İİİİ:\n${env("task-notification")}`;
+    assert.equal(hasNotification(text), true);
+    assert.equal(notificationStateOf(text), "Bu İSTEK İÇİN İŞİ İNCELE İİİİ:\nAgent done");
+  });
+  test("an upper-case envelope opening the turn is cut", () => {
+    const text = env("TASK-NOTIFICATION").replace("<result>", "<RESULT>").replace("</result>", "</RESULT>");
+    assert.doesNotMatch(notificationStateOf(text), /SECRET/);
+    assert.doesNotMatch(kept(text), /SECRET/);
+  });
+  test("a Kelvin sign is not a k", () => {
+    assert.equal(hasNotification("<tas\u212a-notification><b>x</b> and more"), false);
+  });
+});

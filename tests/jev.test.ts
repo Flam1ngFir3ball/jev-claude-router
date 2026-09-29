@@ -498,3 +498,16 @@ describe("the configured key is removed however short or plain (2026-09-29)", ()
     if (!r.ok) assert.ok(!r.reason.includes("gw-key"), r.reason);
   });
 });
+
+describe("withoutBearer and its callers, edge cases (2026-09-29)", () => {
+  test("a long run of trailing punctuation is linear", async () => {
+    const { withoutBearer } = await import("../hooks/jev.ts");
+    const t = performance.now();
+    withoutBearer(`Bearer ${".".repeat(200_000)}`);
+    assert.ok(performance.now() - t < 200);
+  });
+  test("a control character between Bearer and a token does not hide it, and the cut does not split it", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    assert.doesNotMatch(shortError("Bearer\u0007sk-ant-api03-abcdefghijklmnop0123 rejected"), /sk-ant/);
+  });
+});

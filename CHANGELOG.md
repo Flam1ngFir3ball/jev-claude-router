@@ -268,7 +268,8 @@ Ready and merged, held back from a version bump until approved:
   result, so a result that quotes either is not listed or stored; a
   subagent's prompt is cut at a notification as a typed one is.
 - Looking for a notification is linear on any input, and a tag with
-  attributes of any length is still read as one, so its result is cut.
+  attributes of any length, in any letter case, after any text (one with
+  "İ" in it included), is still read as one, so its result is cut.
 - **A prompt is cut at its first notification envelope, wherever it is and
   however it is quoted**: nothing after one reaches Jev or the store, since
   a result can quote closing tags and fences, and a trailer or a queued

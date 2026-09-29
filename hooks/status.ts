@@ -260,7 +260,7 @@ export function notificationOf(text: string): string | null {
   if (!NOTIFICATION.test(text)) return null;
   // Read before the result, as what Jev is sent is: a result can quote a
   // summary or a task id of its own.
-  const head = text.split(/<result\b/)[0]!;
+  const head = text.split(/<result\b/i)[0]!;
   return plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
 }
 
@@ -276,10 +276,10 @@ export function notificationStateOf(text: string): string {
   // `</task-notification>` and all (an agent reading this very code), so
   // nothing after it can be told from the result. A turn that is a
   // notification is cut at its opening tag, whatever shape the rest has.
-  const at = NOTIFICATION.test(text) ? text.search(/<task-notification\b/) : envelopeAt(text);
+  const at = NOTIFICATION.test(text) ? text.search(/<task-notification\b/i) : envelopeAt(text);
   if (at === -1) return text.trim();
   const before = text.slice(0, at).trim();
-  const head = text.slice(at).split(/<result\b/)[0]!;
+  const head = text.slice(at).split(/<result\b/i)[0]!;
   const summary = plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
   return [before, summary].filter((p) => p !== "").join("\n");
 }
@@ -327,17 +327,18 @@ function elementAfter(text: string, i: number): boolean {
 
 /** Where the first envelope in `text` opens, or -1. Linear. */
 function firstEnvelope(text: string): number {
-  const lower = text.toLowerCase();
+  // Found in `text` itself: lowercasing it first can change its length
+  // ("İ" becomes two characters) and so every position after it. ASCII
+  // case only, as the pattern's `i` without `u` folds (no Kelvin sign).
   const next = { gt: text.indexOf(">"), nl: text.indexOf("\n") };
-  for (let at = lower.indexOf(TAG); at !== -1; at = lower.indexOf(TAG, at + 1))
-    if (envelopeOpensAt(text, at, next)) return at;
+  for (const m of text.matchAll(/<task-notification/gi)) if (envelopeOpensAt(text, m.index!, next)) return m.index!;
   return -1;
 }
 
 /** Whether `text` opens (after blank space) with an envelope. */
 function opensWithEnvelope(text: string): boolean {
   const at = text.search(/\S/);
-  if (at === -1 || text.slice(at, at + TAG.length).toLowerCase() !== TAG) return false;
+  if (at === -1 || !/^<task-notification/i.test(text.slice(at, at + TAG.length))) return false;
   return envelopeOpensAt(text, at, { gt: text.indexOf(">", at), nl: text.indexOf("\n", at) });
 }
 
@@ -362,7 +363,7 @@ export function hasNotification(text: string): boolean {
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
 export function notificationTaskOf(text: string): string | null {
   if (!NOTIFICATION.test(text)) return null;
-  return tagOf(text.split(/<result\b/)[0]!, "task-id") ?? null;
+  return tagOf(text.split(/<result\b/i)[0]!, "task-id") ?? null;
 }
 
 /**

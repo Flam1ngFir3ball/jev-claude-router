@@ -83,7 +83,11 @@ export function messageOf(error: unknown): string {
  */
 export function withoutBearer(text: string): string {
   return text.replace(/\bBearer(\s+)(["']?)([^\s"']+)(["']?)/gi, (all, space: string, _open: string, value: string) => {
-    const trail = /[.,;:!?)\]]+$/.exec(value)?.[0] ?? "";
+    // Trailing punctuation found by hand: `[…]+$` rescanned a long run of
+    // it from each position.
+    let cut = value.length;
+    while (cut > 0 && ".,;:!?)]".includes(value[cut - 1]!)) cut--;
+    const trail = value.slice(cut);
     const bare = value.slice(0, value.length - trail.length);
     const credential =
       /[\d_]/.test(bare) || bare.length >= 16 || (/^[A-Za-z]{8,}$/.test(bare) && /[a-z]/.test(bare) && /[A-Z]/.test(bare));
@@ -104,17 +108,19 @@ export function withoutKey(text: string, key: string | undefined): string {
 export function shortError(detail: string): string {
   // Cut first, and newlines folded by splitting: `\s*\n\s*` is quadratic
   // on a long run of spaces with no newline in it.
-  const bare = detail
-    .slice(0, 2000)
+  // Control characters become spaces and credentials go before the cut, so
+  // none can hide a token from the Bearer rule or split one at the cut.
+  const bare = withoutBearer(
     // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0e-\x1f\x7f-\x84\x86-\x9f]/g, "")
+    detail.replace(/[\x00-\x08\x0e-\x1f\x7f-\x84\x86-\x9f]/g, " "),
+  )
+    .slice(0, 2000)
     .split(/[\n\r\v\f\u0085\u2028\u2029]/)
     .map((t) => t.trim())
     .filter((t) => t !== "")
     .join(" ")
     .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "");
-  // An error that quotes the request's header quotes the key with it.
-  const said = withoutBearer(bare)
+  const said = bare
     .split(/[.?!]\s/)[0]!
     .replace(/^(\w+): \1\b:?\s*/, "$1: ")
     .replace(/:\s*$/, "")

@@ -362,3 +362,23 @@ describe("compaction's fallback shows no provider body (2026-09-29)", () => {
     assert.doesNotMatch(line, /[\u0000-\u001f`<>]/);
   });
 });
+
+describe("compaction's error text keeps tokens out at the edges (2026-09-29)", () => {
+  for (const [name, message] of [
+    ["across the cut", `${" ".repeat(1990)}upstream said: Bearer abcdefghijklmnopqrstuvwxyz0123456789 end`],
+    ["behind a control character", "upstream said: Bearer\u0085sk-ant-api03-abcdefghijklmnop0123"],
+  ] as const)
+    test(name, async () => {
+      const r = await pruneTranscript({
+        messages: transcript(10),
+        provider: typesafe,
+        fetch: async () => {
+          throw new Error(message);
+        },
+        sleep: never,
+        timeoutMs: 8000,
+        minReduction: 0.25,
+      });
+      assert.doesNotMatch(r.compaction.fallback!, /abcdefghi|sk-ant/);
+    });
+});
