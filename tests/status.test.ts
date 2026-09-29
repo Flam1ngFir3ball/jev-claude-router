@@ -20,6 +20,7 @@ import {
   statusReport,
   unknownCommandReply,
   notificationStateOf,
+  plain,
   toggleReply,
   type Status,
   addUsage,
@@ -1400,5 +1401,14 @@ describe("round-5 robustness (2026-09-29)", () => {
     assert.equal(summary.match(/```/g)?.length, 2);
     assert.doesNotMatch(summary, /\n#/);
     assert.doesNotMatch(liveLine(agent), /```|\n/);
+  });
+});
+
+describe("plain keeps what is harmless in a fence (2026-09-29)", () => {
+  test("[1m], underscores, # and | stay; backticks and newlines go", () => {
+    assert.equal(plain("claude-opus-5-5[1m]"), "claude-opus-5-5[1m]");
+    assert.equal(plain("code_review_bot"), "code_review_bot");
+    assert.equal(plain("Fix issue #42 | retry"), "Fix issue #42 | retry");
+    assert.equal(plain("a`b\nc"), "ab c");
   });
 });

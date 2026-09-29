@@ -4291,7 +4291,9 @@ describe("register: round-5 findings (2026-09-29)", () => {
     await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
     // A newer process claimed this session and was killed 40 minutes ago.
     const dead = Date.now() - 40 * 60 * 1000;
-    shared.store.set("owner:session:sess-DEAD", { birth: Date.now() + 1e9, at: dead });
+    const newer = Date.now() + 1e9;
+    shared.store.set("owner:session:sess-DEAD", newer);
+    shared.store.set("seen:session:sess-DEAD", { birth: newer, at: dead });
     const before = kit.fetches();
     await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "d1" }, async (e: unknown) => e);
     assert.equal(kit.fetches(), before + 1, "Jev was asked: this copy routes");
@@ -4324,5 +4326,26 @@ describe("register: round-6 findings (2026-09-29)", () => {
     await collect(b.hooks.get("turn.step")!(b.$, { turnId: "u2", index: 0, agentId: "agent-1" }, (e: { model: string }) => answeredBy(e.model ?? "claude-haiku-4-5")));
     const rows = (await run(b.hooks, b.$, "")).text.split("\n").filter((l) => /not routed/.test(l));
     assert.equal(rows.length, 1);
+  });
+});
+
+describe("register: owner records across versions (2026-09-29)", () => {
+  test("a newer copy's bare-number claim, as an earlier version writes it, is honoured and never goes stale", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-OLDV" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    // An earlier-version process loaded later and claimed: a bare stamp, no seen record.
+    shared.store.set("owner:session:sess-OLDV", Date.now() + 1e9);
+    shared.store.delete("seen:session:sess-OLDV");
+    const before = kit.fetches();
+    await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "v1" }, async (e: unknown) => e);
+    assert.equal(kit.fetches(), before, "this copy stands aside");
+  });
+  test("the owner record this version writes is still a bare number", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-NUM" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "n1" }, async (e: unknown) => e);
+    assert.equal(typeof shared.store.get("owner:session:sess-NUM"), "number");
   });
 });

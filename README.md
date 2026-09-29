@@ -164,7 +164,7 @@ A reply that launched background agents spans several turns and still gets
 one summary, written once every agent has finished:
 
 ```
-3 turns: fable, opus, fable (2 woken by tasks) · $6.16 · 7.4M in (99% cached) · 61k out
+3 turns: fable, fable, fable (2 woken by tasks) · $6.16 · 7.4M in (99% cached) · 61k out
 agents: Explore haiku-4-5 $0.029, general-purpose opus-5-5 $0.36
 turn 2: kept fable: haiku costs $4.41 vs $0.13
 ```
@@ -193,7 +193,7 @@ jev-claude-router:
   spent     $4.12 this session
 
   Recent turns, newest first:
-     0ms  fable·medium    [task finished] Agent "Review library-sync…
+     0ms  fable·medium    [task finished] Agent "Review library-sync cluster" complet…
           → fable-5-1 ✓ · $0.076 · 45k in (98% cached) · 1k out
    641ms  fable·xhigh  Jev 97%; capped from max  help me plan the architecture
           → fable-5-1 ✓ · $0.35 · 130k in (91% cached) · 2k out
@@ -225,7 +225,7 @@ said to the model: at the start of a sentence or clause, or after "please",
 "search for opus docs", "should I use opus or sonnet?", "make production use
 sonnet by default" and "I told you not to use haiku" are ordinary prompts. A negation cancels the next route ("don't use haiku, use
 opus" goes to opus). Pasted content, code, quoted lines, text in double
-quotes (single or double), indented code and background-task notifications are not read for this, so a pasted document that says "use
+quotes (a short single-quoted phrase too) and background-task notifications are not read for this, so a pasted document that says "use
 opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier turned off
 with `JEV_ROUTER_EXCLUDE` or `/jev tiers off` cannot be named back in.
 
@@ -534,7 +534,7 @@ backends. This fork keeps that design and adds:
 | Compaction | Compaction by Jev, built on fast-jev-compaction. |
 | Display | One summary per reply covering its turns and agents; plain-language reasons; the filter for copied lines and summaries. |
 | Reliability | State saved across reloads; one copy acting however many are loaded; bounded store growth; usage records tolerated when fields are missing. |
-| Tooling | `measure-switch-cost` and `bench-overhead`; about 400 tests. |
+| Tooling | `measure-switch-cost` and `bench-overhead`; a test suite of over 500 tests. |
 
 ## Credits
 

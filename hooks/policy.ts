@@ -77,8 +77,8 @@ export type Decision = {
   heldEffort?: Effort;
   /**
    * The tier was named in the prompt itself ("use opus"), so Jev's tier
-   * answer was set aside and stickiness did not get a vote. Its effort still
-   * comes from Jev. Shown on the route line, since a forced turn at 43%
+   * answer was set aside and stickiness did not get a vote. Jev is not asked
+   * at all, so it runs at medium effort. Shown on the route line, since a forced turn at 43%
    * would otherwise read as a low-confidence pick.
    */
   forced?: true;
@@ -328,18 +328,8 @@ export const DEFAULT_STICKY_CONFIDENCE = 0.75;
  * `0`/`false`/`off`/`no`/`none`; opt in explicitly with `1`/`true`/`yes`/`on`.
  */
 export function stickyOf(raw: string | undefined): boolean {
-  const flag = (raw ?? "").trim().toLowerCase();
-  if (
-    flag === "0" ||
-    flag === "false" ||
-    flag === "off" ||
-    flag === "no" ||
-    flag === "none"
-  ) {
-    return false;
-  }
   // Unset, explicit on, or anything else → on (session default).
-  return true;
+  return !flagOff(raw);
 }
 
 /**
@@ -366,7 +356,7 @@ export function confidenceShareOf(raw: string | undefined): number | null {
   const trimmed = (raw ?? "").trim();
   const percent = trimmed.endsWith("%");
   const v = percent ? trimmed.slice(0, -1).trim() : trimmed;
-  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return null;
+  if (!PLAIN_DECIMAL.test(v)) return null;
   const n = Number(v);
   // `1.5` could be 1.5% or a slip for 0.15; `60.5` can only be a percentage.
   if (!percent && n > 1 && n < 10 && !Number.isInteger(n)) return null;
@@ -532,17 +522,7 @@ export function isContinuation(text: string): boolean {
  * On by default; `JEV_ROUTER_ALLOW_OVERRIDE=0` disables them.
  */
 export function overrideAllowedOf(raw: string | undefined): boolean {
-  const flag = (raw ?? "").trim().toLowerCase();
-  if (
-    flag === "0" ||
-    flag === "false" ||
-    flag === "off" ||
-    flag === "no" ||
-    flag === "none"
-  ) {
-    return false;
-  }
-  return true;
+  return !flagOff(raw);
 }
 
 /**
@@ -554,9 +534,17 @@ export function overrideAllowedOf(raw: string | undefined): boolean {
  * asks Jev anyway.
  */
 export function notifyContinueOf(raw: string | undefined): boolean {
-  const flag = (raw ?? "").trim().toLowerCase();
-  return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
+  return !flagOff(raw);
 }
+
+/** The words every on/off setting reads as off: `0`, `false`, `no`, `off`, `none`. */
+export function flagOff(raw: string | undefined): boolean {
+  const flag = (raw ?? "").trim().toLowerCase();
+  return flag === "0" || flag === "false" || flag === "no" || flag === "off" || flag === "none";
+}
+
+/** A plain decimal (`12`, `0.5`, `1000.`, `.5`): no sign, hex or exponent, the same for every setting. */
+export const PLAIN_DECIMAL = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 /**
  * A tier named in the prompt: "use opus", "go with fable", "switch to haiku",
@@ -638,7 +626,9 @@ export function parseOverride(
   // A tier named in a prompt past this many characters is in a paste the
   // engine did not mark; the person's own ask is at the start or the end.
   const own = normalizeQuotes(ownWords(text));
-  const normalized = own.length <= OWN_WORDS_MAX ? own : `${own.slice(0, OWN_WORDS_MAX / 2)}\n${own.slice(-OWN_WORDS_MAX / 2)}`;
+  // Joined with a sentence break, so a phrase cannot form across the cut
+  // ("…use" + "opus…" from "user" and "octopus").
+  const normalized = own.length <= OWN_WORDS_MAX ? own : `${own.slice(0, OWN_WORDS_MAX / 2)}\n.\n${own.slice(-OWN_WORDS_MAX / 2)}`;
   const matches = [...normalized.matchAll(OVERRIDE)];
   const negated = negatedAt(normalized, matches);
   let named: Tier | null = null;
@@ -756,7 +746,11 @@ function negatedAt(text: string, matches: readonly RegExpMatchArray[]): Set<numb
   return bound;
 }
 
-/** A decision forced to a named tier; Jev's effort is kept, its tier is not. */
+/**
+ * A decision forced to a named tier. The router does not ask Jev for one
+ * (`fresh` is null), so it runs at medium; given an answer, its effort would
+ * be kept and its tier set aside.
+ */
 export function forcedDecision(tier: Tier, fresh: Decision | null): Decision {
   return {
     tier,
@@ -862,7 +856,8 @@ export function ceilingOf(raw: string | undefined): Ceiling {
   if (!text) return ceiling;
   const whole = effortNamed(text);
   if (whole !== null) return ceilingAt(whole);
-  for (const part of text.split(",")) {
+  // Commas, semicolons or spaces between the parts, as JEV_ROUTER_EXCLUDE.
+  for (const part of text.replace(/\s*:\s*/g, ":").split(/[\s,;]+/)) {
     const [tierName, effortName] = part.split(":").map((s) => s.trim());
     if (tierName === undefined || effortName === undefined) continue;
     const effort = effortNamed(effortName);
@@ -957,7 +952,7 @@ export function upgradeMaxOf(raw: string | undefined): number | null {
   const v = (raw ?? "").trim().toLowerCase().replace(/^\$/, "");
   if (v === "off" || v === "none") return null;
   // Plain dollars only: `-1` or `0x10` is a mistake, not a limit.
-  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return UPGRADE_MAX_USD;
+  if (!PLAIN_DECIMAL.test(v)) return UPGRADE_MAX_USD;
   return Number(v);
 }
 
@@ -967,8 +962,7 @@ export function upgradeMaxOf(raw: string | undefined): number | null {
  * confidence bar alone.
  */
 export function priceCheckOf(raw: string | undefined): boolean {
-  const flag = (raw ?? "").trim().toLowerCase();
-  return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
+  return !flagOff(raw);
 }
 
 /** The bar an upgrade must clear, given the context it would write. */

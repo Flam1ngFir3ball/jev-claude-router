@@ -172,8 +172,8 @@ export function reasonsOf(attempt: Attempt): string[] {
 
 /**
  * The cheapest tier above `from`, up to `to`, that takes `contextTokens`:
- * where a turn goes when what it would run on is too small. `fromIncluded`
- * false means strictly above `from`. Null when none fits.
+ * where a turn goes when what it would run on is too small. `strictlyAbove`
+ * false lets `from` itself count. Null when none fits.
  */
 function stepUp(
   from: Tier,
@@ -211,17 +211,19 @@ function outgrownOf(running: Decision | null, decision: Decision, contextTokens:
   return running !== null && !fitsWindow(running.tier, contextTokens) ? running.tier : decision.tier;
 }
 
-/** What started a turn nobody typed, in plain words; null for a typed prompt. */
 /**
  * A name from outside the plugin (an agent's type, a model id) as plain
  * words for the route line, the summary's fence and `/jev`: no backticks or
  * newlines to close the fence or start a heading, and not too long.
  */
 export function plain(text: string): string {
-  const flat = oneLine(String(text)).replace(/[`<>|*_#[\]]/g, "");
+  // Only what can close the fence or open a tag: inside a fence and on one
+  // line, `#`, `|`, `_` and `[1m]` are plain text and stay.
+  const flat = oneLine(String(text)).replace(/[`<>]/g, "");
   return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
 }
 
+/** What started a turn nobody typed, in plain words; null for a typed prompt. */
 export function originOf(
   attempt: Pick<Attempt, "kind" | "agent">,
 ): string | null {
@@ -632,8 +634,8 @@ export function attemptOf(
           : hold.sticky;
     decision = stickyDecision(decision, running, bar, verdict, offered);
   }
-  // A forced turn named its tier; effort comes from Jev when it was asked,
-  // otherwise medium. The Sonnet effort gate does not get a vote here.
+  // A forced turn named its tier and runs at medium (Jev is not asked).
+  // The Sonnet effort gate does not get a vote here.
   if (
     !decision.forced &&
     hold.sticky !== null &&
@@ -1412,10 +1414,11 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
 
   /**
    * Holds the blank lines before a fence with it, so none dangle if it goes:
-   * a few, not a run of them, which would be rescanned on every piece.
+   * up to a screenful, not an unbounded run, which would be rescanned on
+   * every piece.
    */
   private backToBlankLines(text: string, p: number): number {
-    for (let held = 0; p > 0 && text[p - 1] === "\n" && held < 4; held++) p--;
+    for (let held = 0; p > 0 && text[p - 1] === "\n" && held < 64; held++) p--;
     return p;
   }
 }

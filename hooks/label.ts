@@ -22,6 +22,8 @@ export function labelOf(
   enabled: boolean,
   /** How the turn got its decision, as the attempt's `kind` says. */
   kind?: "notify" | "agent" | "continue" | "nudge",
+  /** The decision was carried on from an earlier turn without asking Jev. */
+  continued?: boolean,
 ): string | null {
   if (!enabled) return "jev off";
   if (!decision) return null;
@@ -36,7 +38,7 @@ export function labelOf(
     decision.held === undefined &&
     kind !== "continue" &&
     kind !== "nudge" &&
-    kind !== "notify";
+    continued !== true;
   const doubt =
     scored && decision.confidence < LOW_CONFIDENCE
       ? `, only ${Math.round(decision.confidence * 100)}% sure`

@@ -405,8 +405,9 @@ describe("round-3 audit (2026-09-29)", () => {
     assert.match(requestBodyOf("x", TIERS, "task").questions.tier.instructions, /subagent/);
     assert.match(requestBodyOf("x", TIERS, "notification").questions.tier.instructions, /works through the result/);
   });
-  test("a timeout written as 1e3 is a thousand", () => {
-    assert.equal(timeoutOf("1e3"), 1000);
+  test("a timeout is a plain number, as every setting takes: 1e3 is refused, 1000. is not", () => {
+    assert.equal(timeoutOf("1e3"), DEFAULT_TIMEOUT_MS);
+    assert.equal(timeoutOf("1000."), 1000);
   });
 });
 
@@ -417,5 +418,13 @@ describe("round-4 audit (2026-09-29)", () => {
       assert.equal(got.ok, false);
       if (!got.ok) assert.match(got.reason, /^request failed: /);
     }
+  });
+});
+
+describe("the footer's doubt follows the continued flag (2026-09-29)", () => {
+  test("a notification Jev was asked about shows its doubt; one that continued does not", () => {
+    const d = { tier: "opus" as const, model: "claude-opus-5-5", effort: "high" as const, confidence: 0.3 };
+    assert.equal(labelOf(d, true, "notify"), "jev: opus, high effort, only 30% sure");
+    assert.equal(labelOf(d, true, "notify", true), "jev: opus, high effort");
   });
 });

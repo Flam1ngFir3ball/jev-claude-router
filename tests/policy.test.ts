@@ -945,3 +945,20 @@ describe("parseOverride stays fast on long prompts (2026-09-29)", () => {
     }
   });
 });
+
+describe("round-6 parser agreement (2026-09-29)", () => {
+  test("every on/off setting reads none as off", async () => {
+    const { compactOnOf } = await import("../hooks/compactor.ts");
+    const p = await import("../hooks/policy.ts");
+    for (const f of [p.stickyOf, p.overrideAllowedOf, p.notifyContinueOf, p.priceCheckOf, compactOnOf]) assert.equal(f("none"), false, f.name);
+  });
+  test("JEV_ROUTER_CEILING takes semicolons and spaces between parts", () => {
+    for (const raw of ["fable:medium;opus:high", "fable:medium opus:high", "fable: medium, opus: high"]) {
+      const c = ceilingOf(raw);
+      assert.deepEqual([c.fable, c.opus], ["medium", "high"], raw);
+    }
+  });
+  test("a cut long prompt does not join a phrase across the cut", () => {
+    assert.equal(parseOverride(`${"a".repeat(9_997)}use${"b".repeat(15_000)}opus${"c".repeat(9_996)}`), null);
+  });
+});

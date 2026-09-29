@@ -24,6 +24,7 @@ import type {
   ToolUse,
 } from "./compaction/types.ts";
 import { messageOf, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
+import { flagOff, PLAIN_DECIMAL } from "./policy.ts";
 import type { ProviderResult } from "./provider.ts";
 
 /** Below this share removed, the engine's summary does better; its default. */
@@ -40,8 +41,7 @@ const MAX_COMPACT_TIMEOUT_MS = 8_000;
 
 /** `JEV_ROUTER_COMPACT`: on unless `0`, `false`, `no` or `off`. */
 export function compactOnOf(raw: string | undefined): boolean {
-  const flag = (raw ?? "").trim().toLowerCase();
-  return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
+  return !flagOff(raw);
 }
 
 /**
@@ -54,7 +54,7 @@ export const MIN_COMPACT_TIMEOUT_MS = 100;
 export function compactTimeoutOf(raw: string | undefined): number {
   const v = (raw ?? "").trim();
   const n = Number(v);
-  if (!/^\d+(?:\.\d+)?(?:e\+?\d+)?$/i.test(v) || !Number.isFinite(n) || n < MIN_COMPACT_TIMEOUT_MS)
+  if (!PLAIN_DECIMAL.test(v) || n < MIN_COMPACT_TIMEOUT_MS)
     return DEFAULT_COMPACT_TIMEOUT_MS;
   return Math.min(n, MAX_COMPACT_TIMEOUT_MS);
 }
@@ -69,7 +69,7 @@ export function minReductionOf(raw: string | undefined): number {
   const percent = trimmed.endsWith("%");
   const v = percent ? trimmed.slice(0, -1).trim() : trimmed;
   // Plain decimals, as the other settings: `0x19` or `1e1` is a mistake.
-  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)) return MIN_REDUCTION;
+  if (!PLAIN_DECIMAL.test(v)) return MIN_REDUCTION;
   const n = Number(v);
   return percent || n > 1 ? Math.min(n / 100, 1) : n;
 }

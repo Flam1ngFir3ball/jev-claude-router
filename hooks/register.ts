@@ -103,7 +103,7 @@ async function ownerOf(
   key: string,
 ): Promise<number | null> {
   try {
-    return claimOf(await $.store.get(`${OWNER_PREFIX}${key}`))?.birth ?? null;
+    return stampOf(await $.store.get(`${OWNER_PREFIX}${key}`));
   } catch {
     return null;
   }
@@ -200,12 +200,22 @@ const OWNER_TTL_MS = 30 * 60 * 1000;
 /** How often the holder refreshes its claim, well inside `OWNER_TTL_MS`. */
 const OWNER_REFRESH_MS = 5 * 60 * 1000;
 
+/** Store key prefix for when a session's holder last claimed it. */
+const SEEN_PREFIX = "seen:";
+
 /**
- * An owner record: the holding copy's stamp and when it last claimed. A
- * record from before `at` existed is a bare stamp, which was its load time.
+ * The holding copy's stamp from an owner record: a bare number, as every
+ * version writes it (and `{ birth }` from a short-lived one that did not).
  */
-function claimOf(raw: unknown): { birth: number; at: number } | null {
-  if (typeof raw === "number" && Number.isFinite(raw)) return { birth: raw, at: raw };
+function stampOf(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "object" && raw !== null && typeof (raw as { birth?: unknown }).birth === "number")
+    return (raw as { birth: number }).birth;
+  return null;
+}
+
+/** A `seen:` record: which copy claimed, and when. */
+function seenOf(raw: unknown): { birth: number; at: number } | null {
   if (
     typeof raw === "object" && raw !== null &&
     typeof (raw as { birth?: unknown }).birth === "number" &&
@@ -438,14 +448,20 @@ async function saveSnapshot(
       for (const stale of staleKeys(keys, key, savedAt)) {
         await $.store.delete(stale);
         await $.store.delete(`${OWNER_PREFIX}${stale}`);
+        await $.store.delete(`${SEEN_PREFIX}${stale}`);
       }
       // A claim on a session that never saved (left at once for a /resume
       // or a /clear) has no snapshot to be pruned with; one a day old is
       // nobody's live session any more.
       for (const owner of orphanOwnerKeys(keys, OWNER_PREFIX, key)) {
-        const claim = claimOf(await $.store.get(owner));
-        if (claim === null || Date.now() - claim.at > ORPHAN_OWNER_MS)
+        const seenKey = `${SEEN_PREFIX}${owner.slice(OWNER_PREFIX.length)}`;
+        const stamp = stampOf(await $.store.get(owner));
+        const seen = seenOf(await $.store.get(seenKey));
+        const last = seen !== null && seen.birth === stamp ? seen.at : stamp;
+        if (last === null || Date.now() - last > ORPHAN_OWNER_MS) {
           await $.store.delete(owner);
+          await $.store.delete(seenKey);
+        }
       }
       // Keys are kept in the order they were first written, and the oldest
       // are dropped; moving this session to the end makes that the order
@@ -489,17 +505,28 @@ async function ownsSession(
   claim: boolean,
 ): Promise<boolean> {
   try {
-    const at = `${OWNER_PREFIX}${key}`;
-    const owner = claimOf(await $.store.get(at));
+    const ownerKey = `${OWNER_PREFIX}${key}`;
+    const seenKey = `${SEEN_PREFIX}${key}`;
+    const owner = stampOf(await $.store.get(ownerKey));
+    const seen = seenOf(await $.store.get(seenKey));
+    // When the holder last claimed, if it says: a copy of an earlier version
+    // writes no `seen:` record, and its claim never goes stale here, as it
+    // never did before.
+    const lastSeen = owner !== null && seen !== null && seen.birth === owner ? seen.at : null;
     // A newer copy that has not been seen for a while is gone (a process
     // killed without its session.end): it no longer holds the session.
-    if (owner !== null && owner.birth > birth && Date.now() - owner.at < OWNER_TTL_MS) return false;
-    // A newer copy (or one taking over from a gone one) writes its claim;
-    // the holder refreshes its own every few minutes, which keeps it from
-    // going stale while in use without a store write on every step.
-    const age = owner === null ? Infinity : Date.now() - owner.at;
-    if (claim && (owner === null || owner.birth < birth || age >= OWNER_TTL_MS || (owner.birth === birth && age >= OWNER_REFRESH_MS)))
-      await $.store.set(at, { birth, at: Date.now() });
+    const gone = lastSeen !== null && Date.now() - lastSeen >= OWNER_TTL_MS;
+    if (owner !== null && owner > birth && !gone) return false;
+    if (claim) {
+      // The owner record stays a bare stamp, which earlier versions read.
+      if (owner === null || owner < birth || gone) {
+        await $.store.set(ownerKey, birth);
+        await $.store.set(seenKey, { birth, at: Date.now() });
+      } else if (owner === birth && (lastSeen === null || Date.now() - lastSeen >= OWNER_REFRESH_MS)) {
+        // The holder refreshes every few minutes, not on every step.
+        await $.store.set(seenKey, { birth, at: Date.now() });
+      }
+    }
     return true;
   } catch {
     return true;
@@ -583,7 +610,10 @@ async function releaseSession(
 ): Promise<void> {
   try {
     const at = `${OWNER_PREFIX}${key}`;
-    if (claimOf(await $.store.get(at))?.birth === birth) await $.store.delete(at);
+    if (stampOf(await $.store.get(at)) === birth) {
+      await $.store.delete(at);
+      await $.store.delete(`${SEEN_PREFIX}${key}`);
+    }
   } catch {
     // Nothing to release, or the store is unreadable: the next claim decides.
   }
@@ -2133,7 +2163,8 @@ export function register(on: On) {
   // carries on surfaces that draw no footer, which is most of them.
   on("ui.render", { component: "SessionMode" }, async ($, e, next) => {
     if (inert) return next(e);
-    const modes = withLabel(e.props.modes, labelOf(latest, enabled, attempts.find((a) => a.kind !== "agent")?.kind));
+    const last = attempts.find((a) => a.kind !== "agent");
+    const modes = withLabel(e.props.modes, labelOf(latest, enabled, last?.kind, last?.continued));
     return next({ ...e, props: { ...e.props, modes } });
   });
 }

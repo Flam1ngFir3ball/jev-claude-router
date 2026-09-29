@@ -189,15 +189,22 @@ Ready and merged, held back from a version bump until approved:
   `/clear` or a resume elsewhere) saves it first.
 - **A notification that continued the route** no longer shows the earlier
   turn's "Jev N%" as if Jev had scored it.
-- **`JEV_ROUTER_COMPACT_MIN_REDUCTION`** refuses hex and exponents, as the
-  other settings do.
+- **Every numeric setting takes the same plain decimals** (no sign, hex or
+  exponent; `1000.` is fine), and **every on/off setting the same off
+  words** (`0`, `false`, `no`, `off`, `none`): `JEV_ROUTER_PRICE_CHECK=none`
+  and `JEV_ROUTER_COMPACT=none` used to leave them on.
+  `JEV_ROUTER_CEILING` takes semicolons and spaces between its parts.
+- **The footer shows Jev's doubt on a notification Jev was asked about**,
+  and none on one that continued the route.
 - README examples now match what the plugin prints: the effort-cap
   diagram under the `xhigh` default, the summary and `/jev` costs, the
   agents line and dollar formats.
 - **A claim left by a process that was killed** (no `session.end`) expires
   after 30 minutes unrefreshed, instead of leaving an older live copy
-  unrouted for that session for good. The holder refreshes its claim every
-  few minutes.
+  unrouted for that session for good. The holder refreshes a separate
+  `seen:` record every few minutes; the owner record itself stays the bare
+  number earlier versions read, so a process still on an earlier version
+  and this one never both act on a session.
 - **Forks and other agents the router leaves alone** are kept apart from
   routed ones and capped, so they neither grow the snapshot nor push out a
   routed agent. `/clear` with an unreadable agent list keeps running agents'
@@ -206,8 +213,9 @@ Ready and merged, held back from a version bump until approved:
   to a minute, a reply ending in 100k blank lines about ten seconds, and a
   long run of spaces in an error message as long; each is now milliseconds.
 - **Names from outside the plugin** (an agent's type, a model id, a task's
-  summary) are shown as plain words, so they cannot close the summary's
-  fence or start a heading that reads as plugin output.
+  summary) lose backticks, newlines and angle brackets before they are
+  shown, so they cannot close the summary's fence or start a heading that
+  reads as plugin output; `[1m]`, `_`, `#` and `|` stay as written.
 - **A resume into another session** reads that session's model afresh
   instead of keeping the one this process was on, and an agent the router
   left alone keeps its single history row across a reload.

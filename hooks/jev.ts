@@ -17,7 +17,7 @@
  * under plain `node` in tests, with no engine and no network.
  */
 
-import { EFFORT_CRITERIA, TIER_CRITERIA, type Tier } from "./policy.ts";
+import { EFFORT_CRITERIA, PLAIN_DECIMAL, TIER_CRITERIA, type Tier } from "./policy.ts";
 import type { ProviderResult } from "./provider.ts";
 
 /**
@@ -102,7 +102,7 @@ export const MIN_TIMEOUT_MS = 100;
 export function timeoutOf(raw: string | undefined): number {
   const v = (raw ?? "").trim();
   const parsed = Number(v);
-  if (!/^\d+(?:\.\d+)?(?:e\+?\d+)?$/i.test(v) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
+  if (!PLAIN_DECIMAL.test(v) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
   return Math.min(parsed, MAX_TIMEOUT_MS);
 }
 
@@ -156,12 +156,6 @@ export type HttpInitLike = {
   signal?: AbortSignal;
 };
 
-/**
- * The request body for one routing decision: two questions Jev answers in
- * parallel, the tier as a Choice and the effort as a Score.
- *
- * The model field is added by askJev depending on which provider is used.
- */
 /** What the text Jev grades is: a typed prompt, a subagent's task, a finished task's report. */
 export type StateSource = "prompt" | "task" | "notification";
 
@@ -182,6 +176,12 @@ const TIER_QUESTION: Record<StateSource, string> = {
     "to do next. Which model tier should do that?",
 };
 
+/**
+ * The request body for one routing decision: two questions Jev answers in
+ * parallel, the tier as a Choice and the effort as a Score.
+ *
+ * The model field is added by askJev depending on which provider is used.
+ */
 export function requestBodyOf(state: string, offered: readonly Tier[], source: StateSource = "prompt") {
   const criteria: Record<string, string> = {};
   for (const tier of offered) criteria[tier] = TIER_CRITERIA[tier];
