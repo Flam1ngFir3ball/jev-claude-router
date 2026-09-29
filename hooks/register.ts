@@ -767,6 +767,12 @@ export function register(on: On) {
   let cacheExpired = false;
   /** The model a resume event reported, until the resumed snapshot is restored against it. */
   let resumedOn: string | null = null;
+  /**
+   * A snapshot was restored since the last turn: the session model it held
+   * may be another process's, or from before a resume that did not name the
+   * model, so the next turn checks it against the engine's.
+   */
+  let liveModelDue: { model: string | null } | null = null;
   /** A resume or fork event has said whether the cache expired: that outranks a snapshot's word. */
   let resumeSpoke = false;
   /**
@@ -982,6 +988,7 @@ export function register(on: On) {
       resumedOn = null;
       return;
     }
+    liveModelDue = { model: s.sessionModel ?? null };
     attempts.splice(0, attempts.length, ...s.attempts);
     reply = s.reply;
     replyAgents = new Set(s.replyAgents);
@@ -1618,7 +1625,36 @@ export function register(on: On) {
         // quote files it read: Jev is told only the task's one-line summary.
         : notification
           ? classify($, notificationStateOf(e.text), offered, settings, askAbort.signal, "notification")
-          : classify($, e.text, offered, settings, askAbort.signal);
+          // Text typed ahead of a notification is still the person's, but
+          // the notification's result is not sent with it.
+          : classify(
+              $,
+              /<task-notification\b/.test(e.text) ? notificationStateOf(e.text) : e.text,
+              offered,
+              settings,
+              askAbort.signal,
+            );
+    // A restored session model is checked against the engine's once: when
+    // it has changed, a placeholder seeded from the old one no longer says
+    // what the session runs on, and holding to it would send a model the
+    // session left (a tier turned off included). A routed decision stays:
+    // its cache is the conversation's, whatever the session is set to.
+    if (liveModelDue !== null) {
+      const restored = liveModelDue.model;
+      liveModelDue = null;
+      const live = await sessionModelOf($);
+      if (live !== null) {
+        if (
+          running !== null &&
+          running.effortConfidence === undefined &&
+          restored !== null &&
+          sameModelAs(running.model, restored) &&
+          !sameModelAs(running.model, live)
+        )
+          running = sessionDecision(live);
+        sessionModel = live;
+      }
+    }
     const reported = await contextTokensOf($);
     // With no context yet (a fresh session) nothing tells two sessions
     // apart, so their claims are kept apart by the session's own key.

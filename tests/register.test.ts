@@ -4596,6 +4596,71 @@ describe("register: round-8 findings (2026-09-29)", () => {
   });
 });
 
+describe("register: a restored session model is checked against the engine's (2026-09-29)", () => {
+  test("a resume without a model does not hold to the placeholder of the session's old model", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-LA" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_EXCLUDE: "opus" }, shared);
+    const start = kit.hooks.get("classic.SessionStart")!;
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setSessionModel("claude-opus-5");
+    kit.setContext(100_000);
+    await start(kit.$, { source: "resume", model: "claude-opus-5", context_tokens: 100_000 }, async (e: unknown) => e);
+    kit.fail();
+    await kit.hooks.get("turn.start")!(kit.$, { text: "implement cursor pagination", turnId: "l1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "l1", index: 0 }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5")));
+    shared.id = "sess-LB";
+    kit.setContext(null);
+    await start(kit.$, { source: "clear" }, async (e: unknown) => e);
+    shared.id = "sess-LA";
+    kit.setSessionModel("claude-opus-5-5");
+    kit.setContext(100_000);
+    await start(kit.$, { source: "resume", context_tokens: 100_000 }, async (e: unknown) => e);
+    kit.setTier("haiku", 0.6);
+    let sent = "";
+    await kit.hooks.get("turn.start")!(kit.$, { text: "implement cursor pagination", turnId: "l2" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "l2", index: 0 }, (e: { model: string }) => ((sent = e.model ?? "claude-opus-5-5"), answeredBy(sent))));
+    assert.notEqual(sent, "claude-opus-5");
+  });
+  test("a second process on another model does not send the first one's placeholder", async () => {
+    const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };
+    const shared = { store: new Map<string, unknown>(), id: "sess-LP" };
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_EXCLUDE: "fable" };
+    const a = load(env, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    a.setSessionModel("claude-fable-5-1");
+    a.setContext(100_000);
+    await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume", model: "claude-fable-5-1", context_tokens: 100_000 }, async (e: unknown) => e);
+    a.fail();
+    await a.hooks.get("turn.start")!(a.$, { text: "implement cursor pagination", turnId: "p1" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "p1", index: 0 }, (e: { model: string }) => answeredBy(e.model ?? "claude-fable-5-1")));
+    g.__jevRouterNewest = undefined;
+    g.__jevRouterLive = undefined;
+    await new Promise((r) => setTimeout(r, 5));
+    const b = load(env, shared);
+    b.setSessionModel("claude-sonnet-5-5");
+    b.setContext(100_000);
+    b.setTier("haiku", 0.6);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    let sent = "";
+    await b.hooks.get("turn.start")!(b.$, { text: "implement cursor pagination for reports", turnId: "p2" }, async (e: unknown) => e);
+    await collect(b.hooks.get("turn.step")!(b.$, { turnId: "p2", index: 0 }, (e: { model: string }) => ((sent = e.model ?? "claude-sonnet-5-5"), answeredBy(sent))));
+    assert.notEqual(sent, "claude-fable-5-1");
+  });
+});
+
+describe("register: text typed ahead of a notification (2026-09-29)", () => {
+  test("is sent to Jev without the notification's result", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const text =
+      "please look\n<task-notification><task-id>t9</task-id><summary>Agent \"reader\" completed</summary><result>API_TOKEN=sk-secret-123</result></task-notification>";
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: "n1" }, async (e: unknown) => e);
+    const state = kit.lastState() ?? "";
+    assert.ok(state.includes("please look"), state);
+    assert.ok(!state.includes("sk-secret"), state);
+  });
+});
+
 describe("register: the copy that lost a same-stamp tie does not release the winner's claim (2026-09-29)", () => {
   test("session.end on the loser leaves the holder's owner and seen records", async () => {
     const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };

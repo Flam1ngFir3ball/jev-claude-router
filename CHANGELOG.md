@@ -250,6 +250,13 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **A session model restored from a snapshot is checked against the
+  engine's** on the next turn: a resume that did not name the model, or a
+  second process on another one, no longer holds to the old model's
+  placeholder (sending a model the session left, a turned-off tier
+  included).
+- Text typed ahead of a task's notification is sent to Jev without the
+  notification's result.
 - A copy that lost a same-stamp tie does not release the winner's claim;
   a resume reporting a dated id of the running model keeps the routed
   tier; a backticked tier is read after every route verb.
