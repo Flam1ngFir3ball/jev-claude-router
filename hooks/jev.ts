@@ -64,8 +64,8 @@ export function stateOf(text: string): string {
 export function messageOf(error: unknown): string {
   try {
     if (error instanceof Error && typeof error.message === "string") return error.message || "unknown error";
-    if (typeof error === "string") return error || "unknown error";
-    if (typeof error === "number" || typeof error === "boolean") return String(error);
+    // A bare number or a blank string says nothing a person can use either.
+    if (typeof error === "string") return error.trim() || "unknown error";
     // `undefined`, `[object Object]` and the like say nothing to a person.
     return "unknown error";
   } catch {

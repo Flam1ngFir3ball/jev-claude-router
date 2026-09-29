@@ -286,6 +286,17 @@ Ready and merged, held back from a version bump until approved:
   for the line; "if it works, switch to haiku" is a condition again.
 - A summary fence whose long first line streams in small pieces is held
   without rescanning it for each piece.
+- **After a resume that names no model, or a reload, the next turn checks
+  the session's model**: a placeholder of the model the session ran on
+  before (a turned-off tier included) is replaced by what it is on now.
+- An answering model id a snapshot could not hold (a control character,
+  markdown, a runaway length) is not adopted, so the snapshot stays
+  readable.
+- A stream cut short while a route-line look-alike is held still opens
+  with the real line, and usage already read ahead is counted when the
+  engine stops reading first.
+- A request that fails with a bare number or blank text reads "unknown
+  error".
 - **A resume that names no model no longer carries an earlier resume's
   model into another session**: resuming one session and then another
   could send the first one's model (a tier turned off included) to the

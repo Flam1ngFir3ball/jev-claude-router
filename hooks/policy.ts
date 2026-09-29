@@ -483,10 +483,20 @@ export function withinWindow(
  * switch is priced against. Null for a model off the ladder.
  */
 export function sessionDecision(model: string): Decision | null {
+  // A spelling a snapshot could not hold (a control character, markdown, a
+  // runaway length) is not adopted: saved, it would lose the whole state.
+  if (!MODEL_ID.test(model)) return null;
   const tier = tierOfModel(model);
   if (tier === null) return null;
   return { tier, model, effort: "medium", confidence: 1 };
 }
+
+/**
+ * A model id as the engine spells one — `claude-opus-5-5[1m]`, a Bedrock id
+ * or ARN, a Vertex path, `+build` — and nothing the route line (a rendered
+ * blockquote) would read as markdown: no spaces, parentheses or emphasis.
+ */
+export const MODEL_ID = /^[\w.:/@+\[\]-]{1,512}$/;
 
 /**
  * A turn the engine started, not the person: its "say what you are doing,

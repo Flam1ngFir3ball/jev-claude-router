@@ -252,6 +252,15 @@ const PRUNE_TAIL_REUSED = 6;
  * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
  * Null for an id off the ladder or not a string.
  */
+/** Marks the end of a step's stream, after its last chunk. */
+const STEP_END = Symbol("step-end");
+
+/** `source`, then `STEP_END`. */
+async function* withEnd<T>(source: AsyncIterable<T>): AsyncGenerator<T | typeof STEP_END> {
+  for await (const item of source) yield item;
+  yield STEP_END;
+}
+
 function warmDecision(model: unknown, effort: unknown): Decision | null {
   if (typeof model !== "string" || model === "") return null;
   const warm = sessionDecision(model.replace(/-\d{8}$/, ""));
@@ -1218,7 +1227,11 @@ export function register(on: On) {
     // or it would linger for a later one.
     // A resume that names no model leaves nothing to check against: what an
     // earlier resume named was another session's.
-    if ((e.source === "resume" || e.source === "fork") && typeof e.model !== "string") resumedOn = null;
+    // Nor does it say what the session is on now: the next turn asks.
+    if ((e.source === "resume" || e.source === "fork") && typeof e.model !== "string") {
+      resumedOn = null;
+      liveModelDue = { model: sessionModel };
+    }
     if ((e.source === "resume" || e.source === "fork") && typeof e.model === "string") {
       if (snapshotKey === undefined && restoreOnKey) resumedOn = e.model;
       else {
@@ -1663,11 +1676,16 @@ export function register(on: On) {
       liveModelDue = null;
       const live = await sessionModelOf($);
       if (live !== null) {
+        // A placeholder (what the session ran on unrouted, never a choice:
+        // no effort confidence, not named, not held) that is not the live
+        // model any more is replaced, whoever's model it was.
+        void restored;
         if (
           running !== null &&
           running.effortConfidence === undefined &&
-          restored !== null &&
-          sameModelAs(running.model, restored) &&
+          running.forced === undefined &&
+          running.held === undefined &&
+          running.jevFailed === undefined &&
           !sameModelAs(running.model, live)
         )
           running = sessionDecision(live);
@@ -2035,16 +2053,26 @@ export function register(on: On) {
     const holdsNow = async () =>
       (holds ??= !superseded() && (await holdsTurnOf(e.turnId)));
 
-    for await (const raw of step) {
+    // The stream's end comes through the loop too, so text the filter still
+    // holds (a stream cut short with no stop chunk) gets the line as any does.
+    // A stop chunk read ahead (while the filter held text) whose usage the
+    // loop has not counted yet: counted in the finally if the engine stops
+    // reading first, since the response was paid for either way.
+    let unbilled: StepChunk | null = null;
+    try {
+    for await (const item of withEnd(step)) {
+      const ended = item === STEP_END;
+      const raw = (ended ? { kind: "stop" } : item) as StepChunk;
       // A chunk outside the engine's contract (none, or text that is not a
       // string) is passed on as it came, untouched and uncounted.
-      if (typeof raw !== "object" || raw === null || (raw.kind === "text" && typeof raw.text !== "string")) {
+      if (!ended && (typeof raw !== "object" || raw === null || (raw.kind === "text" && typeof raw.text !== "string"))) {
         yield raw;
         continue;
       }
       // The model answering at all means the request was read, and its
       // cache written on the new model, whether or not usage ever arrives.
       if (
+        !ended &&
         unconfirmed !== null &&
         e.agentId === undefined &&
         (raw.kind === "text" || raw.kind === "thinking" || raw.kind === "tool" || raw.kind === "input")
@@ -2056,8 +2084,11 @@ export function register(on: On) {
       }
       const at = (raw as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
+      if (!ended && raw.kind === "stop" && raw.usage) unbilled = raw;
       let pieces: StepChunk[] = [raw];
-      if (raw.kind === "text" && raw.ref !== undefined && attempt && !inert) {
+      if (ended) {
+        pieces = filter ? filter.end() : [];
+      } else if (raw.kind === "text" && raw.ref !== undefined && attempt && !inert) {
         if (filter === undefined)
           filter = (await holdsNow()) ? new ImitationFilter<TextChunk>() : null;
         if (filter) pieces = filter.push(raw);
@@ -2100,6 +2131,7 @@ export function register(on: On) {
 
       if (chunk.kind === "stop") {
         if (chunk.usage) {
+          if (chunk === unbilled) unbilled = null;
           const usage = normalUsage(chunk.usage);
           if (attempt) {
             // addUsage's return, not a before/after diff of attempt.cost:
@@ -2226,8 +2258,13 @@ export function register(on: On) {
       yield chunk;
       }
     }
-    // A stream that ended without a stop chunk still gets what was held.
-    if (filter) for (const chunk of filter.end()) yield chunk;
+    } finally {
+      if (unbilled !== null && unbilled.kind === "stop" && unbilled.usage) {
+        const usage = normalUsage(unbilled.usage);
+        spent += attempt ? addUsage(attempt, usage, settings.ttl) : (usageCost(usage.model, usage, settings.ttl) ?? 0);
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
+      }
+    }
   });
 
   // A subagent is routed at its spawn, the one moment its task is in hand as

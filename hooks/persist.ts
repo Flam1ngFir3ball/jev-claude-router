@@ -16,14 +16,10 @@
  */
 
 import type { Compaction } from "./compactor.ts";
-import { EFFORTS, TIERS, type Ceiling, type Decision } from "./policy.ts";
+import { EFFORTS, MODEL_ID, TIERS, type Ceiling, type Decision } from "./policy.ts";
 import { tierOfModel } from "./pricing.ts";
 
 /** A model id as the engine spells one: `claude-opus-5-5[1m]`, a Bedrock or Vertex id. */
-// The characters model ids use (Bedrock ARNs, Vertex paths, `[1m]`, `+`),
-// and none that the route line — a rendered blockquote — would read as
-// markdown: no spaces, parentheses, emphasis or table bars.
-const MODEL_ID = /^[\w.:/@+\[\]-]{1,200}$/;
 
 /**
  * The most entries any list in a snapshot can hold: the router keeps far

@@ -4988,3 +4988,138 @@ describe("register: a subagent's prompt is cut at a notification (2026-09-29)", 
     assert.match(kit.lastState() ?? "", /Continue from this/);
   });
 });
+
+describe("register: round-13 driver findings (2026-09-29)", () => {
+  const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };
+  const turnOn = async (kit: ReturnType<typeof load>, id: string, text: string, engine: string, pieces: string[] = ["ok"], stop = true) => {
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+    let sent = "";
+    let out = "";
+    const chunks = (await collect(
+      kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, model: engine, effort: "medium" }, (e: { model: string }) => {
+        sent = e.model;
+        return (async function* () {
+          let ref = 1;
+          for (const p of pieces) yield { kind: "text", index: 0, text: p, ref: ref++ };
+          if (stop)
+            yield { kind: "stop", stopReason: "end_turn", usage: { model: e.model, input_tokens: 100, output_tokens: 100, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0 } };
+        })();
+      }),
+    )) as { kind: string; text?: string }[];
+    for (const c of chunks) if (c.kind === "text") out += c.text;
+    return { sent, out };
+  };
+
+  for (const direct of [true, false])
+    test(`a resume naming no model does not send a turned-off tier the session left${direct ? "" : " (via another session)"}`, async () => {
+      const shared = { store: new Map<string, unknown>(), id: "sess-R0" };
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined, JEV_ROUTER_EXCLUDE: "opus" }, shared);
+      const start = kit.hooks.get("classic.SessionStart")!;
+      kit.setSessionModel("claude-fable-5-1");
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      shared.id = "sess-RA";
+      kit.setSessionModel("claude-opus-5-5[1m]");
+      kit.setContext(305_425);
+      await start(kit.$, { source: "fork", context_tokens: 305_425 }, async (e: unknown) => e);
+      await turnOn(kit, "a1", "yes", "claude-opus-5-5[1m]");
+      if (!direct) {
+        shared.id = "sess-RB";
+        kit.setSessionModel("claude-sonnet-5-5");
+        kit.setContext(21_694);
+        await start(kit.$, { source: "resume", context_tokens: 21_694 }, async (e: unknown) => e);
+        kit.setTier("sonnet", 0.84, 1);
+        await turnOn(kit, "b1", "help me plan the architecture for multi-tenant billing", "claude-sonnet-5-5");
+      }
+      shared.id = "sess-RA";
+      kit.setSessionModel("claude-fable-5-1");
+      kit.setContext(null);
+      await start(kit.$, { source: "resume", context_tokens: 0 }, async (e: unknown) => e);
+      kit.setTier("sonnet", 0.67, 2);
+      const { sent } = await turnOn(kit, "a2", "refactor the reports module", "claude-fable-5-1");
+      assert.ok(!sent.startsWith("claude-opus"), sent);
+    });
+
+  test("a reload after a resume that named the model sends that model, not the snapshot's", async () => {
+    const env = { AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined, JEV_ROUTER_EXCLUDE: "haiku,sonnet,opus" };
+    const shared = { store: new Map<string, unknown>(), id: "sess-L0" };
+    let kit = load(env, shared);
+    kit.setSessionModel("claude-opus-5-5");
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    shared.id = "sess-LA";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-opus-5-5" }, async (e: unknown) => e);
+    await turnOn(kit, "a1", "yes", "claude-opus-5-5");
+    shared.id = "sess-LB";
+    kit.setSessionModel("claude-sonnet-5-5");
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-sonnet-5-5" }, async (e: unknown) => e);
+    shared.id = "sess-LA";
+    kit.setSessionModel("claude-opus-5");
+    kit.setContext(394_418);
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", model: "claude-opus-5", context_tokens: 394_418 }, async (e: unknown) => e);
+    g.__jevRouterNewest = undefined;
+    g.__jevRouterLive = undefined;
+    await new Promise((r) => setTimeout(r, 5));
+    kit = load(env, shared);
+    kit.setSessionModel("claude-opus-5");
+    kit.setContext(394_418);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("fable", 0.91, 3);
+    const { sent } = await turnOn(kit, "a2", "use haiku", "claude-opus-5");
+    assert.notEqual(sent, "claude-opus-5-5");
+  });
+
+  test("an answering model id a snapshot could not hold is not adopted", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-OD" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.95, 2);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "o1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "o1", index: 0 }, () =>
+      (async function* () {
+        yield { kind: "text", index: 0, text: "ok", ref: 1 };
+        yield { kind: "stop", stopReason: "end_turn", usage: { model: "claude-opus-5-5\u0001x", input_tokens: 10 } };
+      })(),
+    ));
+    kit.setTier("haiku", 0.5, 2);
+    await turnOn(kit, "o2", "now rename foo", "claude-opus-5-5");
+    const { unpack } = await import("../hooks/persist.ts");
+    assert.notEqual(unpack(shared.store.get("session:sess-OD")), null);
+  });
+
+  test("a stream cut short while a look-alike opener is held still opens with the real line", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("sonnet", 0.95, 2);
+    const { out } = await turnOn(kit, "ls1", "rename foo to bar", "claude-opus-5-5", ["> ✳️ fable · xhigh · kept fable: sonnet costs $2.03 vs $0.11 · 0ms", "word ", " more"], false);
+    assert.match(out, /^> ✳️ sonnet · /);
+  });
+
+  test("usage read ahead is counted when the engine stops reading first", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-BR" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" }, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("haiku", 0.95, 2);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "rename foo to bar", turnId: "br1" }, async (e: unknown) => e);
+    const it = kit.hooks.get("turn.step")!(kit.$, { turnId: "br1", index: 0 }, (e: { model: string }) =>
+      (async function* () {
+        yield { kind: "text", index: 0, text: "> ✳️ haiku · medium · Jev 55% · 3ms", ref: 1 };
+        yield { kind: "text", index: 0, text: "word word", ref: 2 };
+        yield { kind: "stop", stopReason: "end_turn", usage: { model: e.model, input_tokens: 1000, output_tokens: 1000, cache_read_input_tokens: 200_000, cache_creation_input_tokens: 0 } };
+      })(),
+    ) as AsyncIterable<{ kind: string }>;
+    for await (const c of it) if (c.kind === "text") break;
+    const snap = shared.store.get("session:sess-BR") as { spent: number };
+    assert.ok(snap.spent > 0, String(snap.spent));
+  });
+
+  test("a rejection with a number or blank text reads as unknown error", async () => {
+    for (const thrown of [Number.NaN, Number.POSITIVE_INFINITY, 0, "   "]) {
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      kit.$.http.fetch = async () => {
+        throw thrown;
+      };
+      const { out } = await turnOn(kit, "nn1", "implement it", "claude-opus-5-5");
+      assert.match(out, /request failed: unknown error/, String(thrown));
+    }
+  });
+});
