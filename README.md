@@ -217,7 +217,11 @@ on the previous turn's tier and effort without asking Jev.
 finishes or with its own "still working" nudge, continues the reply's route
 without a Jev call, so it adds no latency and cannot switch the model under
 a reply in progress. `JEV_ROUTER_NOTIFY_CONTINUE=0` asks Jev about finished
-tasks anyway.
+tasks anyway. Either way a finished task adds no route line to a reply that
+is still open or already summarised. The engine hands the router an empty
+prompt for its nudge and for a prompt with no words (an image on its own),
+and the two cannot be told apart, so a words-free prompt also continues the
+last route.
 
 ### 2. The window guard
 

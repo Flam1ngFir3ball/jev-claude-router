@@ -2079,6 +2079,21 @@ describe("register: one summary per reply", () => {
     assert.doesNotMatch(next, /2 turns/);
   });
 
+  test("a task that wakes a reply already summarised gets no second line or block, even after an unrouted turn", async () => {
+    const { hooks, $, fail, setAgentStatus } = await started();
+    setAgentStatus("completed");
+    fail();
+    await hooks.get("turn.start")!($, { text: "review everything", turnId: "u1" }, async (e: unknown) => e);
+    await spawn(hooks, $);
+    const first = (
+      await collect(hooks.get("turn.step")!($, { turnId: "u1", index: 0 }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5-5")))
+    ).filter((c) => c.kind === "text").map((c) => c.text).join("");
+    assert.equal(first.match(/% cached\)/g)?.length, 1, "the reply is summarised");
+    const woken = await turn(hooks, $, "u2", '<task-notification><task-id>agent-1</task-id><summary>Agent "reviewer" completed</summary></task-notification>');
+    assert.doesNotMatch(woken, /^> /, "no route line");
+    assert.doesNotMatch(woken, /% cached\)/, "no second summary");
+  });
+
   test("an agent from an earlier reply does not hold a later reply's summary", async () => {
     const { hooks, $, setAgentStatus } = await started();
     setAgentStatus("running");
@@ -3801,5 +3816,39 @@ describe("register: a resume into another session in the same process (2026-09-2
     shared.id = "sess-OY";
     await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume" }, async (e: unknown) => e);
     assert.equal(store.has("owner:session:sess-OX"), false);
+  });
+});
+
+describe("register: store growth (2026-09-29)", () => {
+  test("finished subagents are trimmed from the map, running ones kept", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-SPAWN" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const rows: { id: string; type: string; description: string; status: string }[] = [];
+    kit.$.agent.list = async () => rows;
+    for (let i = 0; i < 80; i++) {
+      const id = `agent-${i}`;
+      rows.push({ id, type: "Explore", description: "d", status: i === 3 ? "running" : "completed" });
+      await kit.hooks.get("agent.spawn")!(
+        kit.$,
+        { prompt: "list files", description: "d", subagentType: "Explore", fork: false, background: true },
+        async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: id }),
+      );
+    }
+    const snap = shared.store.get("session:sess-SPAWN") as { spawned: [string, number][] };
+    assert.ok(snap.spawned.length <= 33, `kept ${snap.spawned.length}`);
+    assert.ok(snap.spawned.some(([id]) => id === "agent-3"), "the running one stays");
+  });
+  test("a day-old claim on a session that never saved is dropped", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-NEW" };
+    shared.store.set("owner:session:sess-GONE", Date.now() - 2 * 24 * 60 * 60 * 1000);
+    shared.store.set("owner:session:sess-RECENT", Date.now() - 60_000);
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "o1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "o1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    assert.equal(shared.store.has("owner:session:sess-GONE"), false);
+    assert.equal(shared.store.has("owner:session:sess-RECENT"), true, "a recent one may be a live session");
+    assert.equal(shared.store.has("owner:session:sess-NEW"), true);
   });
 });

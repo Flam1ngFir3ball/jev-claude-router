@@ -37,6 +37,7 @@ import { baseModel, ttlOf, usageCost, type Ttl } from "./pricing.ts";
 import {
   pack,
   SNAPSHOT_PREFIX,
+  orphanOwnerKeys,
   staleKeys,
   unpack,
   OVERRIDABLE,
@@ -165,6 +166,9 @@ function turnKey(
 
 /** Store key prefix for which copy of the module owns a session. */
 const OWNER_PREFIX = "owner:";
+
+/** How old a claim on a session with no snapshot must be before it is dropped. */
+const ORPHAN_OWNER_MS = 24 * 60 * 60 * 1000;
 
 /** How often a turn still running saves its state. */
 const MID_TURN_SAVE_MS = 5_000;
@@ -372,9 +376,18 @@ async function saveSnapshot(
 ): Promise<void> {
   try {
     if (first) {
-      for (const stale of staleKeys(await $.store.keys(), key)) {
+      const keys = await $.store.keys();
+      for (const stale of staleKeys(keys, key)) {
         await $.store.delete(stale);
         await $.store.delete(`${OWNER_PREFIX}${stale}`);
+      }
+      // A claim on a session that never saved (left at once for a /resume
+      // or a /clear) has no snapshot to be pruned with; one a day old is
+      // nobody's live session any more.
+      for (const owner of orphanOwnerKeys(keys, OWNER_PREFIX, key)) {
+        const stamp = await $.store.get(owner);
+        if (typeof stamp !== "number" || Date.now() - stamp > ORPHAN_OWNER_MS)
+          await $.store.delete(owner);
       }
       // Keys are kept in the order they were first written, and the oldest
       // are dropped; moving this session to the end makes that the order
@@ -1375,8 +1388,10 @@ export function register(on: On) {
     // summary. That turn is the tail of a reply already closed: it is
     // counted and listed, and writes no second block.
     const task = notificationTaskOf(e.text);
+    // Whether or not the notification continues without asking Jev: a
+    // reply is closed once its summary is written, whatever this turn does.
     const afterSummary =
-      softNotify && task !== null && summarisedAgents.has(task);
+      notification && task !== null && summarisedAgents.has(task);
 
     if (surface === null) surface = await surfaceOf($);
     let attempt: Attempt;
@@ -1461,6 +1476,8 @@ export function register(on: On) {
       }
     }
 
+    // A reply is open while it has turns and no summary yet.
+    const replyOpen = reply.length > 0;
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
     if (afterSummary) {
@@ -1478,9 +1495,11 @@ export function register(on: On) {
     // gets no line and no summary: it is the engine prodding a task that is
     // mid-flight, not a reply to the person, and a block under it was the
     // middle of the three that stacked under one reply (seen 2026-09-23).
-    // A continuing notification gets none either: the reply it woke is
-    // already open under its own line.
-    if (announce && !nudge && !softNotify) {
+    // A task's notification that wakes a reply still open, or one already
+    // summarised, gets none either, routed or not: that reply has its line
+    // (and its summary names every tier it ran on). One that wakes an idle
+    // session opens a reply of its own, and says so.
+    if (announce && !nudge && !softNotify && !(notification && (replyOpen || afterSummary))) {
       pending.add(e.turnId);
       trimSet(pending);
     }
@@ -1883,8 +1902,12 @@ export function register(on: On) {
       replyAgents.add(justStarted);
       spawned.set(justStarted, attempt);
       if (spawned.size > CACHE_LIMIT) {
+        // The list holds every agent so far, finished ones too: only a
+        // running one is live. The oldest finished ones go first.
         const live = new Set(
-          (await $.agent.list().catch(() => [])).map((a) => a.id),
+          (await $.agent.list().catch(() => []))
+            .filter((a) => a.status === "running")
+            .map((a) => a.id),
         );
         live.add(justStarted);
         for (const id of [...spawned.keys()]) {

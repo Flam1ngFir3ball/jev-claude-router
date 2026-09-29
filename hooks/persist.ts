@@ -293,6 +293,19 @@ function compactionOf(raw: unknown): Compaction | null {
   };
 }
 
+/**
+ * Claims (`<ownerPrefix><snapshot key>`) on a session that has no snapshot
+ * and is not the current one: candidates to drop once they are old.
+ */
+export function orphanOwnerKeys(keys: readonly string[], ownerPrefix: string, current: string): string[] {
+  const snapshots = new Set(keys.filter((k) => k.startsWith(SNAPSHOT_PREFIX)));
+  return keys.filter((k) => {
+    if (!k.startsWith(ownerPrefix)) return false;
+    const target = k.slice(ownerPrefix.length);
+    return target.startsWith(SNAPSHOT_PREFIX) && target !== current && !snapshots.has(target);
+  });
+}
+
 /** The snapshot keys to drop so `SNAPSHOTS_KEPT` remain, oldest first. */
 export function staleKeys(keys: readonly string[], current: string): string[] {
   const sessions = keys.filter(
