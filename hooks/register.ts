@@ -1265,6 +1265,8 @@ export function register(on: On) {
       typeof e.model === "string"
     ) {
       running = placeholderOf(e.model);
+      // The resumed session's model, as the resume names it.
+      sessionModel = e.model;
       unconfirmed = null;
       if (running !== null) {
         lastUsage = { context: e.context_tokens, output: TYPICAL_OUTPUT_TOKENS };
@@ -2053,9 +2055,9 @@ export function register(on: On) {
           model:
             typeof e.model === "string" &&
             (sameModelAs(decision.model, e.model) ||
+              // Not once the session names a model of its own.
               (aliasGuess !== null &&
-                sessionModel !== null &&
-                TIER_ALIAS.test(sessionModel) &&
+                (sessionModel === null || TIER_ALIAS.test(sessionModel)) &&
                 decision.model === aliasGuess &&
                 tierOfModel(e.model) === decision.tier))
               ? e.model
