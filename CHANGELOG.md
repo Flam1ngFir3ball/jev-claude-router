@@ -286,6 +286,15 @@ Ready and merged, held back from a version bump until approved:
   for the line; "if it works, switch to haiku" is a condition again.
 - A summary fence whose long first line streams in small pieces is held
   without rescanning it for each piece.
+- **An alias from `/model` (`opusplan`, `opus`, `sonnet[1m]`) is not held
+  to as a model**, and the session model is read afresh when a placeholder
+  is made: `opusplan` runs Sonnet outside plan mode, and holding to "opus"
+  made a cold switch priced as a stay.
+- **A provider's spelling of the routed model in usage**
+  (`…@20260901`, `us.anthropic.…-v1:0`) is the same model: the turn stays
+  routed, so `/jev tiers off` applies to it.
+- A kept turn goes out in the engine's own spelling of the model, not
+  respelled to `[1m]` or an alias.
 - **After a resume that names no model, or a reload, the next turn checks
   the session's model**: a placeholder of the model the session ran on
   before (a turned-off tier included) is replaced by what it is on now,

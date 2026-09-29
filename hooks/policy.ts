@@ -486,6 +486,10 @@ export function sessionDecision(model: string): Decision | null {
   // A spelling a snapshot could not hold (a control character, markdown, a
   // runaway length) is not adopted: saved, it would lose the whole state.
   if (!MODEL_ID.test(model)) return null;
+  // An alias (`opus`, `opusplan`, `sonnet[1m]`) names a setting, not the
+  // model the engine runs (`opusplan` runs Sonnet outside plan mode): no
+  // placeholder is made of it, so nothing is held to a model not running.
+  if (MODEL_ALIAS.test(model)) return null;
   const tier = tierOfModel(model);
   if (tier === null) return null;
   return { tier, model, effort: "medium", confidence: 1 };
@@ -497,6 +501,9 @@ export function sessionDecision(model: string): Decision | null {
  * blockquote) would read as markdown: no spaces, parentheses or emphasis.
  */
 export const MODEL_ID = /^[\w.:/@+\[\]-]{1,512}$/;
+
+/** A model alias the engine may report, not a model id. */
+export const MODEL_ALIAS = /^(?:opus|sonnet|haiku|fable|opusplan|default|best)(?:\[1m\])?$/i;
 
 /**
  * A turn the engine started, not the person: its "say what you are doing,

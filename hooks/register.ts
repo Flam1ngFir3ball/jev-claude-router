@@ -252,9 +252,6 @@ const PRUNE_TAIL_REUSED = 6;
  * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
  * Null for an id off the ladder or not a string.
  */
-/** A model alias the engine may report, not a model id. */
-const BARE_ALIAS = /^(?:opus|sonnet|haiku|fable|opusplan|default|best)(?:\[1m\])?$/i;
-
 /** Marks the end of a step's stream, after its last chunk. */
 const STEP_END = Symbol("step-end");
 
@@ -1686,7 +1683,7 @@ export function register(on: On) {
         // Only for a model it can read and name: an alias (`opus`,
         // `opusplan`) or one off the ladder says nothing about the cache,
         // and dropping the placeholder for it would lose a warm hold.
-        const now = BARE_ALIAS.test(live) ? null : sessionDecision(live);
+        const now = sessionDecision(live);
         if (
           now !== null &&
           running !== null &&
@@ -1786,7 +1783,9 @@ export function register(on: On) {
       // plugin loaded into a live session — has a warm cache on its model,
       // and that is what the first routed switch is priced against.
       if (running === null && context > 0) {
-        if (sessionModel === null) sessionModel = await sessionModelOf($);
+        // Read now, not as cached: `/model` may have changed it since, and a
+        // placeholder of a model left would hold the turn to it.
+        sessionModel = (await sessionModelOf($)) ?? sessionModel;
         if (sessionModel !== null) running = sessionDecision(sessionModel);
       }
       const economics =
@@ -2032,7 +2031,13 @@ export function register(on: On) {
     // conversation and get what Jev asked.
     if (decision !== undefined && e.agentId === undefined && answered) decision = asAsked(decision);
     const step = decision
-      ? next({ ...e, model: decision.model, effort: decision.effort })
+      ? next({
+          ...e,
+          // The engine's own spelling when it is the same model: a kept
+          // turn is not respelled to `[1m]` or a provider id it did not use.
+          model: typeof e.model === "string" && sameModelAs(decision.model, e.model) ? e.model : decision.model,
+          effort: decision.effort,
+        })
       : next(e);
 
     // The block the summary joins, so it lands at the end of the reply's
@@ -2174,14 +2179,15 @@ export function register(on: On) {
             if (
               warm !== null &&
               (running === null ||
-                baseModel(running.model) !== baseModel(warm.model))
+                // A provider's spelling of the running model is the same model.
+                !sameModelAs(running.model, warm.model))
             ) {
               // The turn's own decision when that is what answered (after a
               // compaction cleared `running` mid-turn, say): a bare warm
               // placeholder reads as the session model, not a routed tier.
               running =
                 !unrouted && attempt !== undefined && "decision" in attempt &&
-                baseModel(attempt.decision.model) === baseModel(warm.model)
+                sameModelAs(attempt.decision.model, warm.model)
                   ? asAsked(attempt.decision)
                   : warm;
             }

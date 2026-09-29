@@ -160,8 +160,20 @@ export function baseModel(model: string): string {
 
 /** The model a spelling names: without `[1m]` or a date suffix, so both read as one. */
 export function sameModelAs(a: string, b: string): boolean {
-  const key = (m: string) => baseModel(m).replace(/-\d{8}$/, "");
-  return key(a) === key(b);
+  return modelKey(a) === modelKey(b);
+}
+
+/**
+ * A model's name without its spelling: `[1m]`, a date, and the Bedrock and
+ * Vertex wrappings (`us.anthropic.…-v1:0`, an ARN, `…@20260901`, a path)
+ * all name the same model as the plain id.
+ */
+function modelKey(model: string): string {
+  let m = baseModel(model).toLowerCase();
+  m = m.slice(m.lastIndexOf("/") + 1);
+  m = m.replace(/^(?:us|eu|apac|global|au|jp|ca)\./, "").replace(/^anthropic\./, "");
+  m = m.replace(/@.*$/, "").replace(/-v\d+(?::\d+)?$/, "").replace(/-\d{8}$/, "");
+  return m;
 }
 
 /** Ladder order, low to high, for telling a downgrade from an upgrade. */

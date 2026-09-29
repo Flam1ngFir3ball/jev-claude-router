@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { sameModelAs } from "../hooks/pricing.ts";
 import { describe, test } from "node:test";
 
 import { register } from "../hooks/register.ts";
@@ -2261,9 +2262,11 @@ describe("register: a session that was already running", () => {
   });
 
   test("/model mid-session moves what the next routed turn is priced against", async () => {
-    const { hooks, $, setTier, setContext } = await started();
+    const { hooks, $, setTier, setContext, setSessionModel } = await started();
     setTier("fable", 0.9, 3);
     await turn(hooks, $, "m1", "plan it");
+    // The engine's session model moves with /model, as the switch reports.
+    setSessionModel("claude-sonnet-5");
     await hooks.get("classic.PostModelSwitch")!(
       $,
       { from_model: "claude-opus-5-5", to_model: "claude-sonnet-5", source: "user" },
@@ -3231,16 +3234,18 @@ describe("register: audit regressions (2026-09-23)", () => {
     setTier("sonnet", 0.95, 3, 0.9);
     assert.equal((await turn(hooks, $, "ss1", "add a flag")).sent.effort, "xhigh");
     fail();
+    // With the session on its own Sonnet, a failed Jev call keeps the turn
+    // there at the routed effort: that is what runs, and what is warm after.
+    let ran = "";
     await hooks.get("turn.start")!($, { text: "and another", turnId: "ss2" }, async (e: unknown) => e);
     await collect(
-      hooks.get("turn.step")!($, { turnId: "ss2", index: 0, effort: "medium" }, (e: { model?: string }) =>
-        answeredBy(e.model ?? "claude-sonnet-5"),
-      ),
+      hooks.get("turn.step")!($, { turnId: "ss2", index: 0, effort: "medium" }, (e: { model?: string; effort?: string }) => (
+        (ran = e.effort ?? ""), answeredBy(e.model ?? "claude-sonnet-5")
+      )),
     );
     setTier("sonnet", 0.95, 1, 0.5);
     const t = await turn(hooks, $, "ss3", "and the tests");
-    assert.equal(t.sent.effort, "medium", "medium is what the cache holds now");
-    assert.doesNotMatch(t.text, /kept xhigh/);
+    assert.equal(t.sent.effort, ran, "the effort the last turn ran at is what the cache holds");
   });
 
   test("a wake-up for a task whose reply was given up gets a block of its own", async () => {
@@ -5143,4 +5148,60 @@ describe("register: the live-model check reads only a model it can name (2026-09
       await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "lv2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
       assert.equal(sent, "claude-opus-5-5");
     });
+});
+
+describe("register: model spellings (2026-09-29)", () => {
+  const stepWith = async (kit: ReturnType<typeof load>, id: string, text: string, engine: string, usageModel?: string) => {
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+    let sent = "";
+    let out = "";
+    const chunks = (await collect(
+      kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, model: engine, effort: "medium" }, (e: { model: string }) => {
+        sent = e.model;
+        return (async function* () {
+          yield { kind: "text", index: 0, text: "ok", ref: 1 };
+          // The provider's spelling of what the router sent, when it sent that.
+          const answered = usageModel !== undefined && sameModelAs(usageModel, e.model) ? usageModel : e.model;
+          yield { kind: "stop", stopReason: "end_turn", usage: { model: answered, input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 120_000, cache_creation_input_tokens: 0 } };
+        })();
+      }),
+    )) as { kind: string; text?: string }[];
+    for (const c of chunks) if (c.kind === "text") out += c.text;
+    return { sent, line: out.split("\n")[0]! };
+  };
+
+  test("an alias from /model (opusplan) is not held to as a model", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "0" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setSessionModel("opusplan");
+    kit.setContext(120_000);
+    kit.setTier("sonnet", 0.6, 2);
+    const t1 = await stepWith(kit, "op1", "implement cursor pagination", "claude-sonnet-5-5");
+    assert.equal(t1.sent, "claude-sonnet-5-5");
+    assert.doesNotMatch(t1.line, /kept opus/);
+  });
+
+  for (const spelling of ["claude-sonnet-5-5@20260901", "us.anthropic.claude-sonnet-5-5-v1:0"])
+    test(`a provider's spelling in usage (${spelling}) keeps the turn routed, so /jev tiers off applies`, async () => {
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined, JEV_ROUTER_PRICE_CHECK: "0" });
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      kit.setContext(20_000);
+      kit.setTier("sonnet", 0.96, 2);
+      const t1 = await stepWith(kit, "us1", "plan it", "claude-opus-5-5", spelling);
+      assert.equal(t1.sent, "claude-sonnet-5-5");
+      await kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args: "tiers off sonnet" }, async (e: unknown) => e);
+      kit.setTier("fable", 0.32, 2);
+      const t2 = await stepWith(kit, "us2", "and the next part", "claude-opus-5-5");
+      assert.ok(!t2.sent.includes("sonnet"), t2.sent);
+    });
+
+  test("a kept turn goes out in the engine's own spelling", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setSessionModel("claude-opus-5-5[1m]");
+    kit.setContext(120_000);
+    kit.setTier("sonnet", 0.6, 2);
+    const t1 = await stepWith(kit, "sp1", "implement it", "claude-opus-5-5");
+    assert.equal(t1.sent, "claude-opus-5-5");
+  });
 });
