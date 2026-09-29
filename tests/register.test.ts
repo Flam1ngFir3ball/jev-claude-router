@@ -4955,3 +4955,25 @@ describe("register: round-10 driver findings (2026-09-29)", () => {
     assert.doesNotMatch(status.text, /Cannot read/);
   });
 });
+
+describe("register: off-contract spawn fields and chunks (2026-09-29)", () => {
+  test("a spawn with no description, and chunks that are not text, pass through", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: "x", description: null, subagentType: {} }, async () => ({ agentId: "ag-n" }));
+    await kit.hooks.get("turn.start")!(kit.$, { text: "implement it", turnId: "nc1" }, async (e: unknown) => e);
+    const chunks = (await collect(
+      kit.hooks.get("turn.step")!(kit.$, { turnId: "nc1", index: 0 }, () =>
+        (async function* () {
+          yield null;
+          yield { kind: "text", index: 0, text: undefined, ref: 1 };
+          yield { kind: "text", index: 0, text: "ok", ref: 2 };
+          yield { kind: "stop", stopReason: "end_turn", usage: { model: "claude-opus-5-5", input_tokens: 1 } };
+        })(),
+      ),
+    )) as ({ kind: string; text?: unknown } | null)[];
+    const text = chunks.filter((c) => c !== null && c.kind === "text" && typeof c.text === "string").map((c) => c!.text).join("");
+    assert.doesNotMatch(text, /undefined/);
+    assert.match(text, /ok/);
+  });
+});

@@ -2036,6 +2036,12 @@ export function register(on: On) {
       (holds ??= !superseded() && (await holdsTurnOf(e.turnId)));
 
     for await (const raw of step) {
+      // A chunk outside the engine's contract (none, or text that is not a
+      // string) is passed on as it came, untouched and uncounted.
+      if (typeof raw !== "object" || raw === null || (raw.kind === "text" && typeof raw.text !== "string")) {
+        yield raw;
+        continue;
+      }
       // The model answering at all means the request was read, and its
       // cache written on the new model, whether or not usage ever arrives.
       if (
@@ -2259,11 +2265,12 @@ export function register(on: On) {
       return next(e);
     }
 
+    const description = typeof e.description === "string" ? e.description : "";
     const attempt = spawnAttemptOf(
-      e.description,
+      description,
       await classify($, e.prompt, settings.offered, settings, undefined, "task"),
       settings.offered,
-      { type: e.subagentType, label: e.description },
+      { ...(typeof e.subagentType === "string" ? { type: e.subagentType } : {}), label: description },
       settings.ceiling,
     );
 

@@ -23,9 +23,9 @@ import type {
   ToolResult,
   ToolUse,
 } from "./compaction/types.ts";
-import { BEARER_VALUE, messageOf, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
+import { BEARER_VALUE, messageOf, providerNoteOf, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
 import { flagOff, PLAIN_DECIMAL } from "./policy.ts";
-import { hasNotification, notificationOf, notificationStateOf } from "./status.ts";
+import { hasNotification, notificationOf, notificationStateOf, words } from "./status.ts";
 import type { ProviderResult } from "./provider.ts";
 
 /** Below this share removed, the engine's summary does better; its default. */
@@ -136,6 +136,9 @@ function askerOf(
         // per-call price).
         ...(signal !== undefined ? { signal } : {}),
       });
+      // The provider's body is not shown: it can echo the key or the state.
+      // Its status and error type say enough, as on a routed turn.
+      if (!response.ok) throw new Error(`${provider.name} said HTTP ${response.status}${providerNoteOf(response)}`);
       return parseJevResponse(response.status, response.ok, response.text);
     },
   };
@@ -287,7 +290,9 @@ export async function pruneTranscript(args: {
 /** `kept 41/87 messages, 63% smaller (12 calls kept, 9 cut, 30 dropped) · 2.1s`, or why not. */
 export function compactionLine(c: Compaction): string {
   const when = c.ms >= 1000 ? `${(c.ms / 1000).toFixed(1)}s` : `${Math.round(c.ms)}ms`;
-  if (c.fallback !== undefined) return `engine summary: ${c.fallback} · ${when}`;
+  // Plain words whatever the store held: a fallback restored from a snapshot
+  // is printed as it was saved.
+  if (c.fallback !== undefined) return `engine summary: ${words(c.fallback)} · ${when}`;
   return (
     `kept ${c.kept}/${c.of} messages, ${Math.round(c.reduction * 100)}% smaller ` +
     `(${c.calls.kept} calls kept, ${c.calls.cut} cut, ${c.calls.dropped} dropped) · ${when}`

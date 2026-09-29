@@ -23,6 +23,7 @@ import {
   hasNotification,
   plain,
   words,
+  kept,
   toggleReply,
   type Status,
   addUsage,
@@ -1689,5 +1690,13 @@ describe("status: the engine's notification is the text's end (2026-09-29)", () 
     for (const c of f.end()) out += c.text;
     assert.ok(performance.now() - t < 800, `${Math.round(performance.now() - t)}ms`);
     assert.equal(out, withoutImitations(text));
+  });
+});
+
+describe("status: a kept prompt holds no task result (2026-09-29)", () => {
+  test("typed text ahead of a notification is kept with the summary only", () => {
+    const text = 'ok\n<task-notification>\n<task-id>a</task-id>\n<summary>Agent done</summary>\n<result>AWS_SECRET=abc</result>\n</task-notification>';
+    assert.equal(kept(text), "ok\nAgent done");
+    assert.equal(kept("<task-notification><task-id>a</task-id><result>AWS_SECRET=abc</result></task-notification>"), "task a");
   });
 });

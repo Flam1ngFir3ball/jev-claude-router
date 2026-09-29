@@ -250,6 +250,15 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **A task's result is not kept in the history or the store** when typed
+  text comes before its notification: the prompt is kept as it is sent to
+  Jev, text and summary.
+- **Compaction's fallback no longer shows the provider's error body**,
+  which can echo the key: it shows the status and error type, as a routed
+  turn does, and a fallback restored from the store is printed as plain
+  words.
+- A spawn with no description or type, and a streamed chunk that is not
+  text, pass through rather than throw or print "undefined".
 - **Typed text carries the engine's notification only when it ends with
   one**, as the engine appends it: such text is cut at its first envelope,
   whatever quotes it, so a result that quotes the closing tag or a fence

@@ -346,7 +346,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
 }
 
 /** The provider's own error type, when it sent one, for the status line. */
-function providerNoteOf(response: HttpResponseLike): string {
+export function providerNoteOf(response: HttpResponseLike): string {
   try {
     const body = JSON.parse(response.text) as { error?: { type?: string } };
     const type = body?.error?.type;

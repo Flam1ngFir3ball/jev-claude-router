@@ -414,7 +414,12 @@ export function normalUsage(usage: {
  * nothing saved.
  */
 export const PROMPT_KEPT = 400;
-export const kept = (text: string) => (text.length > PROMPT_KEPT ? text.slice(0, PROMPT_KEPT) : text);
+export const kept = (text: string) => {
+  // Kept in the history and the store: a task's result, typed ahead of or
+  // not, is no more kept than it is sent to Jev.
+  const own = NOTIFICATION.test(text) || hasNotification(text) ? notificationStateOf(text) : text;
+  return own.length > PROMPT_KEPT ? own.slice(0, PROMPT_KEPT) : own;
+};
 
 export type Status = {
   enabled: boolean;

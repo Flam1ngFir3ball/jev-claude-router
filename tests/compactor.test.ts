@@ -342,3 +342,23 @@ describe("what compaction sends and says (2026-09-29)", () => {
     assert.doesNotMatch(r.compaction.fallback!, /[\u0000-\u001f\u007f]/);
   });
 });
+
+describe("compaction's fallback shows no provider body (2026-09-29)", () => {
+  test("a 401 that echoes the key shows the status and error type", async () => {
+    const r = await pruneTranscript({
+      messages: transcript(10),
+      provider: typesafe,
+      fetch: async () => ({ ok: false, status: 401, headers: {}, text: JSON.stringify({ error: { type: "authentication_error", message: "Invalid API key tsk-9f8e7d6c5b4a" } }) }),
+      sleep: never,
+      timeoutMs: 8000,
+      minReduction: 0.25,
+    });
+    assert.equal(r.ok, false);
+    assert.doesNotMatch(r.compaction.fallback!, /tsk-/);
+    assert.match(r.compaction.fallback!, /HTTP 401/);
+  });
+  test("a fallback restored from the store is shown as plain words", () => {
+    const line = compactionLine({ at: 0, kept: 1, of: 1, reduction: 0, calls: { kept: 0, cut: 0, dropped: 0 }, ms: 5, fallback: "x\u001b]52;c;Zm9v\u0007\n```\n<img src=x>" });
+    assert.doesNotMatch(line, /[\u0000-\u001f`<>]/);
+  });
+});
