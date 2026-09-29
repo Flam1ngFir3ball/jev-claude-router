@@ -250,6 +250,14 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- A notification the person quotes (in code, a paste or double quotes) is
+  theirs: the prompt is sent with the request after it, and a prompt with
+  a mention before the engine's own envelope is cut at the envelope.
+- A condition that mentions the person or the model ("if you get a 429",
+  "if my repo is large") still describes behaviour; only manners ("if you
+  like", "unless you disagree", "until I say otherwise") are requests.
+- A summary-shaped fence streamed in small pieces is checked as it grows,
+  not rescanned for each piece.
 - **A notification's result is withheld however its fields are ordered**:
   everything from the first notification tag on is read for its summary
   only, whatever shape the envelope has.

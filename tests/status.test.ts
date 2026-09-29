@@ -1566,3 +1566,45 @@ describe("status: a long copied summary still goes (2026-09-29)", () => {
     assert.equal(out, "Done.");
   });
 });
+
+describe("status: a notification the person quotes is theirs (2026-09-29)", () => {
+  const real = '<task-notification>\n<task-id>a1</task-id>\n<summary>Agent done</summary>\n<result>SECRET</result>\n</task-notification>';
+  test("quoted in code, a paste or double quotes, it is sent with the request after it", () => {
+    for (const text of [
+      `Why is the summary empty?\n\`\`\`\n${real}\n\`\`\`\nFix it in status.ts`,
+      `Refactor this.\n<pasted_content>\nconst s = \`<task-notification><summary>\${x}</summary>\`;\n</pasted_content>\nThanks, and make it async.`,
+      'The engine sends "<task-notification> <task-id>" first; document the order in README',
+      "Write a regex that matches `<task-notification><status>done</status>` and explain it.",
+    ]) {
+      assert.equal(hasNotification(text), false, text);
+    }
+  });
+  test("a mention before the engine's own envelope is kept; the cut is at the envelope", () => {
+    const text = `Our parser chokes on \`<task-notification>\` blocks, see below\n${real}`;
+    assert.equal(hasNotification(text), true);
+    assert.equal(notificationStateOf(text), "Our parser chokes on `<task-notification>` blocks, see below\nAgent done");
+  });
+  test("every real shape withholds the result", () => {
+    for (const text of [
+      "<task-notification><status>completed</status><summary>S</summary><result>SECRET</result></task-notification>",
+      '<task-notification kind="x">\n<task-id>a</task-id><result>SECRET</result></task-notification>',
+      "<task-notification>\n<usage>1</usage>\n<task-id>a</task-id>\n<result>SECRET</result></task-notification>",
+      "<task-notification>\n<!-- c -->\n<task-id>a</task-id>\n<result>SECRET</result></task-notification>",
+      `see this ${"<task-notification>\n<usage>1</usage>\n<task-id>a</task-id>\n<result>SECRET</result></task-notification>"}`,
+    ])
+      assert.doesNotMatch(notificationStateOf(text), /SECRET/, text);
+  });
+});
+
+describe("status: a summary-shaped fence streamed a character at a time stays linear (2026-09-29)", () => {
+  test("repeated 15k windows", () => {
+    const text = ("```\n(5% cached)\n" + "\n".repeat(15_000)).repeat(4);
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    const t = performance.now();
+    let out = "";
+    for (let i = 0; i < text.length; i++) for (const c of f.push({ kind: "text", index: 0, text: text[i]! })) out += c.text;
+    for (const c of f.end()) out += c.text;
+    assert.ok(performance.now() - t < 1000, `${Math.round(performance.now() - t)}ms`);
+    assert.equal(out, withoutImitations(text));
+  });
+});

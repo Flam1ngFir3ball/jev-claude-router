@@ -1477,7 +1477,7 @@ export function register(on: On) {
           `compaction by Jev ${settings.compactOn ? "on" : "off"}` +
           (settings.compactOn
             ? gatewayOnly
-              ? ": but the gateway cannot score tool calls, so the engine's own summary runs until TYPESAFE_API_KEY is set."
+              ? ", but the gateway cannot score tool calls, so the engine's own summary runs. Routing through TypeSafe direct (TYPESAFE_API_KEY, with JEV_ROUTER_PROVIDER unset or typesafe) enables it."
               : ": at each compaction, Jev scores every tool call and the stale ones are dropped or cut; the conversation stays verbatim. /jev compact off restores the engine's summary."
             : ": the engine's own summary runs. /jev compact on to prune with Jev instead."),
       };

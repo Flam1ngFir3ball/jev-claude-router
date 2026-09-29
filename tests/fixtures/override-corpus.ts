@@ -205,10 +205,21 @@ export const OVERRIDE_CORPUS_ROUND7: readonly (readonly [string, string | null])
   ["Unless you disagree, use opus", "opus"],
   ["if needed, use opus", "opus"],
   ["when in doubt, use opus", "opus"],
+  ["If you like, use opus", "opus"],
+  ["if you're able, use opus", "opus"],
+  // a condition that mentions the person or the model is still a condition
+  ["Add a fallback to the router: if you get a 429, use haiku.", null],
+  ["Write a function pickModel(): if my budget is low, use haiku, otherwise use sonnet.", null],
+  ["In the test: if I pass --cheap, use haiku.", null],
+  ["Please add a rule to settings.json — if my repo is large, use opus.", null],
+  ["In the config, when your request times out, use haiku instead.", null],
   // a new paragraph after the tier is not the tier naming it
   ["use opus\n\nTokens are expiring too early in auth.ts, fix it", "opus"],
   ["Switch to opus\n\nKeys in config.json are out of date; regenerate them", "opus"],
   // a tier naming something else
   ["make sure to use sonnet pricing", null],
   ["try to use haiku ids in the test", null],
+  ["use opus tables for the lookup", null],
+  ["use sonnet numbers in the example", null],
+  ["use opus\n\nprices are in pricing.ts", "opus"],
 ];

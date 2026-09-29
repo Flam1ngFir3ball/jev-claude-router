@@ -744,7 +744,7 @@ function addressedAt(text: string, from: number, at: number): boolean {
   // Any clause of the sentence so far: "Add a fallback: if it times out, …".
   for (const part of text.slice(sentence, start).toLowerCase().split(/[,;:—–]|\s-\s/)) {
     const clause = part.trim().replace(BULLET, "");
-    if (CONDITION.test(clause) && !POLITE_CONDITION.test(clause) && !ADDRESSED.test(clause) && !SET_PHRASE.test(clause))
+    if (CONDITION.test(clause) && !POLITE_CONDITION.test(clause) && !SET_PHRASE.test(clause))
       return false;
   }
   let lead = text.slice(start, at).trim().toLowerCase().replace(/\s+/g, " ").replace(BULLET, "");
@@ -759,25 +759,35 @@ function addressedAt(text: string, from: number, at: number): boolean {
 /** A clause that sets a condition, ahead of the one naming the tier. */
 const CONDITION = /^(?:if|when|whenever|unless|once|until|in case|otherwise|else)\b/;
 
-/**
- * A condition that is the person's say-so rather than a state of things: it
- * speaks to the model or of the person ("if you want", "until I say
- * otherwise"), or is a set phrase ("once again", "if needed").
- */
-const ADDRESSED = /\b(?:you|u|your|you'?re|youre|ya|i|i'?m|me|my)\b/;
+/** Set phrases that are not conditions on anything: "once again", "if needed". */
 const SET_PHRASE =
   /^(?:once (?:again|more)|if (?:so|not)|(?:if|when) in doubt|if that'?s the case|whenever|until the end of (?:this|the) (?:session|conversation|task|chat)|if so|if (?:needed|necessary|possible|required|appropriate|applicable)|when(?:ever)? (?:done|ready|finished|possible)|until further notice|if (?:that|this|it)(?:'?s| is)? (?:ok|okay|fine|alright|all right|not too much trouble)(?: with \w+)?)\s*(?:then)?\s*$/;
 
-/** A condition that is only manners: "if you can, use opus". */
-const POLITE_CONDITION =
-  /^(?:if|when)\s+(?:you\s+(?:can|could|would|will|may|don'?t mind|do not mind|get a chance|have (?:a )?(?:chance|moment|minute|time))|you'?re ready|you are ready|possible|(?:that|it)(?:'s| is) (?:ok|okay|fine|alright))\s*(?:then)?\s*$/;
+/**
+ * A condition that is only manners, or the person's say-so, not a state of
+ * things: "if you can", "if you want", "whenever you're ready", "unless you
+ * disagree", "until I say otherwise". A listed phrase and nothing more: "if
+ * you get a 429" or "if my repo is large" describes behaviour.
+ */
+const POLITE_CONDITION = new RegExp(
+  "^(?:if|when|whenever|unless|until)\\s+(?:" +
+    [
+      "(?:you|u|ya)\\s+(?:can|could|would|will|may|might|want(?: to)?|like|wish|prefer|please|must|disagree|object|agree|think so|see fit|are able|are ready|are free|don'?t mind|do not mind|get (?:a|the) chance|have (?:a )?(?:sec|second|moment|minute|chance|time))",
+      "you'?re (?:ready|able|free|ok|okay|happy|done)",
+      "i (?:say|tell you) (?:otherwise|so|to stop)",
+      "i change my mind",
+      "possible",
+      "(?:that|it)(?:'?s| is) (?:ok|okay|fine|alright|all right|not too much(?: trouble)?)(?: with you)?",
+    ].join("|") +
+    ")\\s*(?:then)?\\s*$",
+);
 
 /**
  * Words after the tier that make it a name for something else: "use sonnet
  * pricing" is about a price table, "use haiku ids in the test" about ids.
  */
 const TIER_AS_NAME =
-  /^[ \t]+(?:pricing|prices|rates|ids?|names|constants?|strings?|labels?|values|entr(?:y|ies)|fields?|columns?|fixtures?|mocks?|stubs?)\b/i;
+  /^[ \t]+(?:pricing|prices?|rates?|ids?|names?|constants?|strings?|labels?|values?|entr(?:y|ies)|fields?|columns?|tables?|fixtures?|mocks?|stubs?|numbers?|figures?|tokens?|limits?|costs?|windows?)\b/i;
 
 /** True when the gap is only light bridge words and no clause break. */
 function proximityOk(gap: string): boolean {

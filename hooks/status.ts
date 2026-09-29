@@ -263,31 +263,69 @@ export function notificationOf(text: string): string | null {
  * can quote whatever the agent read.
  */
 export function notificationStateOf(text: string): string {
-  // Only what cannot be a result: the text before the first notification,
-  // and that notification's summary, read before its result starts. Nothing
-  // after the result's opening is sent: a result can quote a whole envelope,
+  // Only what cannot be a result: the text before the notification, and
+  // its summary, read before its result starts. Nothing after the result's
+  // opening is sent: a result can quote a whole envelope,
   // `</task-notification>` and all (an agent reading this very code), so
-  // nothing after it can be told from the result.
-  // Cut at the first opening tag of any shape: the caller has decided the
-  // text carries a notification, and whatever reads as one from there on
-  // is withheld, so an odd shape fails closed.
-  const first = text.search(/<task-notification\b/);
-  if (first === -1) return text.trim();
-  const before = text.slice(0, first).trim();
-  const head = text.slice(first).split(/<result\b/)[0]!;
+  // nothing after it can be told from the result. A turn that is a
+  // notification is cut at its opening tag, whatever shape the rest has.
+  const at = NOTIFICATION.test(text) ? text.search(/<task-notification\b/) : envelopeAt(text);
+  if (at === -1) return text.trim();
+  const before = text.slice(0, at).trim();
+  const head = text.slice(at).split(/<result\b/)[0]!;
   const summary = plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
   return [before, summary].filter((p) => p !== "").join("\n");
 }
 
 /**
- * A notification's envelope, not a mention of the tag: one of the engine's
- * own fields follows the opening tag, in any order.
+ * A notification's envelope, not a mention of the tag: an element follows
+ * the opening tag (the engine's fields, in any order, or a comment).
  */
-const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:task-id|tool-use-id|status|summary|output-file|result)>/;
+const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z]|!--)/i;
+
+/**
+ * Where the engine's notification starts in text the person typed ahead of
+ * it, or -1. One quoted by the person — in code, a paste or double quotes —
+ * is theirs, and their request after it is sent: the engine's own is never
+ * inside those.
+ */
+function envelopeAt(text: string): number {
+  const blank = (m: string) => m.replace(/[^\n]/g, " ");
+  const masked = maskBlocks(text, "pasted_content")
+    .replace(/```[\s\S]*?(?:```|$)/g, blank)
+    .replace(/`[^`\n]*`/g, blank)
+    .replace(/"[^"\n]{0,400}"/g, blank)
+    .replace(/\u201c[^\u201d\n]{0,400}\u201d/g, blank);
+  return masked.search(ENVELOPE);
+}
+
+/** `text` with its `<tag …>…</tag>` blocks blanked, the same length; by hand, so linear. */
+function maskBlocks(text: string, tag: string): string {
+  const OPEN = `<${tag}`;
+  const CLOSE = `</${tag}`;
+  let out = "";
+  let pos = 0;
+  let at = text.indexOf(OPEN);
+  while (at !== -1) {
+    const next = text[at + OPEN.length];
+    if (next !== undefined && /\w/.test(next)) {
+      at = text.indexOf(OPEN, at + 1);
+      continue;
+    }
+    const close = text.indexOf(CLOSE, at);
+    if (close === -1) break;
+    const closeEnd = text.indexOf(">", close);
+    if (closeEnd === -1) break;
+    out += text.slice(pos, at) + text.slice(at, closeEnd + 1).replace(/[^\n]/g, " ");
+    pos = closeEnd + 1;
+    at = text.indexOf(OPEN, pos);
+  }
+  return out + text.slice(pos);
+}
 
 /** Whether `text` carries a task's notification anywhere, typed text before it or not. */
 export function hasNotification(text: string): boolean {
-  return ENVELOPE.test(text);
+  return envelopeAt(text) !== -1;
 }
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
@@ -1120,7 +1158,7 @@ export function statusReport(status: Status): string {
         status.compactOn
           ? `${
               status.provider.ok && status.provider.name !== "typesafe"
-                ? "on, but the gateway cannot score tool calls (needs TYPESAFE_API_KEY): the engine summarises"
+                ? "on, but the gateway cannot score tool calls (needs TypeSafe direct): the engine summarises"
                 : "on, Jev prunes tool calls"
             }${status.compaction ? ` · last: ${compactionLine(status.compaction)}` : ""}`
           : "off (/jev compact on)"
@@ -1393,6 +1431,9 @@ const SUMMARY_MAX = 16_000;
  */
 const ROUTE_LINE_MAX = 1_000;
 
+/** The longest first line a summary can have: one leg a turn, many turns. */
+const SUMMARY_HEAD_MAX = 4_000;
+
 /** A summary's first line, once the fence has opened. */
 const SUMMARY_HEAD = /^[^\n`]*\(\d+% cached\)/;
 
@@ -1413,6 +1454,12 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
   private settled = false;
   private held = "";
   private carrier: C | null = null;
+  /**
+   * `held` opens with a fence already found to be a summary's start, as long
+   * as it was when checked: text added after it is checked on its own,
+   * rather than the whole fence rescanned for every piece.
+   */
+  private pinned: { fence: number; length: number; close: number } | null = null;
 
   /** A text piece in; the pieces to pass on now. */
   push(chunk: C): C[] {
@@ -1460,8 +1507,9 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
           // The rule under it may still be arriving, in either shape.
           if (
             !final &&
-            // Blank lines, then a rule arriving: any number of blank lines
-            // before it, as IMITATED_LINE takes them.
+            // Blank lines, then a rule arriving: a screenful of blank lines
+            // before it at most, so a long run is not rescanned per piece.
+            rest.length <= 128 &&
             /^\n*(?:-{1,2}|---\n*)?$/.test(rest)
           )
             return "";
@@ -1473,12 +1521,34 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
     if (final) {
       const all = withoutSummary(this.held);
       this.held = "";
+      this.pinned = null;
       return all;
     }
+    if (this.stillPinned()) return "";
+    this.pinned = null;
     const from = this.holdFrom(this.held);
     const now = this.held.slice(0, from);
     this.held = this.held.slice(from);
+    // Held from a fence (after the blank lines held with it) whose first
+    // line is in: pinned, so later pieces are checked on their own.
+    const fence = from === 0 ? this.held.search(/[^\n]/) : -1;
+    if (fence !== -1 && this.held.startsWith("```\n", fence) && this.held.indexOf("\n", fence + 4) !== -1)
+      this.pinned = { fence, length: this.held.length, close: this.held.indexOf("\n```", fence + 4) };
     return now;
+  }
+
+  /**
+   * Whether the pinned summary fence still holds with what was added since:
+   * no longer than a summary, and nothing but blank space after its close.
+   */
+  private stillPinned(): boolean {
+    const pin = this.pinned;
+    if (pin === null || this.held.length - pin.fence - 3 > SUMMARY_MAX) return false;
+    let close = pin.close;
+    if (close === -1) close = this.held.indexOf("\n```", Math.max(pin.fence + 4, pin.length - 4));
+    if (close !== -1 && /\S/.test(this.held.slice(Math.max(close + 4, pin.length)))) return false;
+    this.pinned = { fence: pin.fence, length: this.held.length, close };
+    return true;
   }
 
   /** Where text that could still be a summary starts; the length when none. */
@@ -1491,6 +1561,8 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
       if (after.length > SUMMARY_MAX) continue;
       if (after === "") return this.backToBlankLines(text, p);
       const eol = after.indexOf("\n", 1);
+      // A first line longer than any summary's is the model's own.
+      if (eol === -1 ? after.length > SUMMARY_HEAD_MAX : eol > SUMMARY_HEAD_MAX) continue;
       const head = after.slice(1, eol === -1 ? undefined : eol);
       if (eol === -1 || SUMMARY_HEAD.test(head)) {
         if (eol === -1 && !/^[^\n`]*$/.test(head)) continue;
