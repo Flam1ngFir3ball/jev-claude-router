@@ -35,7 +35,7 @@ import {
   type Effort,
   type Tier,
 } from "./policy.ts";
-import { baseModel, ttlOf, usageCost, type Ttl } from "./pricing.ts";
+import { baseModel, sameModelAs, ttlOf, usageCost, type Ttl } from "./pricing.ts";
 import {
   pack,
   SNAPSHOT_PREFIX,
@@ -626,10 +626,14 @@ async function releaseSession(
   },
   key: string,
   birth: number,
+  /** This copy's id: a copy with the same stamp that does not hold the claim leaves it. */
+  nonce?: string,
 ): Promise<void> {
   try {
     const at = `${OWNER_PREFIX}${key}`;
-    if (stampOf(await $.store.get(at)) === birth) {
+    const seen = seenOf(await $.store.get(`${SEEN_PREFIX}${key}`));
+    const theirs = seen !== null && seen.birth === birth && seen.nonce !== undefined && nonce !== undefined && seen.nonce !== nonce;
+    if (stampOf(await $.store.get(at)) === birth && !theirs) {
       await $.store.delete(at);
       await $.store.delete(`${SEEN_PREFIX}${key}`);
     }
@@ -1010,7 +1014,7 @@ export function register(on: On) {
     // A resume that reported another model than the snapshot's: the session
     // is on that one now, and what was warm under the snapshot's is not.
     if (resumedOn !== null) {
-      if (running !== null && baseModel(running.model) !== baseModel(resumedOn)) {
+      if (running !== null && !sameModelAs(running.model, resumedOn)) {
         running = sessionDecision(resumedOn);
         unconfirmed = null;
       }
@@ -1090,7 +1094,7 @@ export function register(on: On) {
     // may not have learnt it yet, and would write its stale state over.
     if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false, nonce)))
       await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
-    if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
+    if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth, nonce);
     return next(e);
   });
 
@@ -1106,7 +1110,7 @@ export function register(on: On) {
       // may not have learnt it yet, and would write its stale state over.
       if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false, nonce)))
         await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
-      if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
+      if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth, nonce);
       // A new conversation, and a new transcript id: its state is saved
       // under that, so a later resume of the old session restores the old
       // session's. The engine does not say when the id rotates, so the key
@@ -1154,7 +1158,7 @@ export function register(on: On) {
         // may not have learnt it yet, and would write its stale state over.
         if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false, nonce)))
           await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
-        if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
+        if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth, nonce);
         // Settings too: what a command set in the old session is not the
         // resumed one's. The environment seeds them again, and the resumed
         // session's snapshot puts back only what its own commands set.
@@ -1203,7 +1207,7 @@ export function register(on: On) {
       else {
         // Restored already (session.start in a fresh process came first):
         // the reported model is applied here, over what the snapshot held.
-        if (running !== null && baseModel(running.model) !== baseModel(e.model)) {
+        if (running !== null && !sameModelAs(running.model, e.model)) {
           running = sessionDecision(e.model);
           unconfirmed = null;
         }
@@ -1565,7 +1569,7 @@ export function register(on: On) {
       const current = await snapshotKeyOf($);
       if (current !== null && current !== snapshotKey) {
         // The old id's claim is released, as on a resume.
-        if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
+        if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth, nonce);
         snapshotKey = current;
         savedOnce = false;
       }
@@ -1892,12 +1896,15 @@ export function register(on: On) {
       // to it, so a resumed agent's later turns add their usage to the same
       // row rather than opening one each. Recording it again here listed
       // every routed subagent twice.
-      attempt = spawned.get(e.agentId) ?? unrouted.get(e.agentId);
+      const routedAgent = spawned.get(e.agentId);
+      attempt = routedAgent ?? unrouted.get(e.agentId);
       if (attempt !== undefined) {
         // Touch keeps the row warm, so a busy agent is the last evicted when
         // a spawn trims the map: dropping an in-flight agent would revert its
-        // later steps to the session model.
-        touch(spawned, e.agentId, attempt);
+        // later steps to the session model. Each in its own map: an agent
+        // the router left alone stays out of the routed ones.
+        if (routedAgent !== undefined) touch(spawned, e.agentId, attempt);
+        else touch(unrouted, e.agentId, attempt);
       } else {
         // A fork, or a spawn from before the router loaded: nothing was
         // decided for it, and it runs on whatever the engine resolved.

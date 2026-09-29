@@ -267,3 +267,10 @@ describe("shortOf never contradicts itself (2026-09-29)", async () => {
     assert.equal(shortOf(0.2496, 0.25), "only 24% removed, needs 25%");
   });
 });
+
+describe("shortOf rounds down without float error (2026-09-29)", async () => {
+  const { shortOf } = await import("../hooks/compactor.ts");
+  test("0.29 is 29%", () => {
+    assert.equal(shortOf(0.29, 0.3), "only 29% removed, needs 30%");
+  });
+});

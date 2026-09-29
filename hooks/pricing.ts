@@ -155,6 +155,12 @@ export function baseModel(model: string): string {
   return model.replace(/\[[^\]]*\]$/, "");
 }
 
+/** The model a spelling names: without `[1m]` or a date suffix, so both read as one. */
+export function sameModelAs(a: string, b: string): boolean {
+  const key = (m: string) => baseModel(m).replace(/-\d{8}$/, "");
+  return key(a) === key(b);
+}
+
 /** Ladder order, low to high, for telling a downgrade from an upgrade. */
 const RANK: Record<Tier, number> = { haiku: 0, sonnet: 1, opus: 2, fable: 3 };
 

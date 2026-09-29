@@ -4564,3 +4564,71 @@ describe("register: two processes loaded in the same millisecond (2026-09-29)", 
     }
   });
 });
+
+describe("register: round-8 findings (2026-09-29)", () => {
+  test("a fork's later turns keep it out of the routed agents", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-FK2" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    for (let i = 0; i < 40; i++)
+      for (const t of ["a", "b"])
+        await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: `f${i}${t}`, index: 0, agentId: `fork-${i}` }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5-5")));
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "m" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "m", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    const snap = shared.store.get("session:sess-FK2") as { spawned: unknown[]; unrouted: unknown[] };
+    assert.equal(snap.spawned.length, 0);
+    assert.ok(snap.unrouted.length <= 32);
+  });
+  test("a same-session resume reporting a dated id of the running model keeps the routed tier", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-DT" };
+    const a = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    a.setTier("opus", 0.95, 3);
+    await a.hooks.get("turn.start")!(a.$, { text: "x", turnId: "d1" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "d1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume", model: "claude-opus-5-5-20260901", context_tokens: 30_000 }, async (e: unknown) => e);
+    a.setContext(30_000);
+    a.setTier("opus", 0.95, 3);
+    let sent = "";
+    await a.hooks.get("turn.start")!(a.$, { text: "y", turnId: "d2" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "d2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-opus-5-5");
+  });
+});
+
+describe("register: the copy that lost a same-stamp tie does not release the winner's claim (2026-09-29)", () => {
+  test("session.end on the loser leaves the holder's owner and seen records", async () => {
+    const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };
+    const realNow = Date.now;
+    const realRandom = Math.random;
+    const T = realNow();
+    const store = new Map<string, unknown>();
+    const loadAt = () => {
+      g.__jevRouterNewest = 0;
+      g.__jevRouterLive = undefined;
+      let calls = 0;
+      Date.now = () => T;
+      Math.random = () => (calls++ === 0 ? 0.3 : realRandom());
+      try {
+        return load(undefined, { store, id: "sess-TIE2" });
+      } finally {
+        Date.now = realNow;
+        Math.random = realRandom;
+      }
+    };
+    try {
+      const a = loadAt();
+      await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+      const b = loadAt();
+      await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+      // A claimed first; B found A's id in the seen record and stood aside.
+      const seenBefore = JSON.stringify(store.get("seen:session:sess-TIE2"));
+      await b.hooks.get("session.end")!(b.$, {}, async (e: unknown) => e);
+      assert.ok(store.has("owner:session:sess-TIE2"), "the holder's owner record stays");
+      assert.equal(JSON.stringify(store.get("seen:session:sess-TIE2")), seenBefore);
+    } finally {
+      Date.now = realNow;
+      Math.random = realRandom;
+    }
+  });
+});

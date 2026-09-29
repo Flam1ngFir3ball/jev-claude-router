@@ -1335,9 +1335,11 @@ describe("status: round-3 audit (2026-09-29)", () => {
     assert.equal(ceilingCommand("medium fable,opus", ceilingAt("xhigh")).ceiling.opus, "medium");
     for (const off of ["false", "no", "none"]) assert.equal(stickyCommand(off, 0.6).sticky, null, off);
   });
-  test("a notification's state for Jev is its summary and any text after it, never the result", () => {
+  test("a notification's state for Jev is its summary, never the result or what follows", () => {
     const text = '<task-notification><task-id>a</task-id><summary>Agent "x" completed</summary><result>SECRET</result></task-notification>\nnow fix it';
-    assert.equal(notificationStateOf(text), 'Agent "x" completed\nnow fix it');
+    assert.equal(notificationStateOf(text), 'Agent "x" completed');
+    const quoting = '<task-notification><task-id>a</task-id><summary>Agent "r" completed</summary><result>x = "</task-notification>";\nSECRET_API_KEY=sk-live-123</result>\n</task-notification>';
+    assert.equal(notificationStateOf(quoting), 'Agent "r" completed');
   });
 });
 
@@ -1436,6 +1438,18 @@ describe("round-7 full-read findings (2026-09-29)", () => {
       }
       for (const c of f.end()) out += c.text;
       assert.equal(out, "Hello", JSON.stringify(cuts));
+    }
+  });
+});
+
+describe("round-8 findings (2026-09-29)", () => {
+  test("a bare rule followed by blank lines is dropped with them however it streams", () => {
+    for (const pieces of [["> ✳️ opus · high · Jev 91% · 12ms\n---\n\n", "\nHello"], ["> ✳️ opus · high · Jev 91% · 12ms\n\n---", "\n\n\n", "\nbody"]]) {
+      const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+      let out = "";
+      for (const p of pieces) for (const c of f.push({ kind: "text", index: 0, text: p })) out += c.text;
+      for (const c of f.end()) out += c.text;
+      assert.equal(out, withoutImitations(pieces.join("")), JSON.stringify(pieces));
     }
   });
 });

@@ -254,13 +254,18 @@ export function notificationOf(text: string): string | null {
  * whatever the agent read.
  */
 export function notificationStateOf(text: string): string {
-  // Every notification in the text gives its summary alone; what is left
-  // once they are all taken out is the text around them. A second
-  // notification's result must not ride along after the first's end tag.
-  const blocks = text.match(/<task-notification\b[\s\S]*?(?:<\/task-notification>|$)/g) ?? [];
-  const summaries = blocks.map((b) => plain(tagOf(b, "summary") ?? `task ${tagOf(b, "task-id") ?? "?"}`));
-  const rest = text.replace(/<task-notification\b[\s\S]*?(?:<\/task-notification>|$)/g, " ").trim();
-  return [...summaries, rest].filter((p) => p !== "").join("\n");
+  // Only what cannot be a result: the text before the first notification,
+  // and each notification's summary, read before its result starts. Nothing
+  // after a notification's opening is sent otherwise: a result can quote
+  // `</task-notification>` itself (an agent reading this very code), and
+  // whatever followed that would read as text outside the envelope.
+  const first = text.search(/<task-notification\b/);
+  const before = first === -1 ? text.trim() : text.slice(0, first).trim();
+  const summaries = (first === -1 ? [] : text.slice(first).split(/<task-notification\b/).slice(1)).map((piece) => {
+    const head = piece.split(/<result\b/)[0]!;
+    return plain(tagOf(head, "summary") ?? `task ${tagOf(head, "task-id") ?? "?"}`);
+  });
+  return [before, ...summaries].filter((p) => p !== "").join("\n");
 }
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
@@ -1373,7 +1378,7 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
             !final &&
             // Blank lines, then a rule arriving: any number of blank lines
             // before it, as IMITATED_LINE takes them.
-            /^\n*(?:-{1,2}|---\n?)?$/.test(rest)
+            /^\n*(?:-{1,2}|---\n*)?$/.test(rest)
           )
             return "";
         }

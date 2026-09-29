@@ -556,8 +556,14 @@ export const PLAIN_DECIMAL = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
  * "stop using haiku and use opus" still forces opus. A model id names its
  * tier too. Returns the tier, or null when none is named or not offered.
  */
-const OVERRIDE =
-  /\b(?:use|do (?:it |this )?using|switch(?:ing)?(?: over| back)?(?: (?:the )?model)? to|route to|run (?:it |this )?on|go with)\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\d+)*(?![\w-])/gi;
+/** The verbs that route, shared by OVERRIDE and the backticked-tier unwrap in ownWords. */
+const ROUTE_VERB =
+  "use|do (?:it |this )?using|switch(?:ing)?(?: over| back)?(?: (?:the )?model)? to|route to|run (?:it |this )?on|go with";
+
+const OVERRIDE = new RegExp(
+  `\\b(?:${ROUTE_VERB})\\s+(?:claude-)?(haiku|sonnet|opus|fable)(?:-\\d+)*(?![\\w-])`,
+  "gi",
+);
 
 /**
  * Bare `using <tier>` is not an override, but it can absorb a negation so a
@@ -606,7 +612,7 @@ export function ownWords(text: string): string {
     .replace(/```[\s\S]*?(?:```|$)/g, " ")
     // A tier alone in backticks after a route verb is the person's own ask
     // ("use `opus`"), not code: unwrapped before code spans go.
-    .replace(/\b(use|switch to|go with|run on)\s+`((?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\d+)*)`/gi, "$1 $2")
+    .replace(new RegExp(`\\b(${ROUTE_VERB})\\s+\`((?:claude-)?(?:haiku|sonnet|opus|fable)(?:-\\d+)*)\``, "gi"), "$1 $2")
     .replace(/`[^`\n]*`/g, " ")
     // A code comment on a line of its own, outside a fence: `// use opus`.
     .replace(/^[ \t]*\/\/.*$/gm, " ")

@@ -208,7 +208,7 @@ Ready and merged, held back from a version bump until approved:
   number earlier versions read, so a process still on an earlier version
   and this one never both act on a session.
 - **Forks and other agents the router leaves alone** are kept apart from
-  routed ones and capped, so they neither grow the snapshot nor push out a
+  routed ones (their later turns too) and capped, so they neither grow the snapshot nor push out a
   routed agent. `/clear` with an unreadable agent list keeps running agents'
   routing.
 - **Long inputs stay fast:** naming a tier in a 20k-character prompt took up
@@ -248,6 +248,11 @@ Ready and merged, held back from a version bump until approved:
 - **Two processes loaded in the same millisecond** no longer both route a
   session: their load stamps could be equal, and a per-copy id in the
   `seen:` record now decides which one holds it.
+- **A notification's text sent to Jev is its summaries alone**: a result
+  that quotes the closing tag can no longer carry what follows it along.
+- A copy that lost a same-stamp tie does not release the winner's claim;
+  a resume reporting a dated id of the running model keeps the routed
+  tier; a backticked tier is read after every route verb.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 

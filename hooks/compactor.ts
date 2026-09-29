@@ -78,7 +78,8 @@ export function minReductionOf(raw: string | undefined): number {
 export function shortOf(reduction: number, minReduction: number): string | undefined {
   return reduction < minReduction
     ? // Rounded down, so it never reads "only 25% removed, needs 25%".
-      `only ${Math.floor(reduction * 100)}% removed, needs ${Math.round(minReduction * 100)}%`
+      // (the epsilon keeps 0.29 × 100 = 28.999… at 29).
+      `only ${Math.floor(reduction * 100 + 1e-9)}% removed, needs ${Math.round(minReduction * 100)}%`
     : undefined;
 }
 

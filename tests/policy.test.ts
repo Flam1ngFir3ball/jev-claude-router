@@ -962,3 +962,9 @@ describe("round-6 parser agreement (2026-09-29)", () => {
     assert.equal(parseOverride(`${"a".repeat(9_997)}use${"b".repeat(15_000)}opus${"c".repeat(9_996)}`), null);
   });
 });
+
+describe("backticked tier after any route verb (2026-09-29)", () => {
+  test("switch over to, run this on and route to take a backticked tier", () => {
+    for (const text of ["switch over to `opus`", "run this on `opus`", "route to `opus`", "switch the model to `opus`"]) assert.equal(parseOverride(text), "opus", text);
+  });
+});
