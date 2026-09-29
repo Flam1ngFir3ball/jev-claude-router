@@ -10,7 +10,7 @@
 
 ## Unreleased
 
-Ready and merged, held back from a version bump until approved:
+## 1.1.0 — 2026-09-29
 
 ### Features
 
