@@ -3852,3 +3852,15 @@ describe("register: store growth (2026-09-29)", () => {
     assert.equal(shared.store.has("owner:session:sess-NEW"), true);
   });
 });
+
+describe("register: what a task's notification sends to Jev (2026-09-29)", () => {
+  test("only the one-line summary, never the task's result", async () => {
+    const { hooks, $, lastState, fetches } = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_NOTIFY_CONTINUE: "0" });
+    const notice =
+      '<task-notification><task-id>t9</task-id><summary>Agent "reader" completed</summary><result>API_TOKEN=sk-secret-123 found in .env</result></task-notification>';
+    await hooks.get("turn.start")!($, { text: notice, turnId: "p1" }, async (e: unknown) => e);
+    assert.equal(fetches(), 1, "Jev was asked");
+    assert.equal(lastState(), 'Agent "reader" completed');
+    assert.doesNotMatch(lastState() ?? "", /sk-secret/);
+  });
+});

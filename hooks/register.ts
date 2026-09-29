@@ -1341,7 +1341,9 @@ export function register(on: On) {
     const asking =
       isContinuation(e.text) || nudge || softNotify || forced !== null
         ? null
-        : classify($, e.text, offered, settings, askAbort.signal);
+        // A task's notification carries the agent's whole result, which can
+        // quote files it read: Jev is told only the task's one-line summary.
+        : classify($, notification ? (notificationOf(e.text) ?? "") : e.text, offered, settings, askAbort.signal);
     const reported = await contextTokensOf($);
     // With no context yet (a fresh session) nothing tells two sessions
     // apart, so their claims are kept apart by the session's own key.

@@ -67,6 +67,25 @@ cache, which at a few hundred thousand tokens costs dollars. A router that
 follows every pick can cost more than it saves, so this one only switches
 when the switch is worth it, and says so when it is not.
 
+### What leaves your machine
+
+Everything below goes to the provider you configured (TypeSafe, or the
+Vercel AI Gateway), and nowhere else:
+
+- **Each prompt you type**, up to its first 12,000 characters, to pick the
+  tier and effort. A go-ahead, a named tier and the engine's nudge send
+  nothing.
+- **A subagent's task**, as the model wrote it, when it is spawned.
+- **A finished task's one-line summary** (`Agent "reviewer" completed`)
+  when `JEV_ROUTER_NOTIFY_CONTINUE=0` or there is no route to continue;
+  never the task's result.
+- **The conversation at a compaction**, as described under
+  [Compaction by Jev](#compaction-by-jev); `/jev compact off` stops it.
+
+On disk, in Claude Code's plugin store, the router keeps each session's
+routing history, including the first 400 characters of each prompt, for the
+last 20 sessions.
+
 ## Quick start
 
 1. **Get a key.** A [TypeSafe API key](https://console.typesafe.ai/keys)
@@ -200,11 +219,13 @@ allowed.
 
 **Naming a tier.** A tier named with a routing verb (`use opus`,
 `switch to fable`, `route to haiku`, `run this on sonnet`, `go with opus`)
-skips Jev, runs at medium effort and shows `your pick`. Plain mentions are
-not routes: "search for opus docs" and "I'm using opus for comparison" are
-ordinary prompts. A negation cancels the next route ("don't use haiku, use
+skips Jev, runs at medium effort and shows `your pick`. The phrase has to be
+said to the model: at the start of a sentence or clause, or after "please",
+"just", "let's", "can you" and the like. Talk about a tier is not a route:
+"search for opus docs", "should I use opus or sonnet?", "make production use
+sonnet by default" and "I told you not to use haiku" are ordinary prompts. A negation cancels the next route ("don't use haiku, use
 opus" goes to opus). Pasted content, code, quoted lines, text in double
-quotes and background-task notifications are not read for this, so a pasted document that says "use
+quotes (single or double), indented code and background-task notifications are not read for this, so a pasted document that says "use
 opus" as an example does not route. `JEV_ROUTER_ALLOW_OVERRIDE=0` turns this off, and a tier turned off
 with `JEV_ROUTER_EXCLUDE` or `/jev tiers off` cannot be named back in.
 
@@ -400,6 +421,7 @@ All settings go in the `env` block of `~/.claude/settings.json`.
 | `AI_GATEWAY_API_KEY` | | Vercel AI Gateway key. |
 | `JEV_ROUTER_PROVIDER` | TypeSafe if its key is set | `typesafe` or `gateway`. |
 | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | Must be https. Only `*.typesafe.ai` is accepted unless `JEV_ROUTER_ALLOW_CUSTOM_BASE=1`. A trailing `/v1/systemone` is dropped, since the router adds it. |
+| `JEV_ROUTER_ALLOW_CUSTOM_BASE` | off | `1` lets `TYPESAFE_BASE_URL` name any https host. That host receives your key and prompts, so set both only in your own `~/.claude/settings.json`, and check that a project's settings do not set them. |
 | `JEV_ROUTER_JEV_MODEL` | `jev-latest` | Pin a Jev version (e.g. `jev-1.13.0`) so confidences stay stable across releases. |
 | `JEV_ROUTER_TIMEOUT_MS` | `1500` | How long a turn waits for Jev, in milliseconds. At least 100 (anything less is taken for a mistake and the default used), at most 8000. |
 

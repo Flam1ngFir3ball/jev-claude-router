@@ -853,3 +853,32 @@ describe("holdsSonnetEffort under a ceiling (2026-09-28)", () => {
     assert.equal(holdsSonnetEffort(on("low", 0.3), on("medium", 0.9), 0.75, ceiling), true, "one within the cap still is");
   });
 });
+
+describe("parseOverride: talk about a tier is not a request to run on it (2026-09-29)", () => {
+  test("questions, descriptions, refusals and quotes do not force a tier", () => {
+    for (const text of [
+      "should I use opus or sonnet for this?",
+      "why do we use haiku for the classifier?",
+      "Explain when to use fable vs opus",
+      "Refactor config so that production workloads use sonnet by default",
+      "I told you not to use haiku",
+      "no need to use opus here",
+      "I don't think we should use opus",
+      "rather than use opus, just fix the typo",
+      "the README says 'use opus' for planning",
+      "look at this:\n    // use opus\nwhat is it for?",
+    ])
+      assert.equal(parseOverride(text), null, text);
+  });
+  test("a request addressed to the model still does", () => {
+    for (const [text, tier] of [
+      ["please use opus", "opus"],
+      ["Can you use fable for this?", "fable"],
+      ["let's switch to haiku", "haiku"],
+      ["I want you to use opus", "opus"],
+      ["ok, use sonnet", "sonnet"],
+      ["just use opus", "opus"],
+    ] as const)
+      assert.equal(parseOverride(text), tier, text);
+  });
+});
