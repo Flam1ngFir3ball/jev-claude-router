@@ -82,7 +82,9 @@ export function messageOf(error: unknown): string {
  * `withoutKey` wherever it is.
  */
 export function withoutBearer(text: string): string {
-  return text.replace(/\bBearer(\s+)(["']?)([^\s"']+)(["']?)/gi, (all, space: string, _open: string, value: string) => {
+  // U+0085 counts as a gap too: `\s` leaves it out, and a line split later
+  // turns it into a space next to the token.
+  return text.replace(/\bBearer([\s\u0085]+)(["']?)([^\s\u0085"']+)(["']?)/gi, (all, space: string, _open: string, value: string) => {
     // Trailing punctuation found by hand: `[…]+$` rescanned a long run of
     // it from each position.
     let cut = value.length;

@@ -5123,3 +5123,24 @@ describe("register: round-13 driver findings (2026-09-29)", () => {
     }
   });
 });
+
+describe("register: the live-model check reads only a model it can name (2026-09-29)", () => {
+  for (const live of ["default", "opus", "opusplan"])
+    test(`a warm placeholder holds when the engine reports ${live}`, async () => {
+      const shared = { store: new Map<string, unknown>(), id: "sess-LV" };
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined }, shared);
+      kit.setSessionModel("claude-opus-5-5");
+      kit.setContext(150_000);
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      kit.fail();
+      await kit.hooks.get("turn.start")!(kit.$, { text: "implement it", turnId: "lv1" }, async (e: unknown) => e);
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "lv1", index: 0 }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5-5")));
+      await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", context_tokens: 150_000 }, async (e: unknown) => e);
+      kit.setSessionModel(live);
+      kit.setTier("sonnet", 0.55, 2);
+      let sent = "";
+      await kit.hooks.get("turn.start")!(kit.$, { text: "now the next part", turnId: "lv2" }, async (e: unknown) => e);
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "lv2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+      assert.equal(sent, "claude-opus-5-5");
+    });
+});

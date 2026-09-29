@@ -288,7 +288,11 @@ Ready and merged, held back from a version bump until approved:
   without rescanning it for each piece.
 - **After a resume that names no model, or a reload, the next turn checks
   the session's model**: a placeholder of the model the session ran on
-  before (a turned-off tier included) is replaced by what it is on now.
+  before (a turned-off tier included) is replaced by what it is on now,
+  when the engine names a model id (an alias such as `opus` or `default`
+  leaves a warm placeholder as it is).
+- A NEL (U+0085) between `Bearer` and a token no longer hides the token
+  from redaction.
 - An answering model id a snapshot could not hold (a control character,
   markdown, a runaway length) is not adopted, so the snapshot stays
   readable.

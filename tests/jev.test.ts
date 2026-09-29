@@ -511,3 +511,11 @@ describe("withoutBearer and its callers, edge cases (2026-09-29)", () => {
     assert.doesNotMatch(shortError("Bearer\u0007sk-ant-api03-abcdefghijklmnop0123 rejected"), /sk-ant/);
   });
 });
+
+describe("shortError: a NEL between Bearer and a token does not hide it (2026-09-29)", () => {
+  test("U+0085", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    assert.doesNotMatch(shortError("proxy rejected Authorization: Bearer\u0085sk_live_ABC123secret"), /sk_live/);
+    assert.doesNotMatch(shortError('proxy rejected Authorization: Bearer\u0085"sk_live_ABC123secret"'), /sk_live/);
+  });
+});

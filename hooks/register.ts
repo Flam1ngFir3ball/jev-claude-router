@@ -252,6 +252,9 @@ const PRUNE_TAIL_REUSED = 6;
  * answered: a dated id (`claude-opus-5-5-20260901`) is its undated model.
  * Null for an id off the ladder or not a string.
  */
+/** A model alias the engine may report, not a model id. */
+const BARE_ALIAS = /^(?:opus|sonnet|haiku|fable|opusplan|default|best)(?:\[1m\])?$/i;
+
 /** Marks the end of a step's stream, after its last chunk. */
 const STEP_END = Symbol("step-end");
 
@@ -1680,7 +1683,12 @@ export function register(on: On) {
         // no effort confidence, not named, not held) that is not the live
         // model any more is replaced, whoever's model it was.
         void restored;
+        // Only for a model it can read and name: an alias (`opus`,
+        // `opusplan`) or one off the ladder says nothing about the cache,
+        // and dropping the placeholder for it would lose a warm hold.
+        const now = BARE_ALIAS.test(live) ? null : sessionDecision(live);
         if (
+          now !== null &&
           running !== null &&
           running.effortConfidence === undefined &&
           running.forced === undefined &&
@@ -1688,7 +1696,7 @@ export function register(on: On) {
           running.jevFailed === undefined &&
           !sameModelAs(running.model, live)
         )
-          running = sessionDecision(live);
+          running = now;
         sessionModel = live;
       }
     }
