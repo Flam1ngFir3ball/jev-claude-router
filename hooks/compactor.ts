@@ -23,7 +23,7 @@ import type {
   ToolResult,
   ToolUse,
 } from "./compaction/types.ts";
-import { BEARER_VALUE, messageOf, providerNoteOf, withoutKey, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
+import { withoutBearer, messageOf, providerNoteOf, withoutKey, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
 import { flagOff, PLAIN_DECIMAL } from "./policy.ts";
 import { hasNotification, notificationOf, notificationStateOf, words } from "./status.ts";
 import type { ProviderResult } from "./provider.ts";
@@ -271,11 +271,11 @@ export async function pruneTranscript(args: {
     if (short !== undefined) return { ok: false, compaction: { ...compaction, fallback: short } };
     return { ok: true, messages: toEngineMessages(args.messages, result.messages), compaction };
   } catch (error) {
-    const detail = withoutKey(messageOf(error), args.provider.ok ? args.provider.apiKey : undefined);
+    const detail = withoutBearer(withoutKey(messageOf(error), args.provider.ok ? args.provider.apiKey : undefined).slice(0, 2000));
     // Shown in /jev and saved: plain words only, whatever the provider sent.
     return none(
       detail
-        .replace(BEARER_VALUE, "Bearer …")
+        .slice(0, 2000)
         // eslint-disable-next-line no-control-regex
         .replace(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/g, "")
         .replace(/\s+/g, " ")

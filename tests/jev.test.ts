@@ -448,12 +448,23 @@ describe("shortError keeps advice about a bearer token (2026-09-29)", () => {
 describe("shortError redacts a credential after Bearer, not the words about one (2026-09-29)", () => {
   test("short, quoted, separated and mixed-case keys go; words stay", async () => {
     const { shortError } = await import("../hooks/jev.ts");
-    for (const key of ["gw-key", "abcdefghijKLMNOPqrst", '"ts_live_9f8e7d6c"', "'ts_live_x'", "auth-9f8a7b6c5d4e3f"]) {
+    for (const key of ["abcdefghijKLMNOPqrst", '"ts_live_9f8e7d6c"', "'ts_live_x'", "auth-9f8a7b6c5d4e3f", "sk-live-abc123XYZ"]) {
       const out = shortError(`Headers.append: Bearer ${key} is invalid`);
       assert.ok(!out.includes(key.replace(/["']/g, "")), out);
     }
-    for (const text of ["request failed: Bearer required", "Expected scheme Bearer but got Basic"])
+    for (const text of [
+      "request failed: Bearer required",
+      "Expected scheme Bearer but got Basic",
+      "Bearer token-based auth failed",
+      "expected Bearer auth/OAuth",
+    ])
       assert.equal(shortError(text), text);
+    const { withoutBearer } = await import("../hooks/jev.ts");
+    assert.equal(withoutBearer("Invalid Bearer token."), "Invalid Bearer token.");
+    assert.equal(withoutBearer("bearer sk-live-abc123XYZ"), "bearer …");
+    const t = performance.now();
+    withoutBearer(`Bearer A${"a".repeat(200_000)}`);
+    assert.ok(performance.now() - t < 200);
   });
   test("the key itself is taken out of a failed request's reason wherever it appears", async () => {
     const { askJev } = await import("../hooks/jev.ts");
@@ -468,5 +479,22 @@ describe("shortError redacts a credential after Bearer, not the words about one 
     });
     assert.equal(r.ok, false);
     if (!r.ok) assert.ok(!r.reason.includes("tsk_live"), r.reason);
+  });
+});
+
+describe("the configured key is removed however short or plain (2026-09-29)", () => {
+  test("a short all-letter key quoted after Bearer", async () => {
+    const { askJev } = await import("../hooks/jev.ts");
+    const r = await askJev({
+      fetch: async () => {
+        throw new Error("Headers.append: Bearer gw-key is invalid");
+      },
+      sleep: () => new Promise(() => {}),
+      provider: { ok: true, name: "gateway", endpoint: "https://ai-gateway.vercel.sh/v1/evaluate", model: "typesafe-ai/jev", apiKey: "gw-key" },
+      state: "x",
+      offered: ["haiku", "opus"],
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.ok(!r.reason.includes("gw-key"), r.reason);
   });
 });

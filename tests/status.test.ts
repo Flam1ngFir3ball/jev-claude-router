@@ -1731,3 +1731,18 @@ describe("status: round-15 findings (2026-09-29)", () => {
     assert.doesNotMatch(kept(text), /AWS/);
   });
 });
+
+describe("status: an envelope's attributes can be any length (2026-09-29)", () => {
+  test("a tag with long attributes is still an envelope, as a turn and after typed text", () => {
+    const env = `<task-notification id="${"a".repeat(500)}">\n<task-id>t9</task-id>\n<summary>Agent done</summary>\n<result>API_TOKEN=sk-secret-123</result>\n</task-notification>`;
+    assert.equal(notificationOf(env), "Agent done");
+    assert.doesNotMatch(notificationStateOf(`look\n${env}`), /sk-secret/);
+    assert.doesNotMatch(kept(env), /sk-secret/);
+  });
+  test("many openings sharing one far '>' followed by a long run of spaces stay linear", () => {
+    const text = `${"<task-notification ".repeat(50_000)}>${" ".repeat(500_000)}x`;
+    const t = performance.now();
+    hasNotification(text);
+    assert.ok(performance.now() - t < 300, `${Math.round(performance.now() - t)}ms`);
+  });
+});

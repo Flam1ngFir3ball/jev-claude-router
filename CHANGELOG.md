@@ -260,13 +260,15 @@ Ready and merged, held back from a version bump until approved:
 - A spawn with no description or type, and a streamed chunk that is not
   text, pass through rather than throw or print "undefined".
 - **A failed request's reason never carries the configured key**, however
-  the error quotes it; a `Bearer` value that reads as a credential is also
-  redacted, and "Bearer required" or "Missing bearer token" stay as words.
+  the error quotes it; a `Bearer` value that reads as a credential (a
+  digit or underscore, sixteen characters, mixed case) is also redacted,
+  in any case, and "Bearer required" or "Invalid Bearer token." stay as
+  words.
 - A notification's row reads its summary and task id from before the
   result, so a result that quotes either is not listed or stored; a
   subagent's prompt is cut at a notification as a typed one is.
-- Looking for a notification in a long line of unclosed openings is
-  linear.
+- Looking for a notification is linear on any input, and a tag with
+  attributes of any length is still read as one, so its result is cut.
 - **A prompt is cut at its first notification envelope, wherever it is and
   however it is quoted**: nothing after one reaches Jev or the store, since
   a result can quote closing tags and fences, and a trailer or a queued

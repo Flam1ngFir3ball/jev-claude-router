@@ -239,7 +239,7 @@ export function originOf(
  * A turn that is a task's notification: it opens with the envelope, an
  * element after the tag (prose that opens with the tag is a prompt).
  */
-const NOTIFICATION = /^\s*<task-notification\b[^>\n]{0,200}>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
+const NOTIFICATION = { test: (text: string) => opensWithEnvelope(text) };
 /**
  * A tag's text, found by hand: the lazy pattern it replaces rescanned to the
  * end from every opening tag, quadratic on a run of openings with no close.
@@ -288,9 +288,58 @@ export function notificationStateOf(text: string): string {
  * A notification's envelope, not a mention of the tag: an element follows
  * the opening tag (the engine's fields, in any order, or a comment).
  */
-// The tag's attributes are bounded: unbounded, every opening on a long line
-// with no `>` rescanned the rest of it (400k characters took seven seconds).
-const ENVELOPE = /<task-notification\b[^>\n]{0,200}>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
+const TAG = "<task-notification";
+
+/**
+ * Whether an envelope opens at `at`: the tag (attributes of any length, on
+ * one line), then an element or a comment. By hand, with the next `>` and
+ * newline found once and reused: a pattern either rescanned a long line
+ * of unclosed openings from each one, or, bounded, missed a tag with long
+ * attributes and let its result through.
+ */
+function envelopeOpensAt(
+  text: string,
+  at: number,
+  next: { gt: number; nl: number; seen?: number; ok?: boolean },
+): boolean {
+  const after = text.charCodeAt(at + TAG.length);
+  if (after === after && /\w/.test(String.fromCharCode(after))) return false;
+  if (next.gt !== -1 && next.gt < at) next.gt = text.indexOf(">", at);
+  if (next.nl !== -1 && next.nl < at) next.nl = text.indexOf("\n", at);
+  if (next.gt === -1 || (next.nl !== -1 && next.nl < next.gt)) return false;
+  // Openings that share a `>` share what follows it: read once.
+  if (next.seen === next.gt) return next.ok!;
+  next.seen = next.gt;
+  next.ok = elementAfter(text, next.gt + 1);
+  return next.ok;
+}
+
+/** Whether an element or a comment opens at `i`, after blank space. */
+function elementAfter(text: string, i: number): boolean {
+  while (i < text.length && /\s/.test(text[i]!)) i++;
+  if (text[i] !== "<") return false;
+  if (text.startsWith("!--", i + 1)) return true;
+  let j = i + 1;
+  if (!/[a-z]/i.test(text[j] ?? "")) return false;
+  while (j < text.length && /[\w-]/.test(text[j]!)) j++;
+  return j < text.length && /[\s/>]/.test(text[j]!);
+}
+
+/** Where the first envelope in `text` opens, or -1. Linear. */
+function firstEnvelope(text: string): number {
+  const lower = text.toLowerCase();
+  const next = { gt: text.indexOf(">"), nl: text.indexOf("\n") };
+  for (let at = lower.indexOf(TAG); at !== -1; at = lower.indexOf(TAG, at + 1))
+    if (envelopeOpensAt(text, at, next)) return at;
+  return -1;
+}
+
+/** Whether `text` opens (after blank space) with an envelope. */
+function opensWithEnvelope(text: string): boolean {
+  const at = text.search(/\S/);
+  if (at === -1 || text.slice(at, at + TAG.length).toLowerCase() !== TAG) return false;
+  return envelopeOpensAt(text, at, { gt: text.indexOf(">", at), nl: text.indexOf("\n", at) });
+}
 
 /**
  * Where a notification starts in text the person typed, or -1: the first
@@ -302,7 +351,7 @@ const ENVELOPE = /<task-notification\b[^>\n]{0,200}>\s*<(?:[a-z][\w-]*[\s/>]|!--
  * quote left out of what Jev grades (the model still gets all of it).
  */
 function envelopeAt(text: string): number {
-  return text.search(ENVELOPE);
+  return firstEnvelope(text);
 }
 
 /** Whether `text` carries a task's notification anywhere, typed text before it or not. */

@@ -74,13 +74,22 @@ export function messageOf(error: unknown): string {
 }
 
 /**
- * A `Bearer` value that reads as a credential, for redacting from error
- * text: one with a digit or a separator in it, or long, or mixed case —
- * not the plain words an error uses about one ("Bearer required", "Missing
- * bearer token"). The key itself is redacted by `withoutKey` wherever it is.
+ * `text` with a `Bearer` value that reads as a credential taken out: one
+ * with a digit or an underscore, sixteen characters or more, or letters of
+ * both cases — not the words an error uses about one ("Bearer required",
+ * "Invalid Bearer token.", "Bearer auth/OAuth"). Each value is judged on
+ * its own, so the work is linear. The configured key is taken out by
+ * `withoutKey` wherever it is.
  */
-export const BEARER_VALUE =
-  /\bBearer\s+["']?(?=[^\s"']*(?:[\d_\-.~+/=]|[a-z][^\s"']*[A-Z]|[A-Z][^\s"']*[a-z][^\s"']*[A-Z])|[^\s"']{16})[^\s"']+["']?/g;
+export function withoutBearer(text: string): string {
+  return text.replace(/\bBearer(\s+)(["']?)([^\s"']+)(["']?)/gi, (all, space: string, _open: string, value: string) => {
+    const trail = /[.,;:!?)\]]+$/.exec(value)?.[0] ?? "";
+    const bare = value.slice(0, value.length - trail.length);
+    const credential =
+      /[\d_]/.test(bare) || bare.length >= 16 || (/^[A-Za-z]{8,}$/.test(bare) && /[a-z]/.test(bare) && /[A-Z]/.test(bare));
+    return credential ? `${all.slice(0, 6)}${space}…${trail}` : all;
+  });
+}
 
 /** `text` with every occurrence of `key` taken out: an error can quote it anywhere. */
 export function withoutKey(text: string, key: string | undefined): string {
@@ -103,16 +112,14 @@ export function shortError(detail: string): string {
     .map((t) => t.trim())
     .filter((t) => t !== "")
     .join(" ")
-    .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "")
-    // An error that quotes the request's header quotes the key with it.
-    // Only a value that looks like a key (long, with a digit or underscore):
-    // "Missing bearer token." is advice, not a key.
-    .replace(BEARER_VALUE, "Bearer …")
+    .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "");
+  // An error that quotes the request's header quotes the key with it.
+  const said = withoutBearer(bare)
     .split(/[.?!]\s/)[0]!
     .replace(/^(\w+): \1\b:?\s*/, "$1: ")
     .replace(/:\s*$/, "")
     .trim();
-  return bare.length > 60 ? `${bare.slice(0, 57)}…` : bare;
+  return said.length > 60 ? `${said.slice(0, 57)}…` : said;
 }
 
 /**
