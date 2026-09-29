@@ -1763,3 +1763,18 @@ describe("status: the tag is matched case-insensitively in the text itself (2026
     assert.equal(hasNotification("<tas\u212a-notification><b>x</b> and more"), false);
   });
 });
+
+describe("status: a provider's spelling of the model asked is the model asked (2026-09-29)", () => {
+  for (const got of ["claude-opus-5-5@20260901", "us.anthropic.claude-opus-5-5-v1:0"])
+    test(got, () => {
+      const d = { tier: "opus" as const, model: "claude-opus-5-5", effort: "high" as const, confidence: 0.95 };
+      const attempt: Attempt = {
+        prompt: "x",
+        ms: 1,
+        decision: d,
+        usage: { model: got, input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      };
+      assert.doesNotMatch(replySummary([attempt]) ?? "", /asked/);
+      assert.match(statusReport({ ...base, sessionModel: got, running: d }), /still on it/);
+    });
+});

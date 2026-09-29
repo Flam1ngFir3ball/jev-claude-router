@@ -295,7 +295,8 @@ Ready and merged, held back from a version bump until approved:
   version: a turn held on it goes out as the engine's own model of that
   tier (an older Opus behind `opus` included), so "kept" is a stay.
 - A provider's spelling of the session model (`…@date`, `us.anthropic.…`)
-  is not priced as a switch to itself.
+  is not priced as a switch to itself, marked "⚠ asked" in the summary, or
+  shown as "running on" another tier in `/jev`.
 - **A provider's spelling of the routed model in usage**
   (`…@20260901`, `us.anthropic.…-v1:0`) is the same model: the turn stays
   routed, so `/jev tiers off` applies to it.

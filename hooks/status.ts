@@ -33,7 +33,7 @@ import {
   type Decision,
   type Tier,
 } from "./policy.ts";
-import {
+import { sameModelAs,
   baseModel,
   breakEvenTokens,
   isDowngrade,
@@ -978,13 +978,9 @@ function answeredBy(attempt: Attempt): string {
  * confirm `claude-opus-5`, although one begins with the other.
  */
 function sameModel(asked: string, got: unknown): boolean {
-  if (typeof got !== "string") return false;
-  const base = baseModel(asked);
-  return (
-    got === asked ||
-    got === base ||
-    (got.startsWith(base) && /^-\d{8}$/.test(got.slice(base.length)))
-  );
+  // `[1m]`, a date, and a provider's spelling (`…@date`, `us.anthropic.…`)
+  // all answer for the model asked.
+  return typeof got === "string" && sameModelAs(asked, got);
 }
 
 /** `$0.50 · 47k in (49% cached) · 0k out`. */
@@ -1243,7 +1239,7 @@ function sessionLine(status: Status): string {
   if (status.running === null) return `${model}, nothing routed yet`;
   // `[1m]` and a date are spellings of the same model; compared whole, not
   // as shown (a long Bedrock or Vertex id is cut for the line).
-  return status.sessionModel !== null && baseModel(status.running.model) === baseModel(status.sessionModel)
+  return status.sessionModel !== null && sameModelAs(status.running.model, status.sessionModel)
     ? `${model}, still on it`
     : `${model}, running on ${status.running.tier}`;
 }
