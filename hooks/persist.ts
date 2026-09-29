@@ -83,6 +83,11 @@ export type State = {
   summarisedAgents: string[];
   /** The last compaction Jev was asked about, for /jev. */
   compaction: Compaction | null;
+  /**
+   * What was running before the last turn switched, while no response has
+   * confirmed the switch; null when there is nothing to take back.
+   */
+  unconfirmed: { was: Decision | null } | null;
 };
 
 type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
@@ -135,6 +140,7 @@ export function pack(state: State): Packed {
     overridden: state.overridden,
     summarisedAgents: state.summarisedAgents,
     compaction: state.compaction,
+    unconfirmed: state.unconfirmed,
   };
 }
 
@@ -263,6 +269,10 @@ export function unpack(raw: unknown): State | null {
       ? raw.summarisedAgents.filter((a): a is string => typeof a === "string")
       : [],
     compaction: compactionOf(raw.compaction),
+    unconfirmed:
+      isRecord(raw.unconfirmed) && (raw.unconfirmed.was === null || isValidDecision(raw.unconfirmed.was))
+        ? { was: raw.unconfirmed.was as Decision | null }
+        : null,
   };
 }
 

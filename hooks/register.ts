@@ -789,6 +789,7 @@ export function register(on: On) {
     overridden: [...overridden],
     summarisedAgents: [...summarisedAgents],
     compaction: lastCompaction,
+    unconfirmed,
   });
 
   /** Puts a restored snapshot back, over what the environment seeded. */
@@ -808,7 +809,6 @@ export function register(on: On) {
     stepped.clear();
     for (const id of s.stepped) stepped.add(id);
     running = s.running;
-    unconfirmed = null;
     continueFrom = s.continueFrom;
     latest = s.latest;
     lastUsage = s.lastUsage;
@@ -818,6 +818,7 @@ export function register(on: On) {
     announce = s.announce;
     answered = s.answered;
     lastCompaction = s.compaction;
+    unconfirmed = s.unconfirmed;
     summarisedAgents.clear();
     for (const id of s.summarisedAgents) summarisedAgents.add(id);
     // Only what a command set outranks the environment; the rest stays as
@@ -890,6 +891,8 @@ export function register(on: On) {
   // `/clear` starts a new conversation: nothing is running.
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear") {
+      // The old conversation's claim goes; the next lookup claims afresh.
+      if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
       // A new conversation, and a new transcript id: its state is saved
       // under that, so a later resume of the old session restores the old
       // session's. The engine does not say when the id rotates, so the key
@@ -914,6 +917,16 @@ export function register(on: On) {
     if ((e.source === "resume" || e.source === "fork") && snapshotKey !== undefined) {
       const key = await snapshotKeyOf($);
       if (key !== snapshotKey) {
+        // This copy leaves the old session: its claim goes with it, or a
+        // process that resumes that session later stands aside for good.
+        if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
+        // Settings too: what a command set in the old session is not the
+        // resumed one's. The environment seeds them again, and the resumed
+        // session's snapshot puts back only what its own commands set.
+        settings = null;
+        overridden.clear();
+        enabled = true;
+        announce = true;
         clearRouting();
         reply = [];
         replyAgents = new Set();
@@ -1253,7 +1266,6 @@ export function register(on: On) {
   });
 
   on("turn.start", async ($, e, next) => {
-    if (!enabled) return next(e);
     settings = await seedSettings($, settings);
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
@@ -1261,12 +1273,17 @@ export function register(on: On) {
         applyState(await loadSnapshot($, snapshotKey));
       restoreOnKey = true;
     }
+    // After the restore: a resumed session's own /jev off or on is what
+    // decides this turn, not the one this process was in before.
+    if (!enabled) return next(e);
     // The newest copy of the module handles the turn; an older one stands aside.
     // The session's id can change under a live copy (a resume into a new
     // id); keep the state and follow the id, so every copy claims one key.
     if (snapshotKey !== undefined) {
       const current = await snapshotKeyOf($);
       if (current !== null && current !== snapshotKey) {
+        // The old id's claim is released, as on a resume.
+        if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
         snapshotKey = current;
         savedOnce = false;
       }
@@ -1646,6 +1663,14 @@ export function register(on: On) {
       (holds ??= !superseded() && (await holdsTurnOf(e.turnId)));
 
     for await (const raw of step) {
+      // The model answering at all means the request was read, and its
+      // cache written on the new model, whether or not usage ever arrives.
+      if (
+        unconfirmed !== null &&
+        e.agentId === undefined &&
+        (raw.kind === "text" || raw.kind === "thinking" || raw.kind === "tool" || raw.kind === "input")
+      )
+        unconfirmed = null;
       const at = (raw as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
       let pieces: StepChunk[] = [raw];

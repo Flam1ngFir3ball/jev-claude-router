@@ -1113,8 +1113,11 @@ export function toggleReply(enabled: boolean): string {
  *   > ⚠️ not routed: typesafe said HTTP 401
  */
 export function liveLine(attempt: Attempt): string {
+  // One line, always: a reason carrying a newline (an engine error, say)
+  // would break the blockquote and no longer read as this line.
+  const oneLine = (text: string) => text.replace(/\s*\n\s*/g, " ");
   if ("skipped" in attempt) {
-    return `> ⚠️ not routed: ${attempt.skipped}`;
+    return `> ⚠️ not routed: ${oneLine(attempt.skipped)}`;
   }
   const d = attempt.decision;
   const parts = [
@@ -1123,9 +1126,10 @@ export function liveLine(attempt: Attempt): string {
     ...(d.held === undefined ? [sureOf(d, attempt.kind)] : []),
     ...reasonsOf(attempt),
     ...(originOf(attempt) ? [originOf(attempt)!] : []),
-    `${attempt.ms}ms`,
+    // A clock stepped back mid-call gives a negative span; it reads as 0.
+    `${Math.max(0, Math.round(attempt.ms))}ms`,
   ].filter((p) => p !== "");
-  return `> ✳️ ${parts.join(" · ")}`;
+  return oneLine(`> ✳️ ${parts.join(" · ")}`);
 }
 
 /**

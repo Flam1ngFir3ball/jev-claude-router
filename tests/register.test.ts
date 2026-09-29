@@ -3714,11 +3714,92 @@ describe("register: a switch no response confirmed (2026-09-28)", () => {
     setTier("opus", 0.95, 2);
     assert.equal((await turn("u1", "implement it", (m) => answeredBy(m))).sent, "claude-opus-5-5");
     setTier("fable", 0.95, 3);
-    // Interrupted: the stream ends with no usage, so nothing was written on fable.
-    assert.equal((await turn("u2", "plan it", () => modelSays("Let me"))).sent, "claude-fable-5-1");
+    // Failed before the model said anything: nothing was written on fable.
+    async function* failedEarly() {
+      yield { kind: "engine", ref: 1 };
+      yield { kind: "stop", stopReason: null, usage: null, ref: 2 };
+      return { stopReason: null };
+    }
+    assert.equal((await turn("u2", "plan it", () => failedEarly())).sent, "claude-fable-5-1");
     setContext(150_000);
     setTier("haiku", 0.99, 0);
     const t = await turn("u3", "what is 2+2", (m) => answeredBy(m));
     assert.match(t.text, /kept opus: haiku costs/, "priced against opus, which is what is warm");
+  });
+
+  test("a switch interrupted after the model began answering counts the new tier as warm", async () => {
+    const { hooks, $, setTier, setContext } = load();
+    const turn = async (id: string, text: string, answer: (model: string) => AsyncIterable<unknown>) => {
+      await hooks.get("turn.start")!($, { text, turnId: id }, async (e: unknown) => e);
+      const chunks = await collect(hooks.get("turn.step")!($, { turnId: id, index: 0 }, (e: { model: string }) => answer(e.model)));
+      return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    };
+    setTier("opus", 0.95, 2);
+    await turn("v1", "implement it", (m) => answeredBy(m));
+    setTier("fable", 0.95, 3);
+    // Esc after text began: no usage, but the request was read on fable.
+    await turn("v2", "plan it", () => modelSays("Let me"));
+    setContext(150_000);
+    setTier("haiku", 0.99, 0);
+    assert.match(await turn("v3", "what is 2+2", (m) => answeredBy(m)), /kept fable: haiku costs/);
+  });
+
+  test("the switch still awaiting its first answer survives a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-UNC" };
+    const first = load(undefined, shared);
+    await first.hooks.get("session.start")!(first.$, {}, async (e: unknown) => e);
+    first.setTier("opus", 0.95, 2);
+    await first.hooks.get("turn.start")!(first.$, { text: "implement it", turnId: "r1" }, async (e: unknown) => e);
+    await collect(first.hooks.get("turn.step")!(first.$, { turnId: "r1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    first.setTier("fable", 0.95, 3);
+    await first.hooks.get("turn.start")!(first.$, { text: "plan it", turnId: "r2" }, async (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    const again = load(undefined, shared);
+    again.setContext(150_000);
+    again.setTier("haiku", 0.99, 0);
+    await again.hooks.get("turn.start")!(again.$, { text: "what is 2+2", turnId: "r3" }, async (e: unknown) => e);
+    const chunks = await collect(again.hooks.get("turn.step")!(again.$, { turnId: "r3", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    assert.match(chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""), /kept opus: haiku costs/);
+  });
+});
+
+describe("register: a resume into another session in the same process (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const turnOn = async (kit: ReturnType<typeof load>, id: string) => {
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: id }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+  };
+  test("does not carry the old session's /jev settings or its on/off over", async () => {
+    const store = new Map<string, unknown>();
+    // Session B exists with routing turned off and no other command.
+    const b = load(undefined, { store, id: "sess-RB" });
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    await turnOn(b, "b1");
+    await run(b.hooks, b.$, "off");
+    await new Promise((r) => setTimeout(r, 5));
+    // A later process works in session A, lowers the ceiling, then resumes B.
+    const shared = { store, id: "sess-RA" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await run(a.hooks, a.$, "ceiling low");
+    await turnOn(a, "a1");
+    shared.id = "sess-RB";
+    await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume" }, async (e: unknown) => e);
+    const before = a.fetches();
+    await a.hooks.get("turn.start")!(a.$, { text: "plan it", turnId: "a2" }, async (e: unknown) => e);
+    assert.equal(a.fetches(), before, "B's own /jev off holds: Jev is not asked");
+    assert.match((await run(a.hooks, a.$, "")).text, /ceiling\s+xhigh/, "A's /jev ceiling low stayed in A");
+  });
+  test("releases the old session's claim, so another process can route it later", async () => {
+    const store = new Map<string, unknown>();
+    const shared = { store, id: "sess-OX" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await turnOn(a, "x1");
+    assert.ok(store.has("owner:session:sess-OX"));
+    shared.id = "sess-OY";
+    await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume" }, async (e: unknown) => e);
+    assert.equal(store.has("owner:session:sess-OX"), false);
   });
 });

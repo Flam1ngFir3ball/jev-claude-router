@@ -362,3 +362,10 @@ describe("audit regressions (2026-09-28)", () => {
     }
   });
 });
+
+describe("shortError flattens newlines (2026-09-29)", () => {
+  test("an engine error over two lines comes back as one", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    assert.doesNotMatch(shortError("plugin: $.http.fetch(https://x) failed: getaddrinfo ENOTFOUND\n# boom"), /\n/);
+  });
+});

@@ -52,6 +52,7 @@ export function stateOf(text: string): string {
  */
 export function shortError(detail: string): string {
   const bare = detail
+    .replace(/\s*\n\s*/g, " ")
     .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "")
     .split(/[.?!]\s/)[0]!
     .replace(/^(\w+): \1\b:?\s*/, "$1: ")

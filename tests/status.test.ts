@@ -1265,3 +1265,14 @@ describe("status: the usage text names every subcommand (2026-09-28)", () => {
     assert.match(unknownCommandReply("tier", false), /tiers \[on\|off <tier>\]/);
   });
 });
+
+describe("liveLine is always one line of the shape it is recognised by (2026-09-29)", () => {
+  test("a reason with a newline, or a negative latency, still reads as a route line", () => {
+    const failed = liveLine({ prompt: "p", ms: 12, skipped: "request failed: fetch failed\ncause: ECONNRESET" });
+    assert.doesNotMatch(failed, /\n/);
+    assert.equal(withoutImitations(`${failed}\n\n---\n\nText.`), "Text.");
+    const skew = liveLine({ prompt: "p", ms: -1, decision: { tier: "opus", model: "claude-opus-5-5", effort: "high", confidence: 0.9 } });
+    assert.match(skew, / · 0ms$/);
+    assert.equal(withoutImitations(`${skew}\n\n---\n\nText.`), "Text.");
+  });
+});
