@@ -4797,3 +4797,79 @@ describe("register: round-9 findings (2026-09-29)", () => {
     assert.doesNotMatch(t.text, /\r/);
   });
 });
+
+describe("register: round-10 findings (2026-09-29)", () => {
+  const jev = (kit: ReturnType<typeof load>, args: string) =>
+    kit.hooks.get('command.run:{"command":"jev"}')!(kit.$, { args }, async (e: unknown) => e) as Promise<{ text: string }>;
+
+  for (const [name, notice] of [
+    ["status before task-id", '<task-notification>\n<status>completed</status>\n<task-id>t9</task-id>\n<summary>Agent "reader" completed</summary>\n<result>API_TOKEN=sk-secret-123</result>\n</task-notification>'],
+    ["summary before task-id", '<task-notification><summary>Agent "reader" completed</summary><task-id>t9</task-id><result>API_TOKEN=sk-secret-123</result></task-notification>'],
+    ["typed text on the same line", 'please look <task-notification><task-id>t9</task-id><summary>Agent "reader" completed</summary><result>API_TOKEN=sk-secret-123</result></task-notification>'],
+    ["an attribute on the tag", '<task-notification id="1"><task-id>t9</task-id><summary>Agent "reader" completed</summary><result>API_TOKEN=sk-secret-123</result></task-notification>'],
+  ] as const)
+    test(`a notification's result stays out of Jev's state: ${name}`, async () => {
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_NOTIFY_CONTINUE: "0" });
+      await kit.hooks.get("turn.start")!(kit.$, { text: notice, turnId: "p1" }, async (e: unknown) => e);
+      assert.doesNotMatch(kit.lastState() ?? "", /sk-secret/);
+      assert.match(kit.lastState() ?? "", /reader/);
+    });
+
+  test("/jev off then on right after a restore still checks the live model", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-RA10" };
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: "1" }, shared);
+    kit.setSessionModel("claude-haiku-4-5");
+    kit.setContext(30_000);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const step = async (id: string, text: string) => {
+      await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+      let sent = "";
+      const engine = await kit.$.session.model();
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, model: engine }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+      return sent;
+    };
+    kit.fail();
+    await step("r1", "implement it");
+    shared.id = "sess-RB10";
+    kit.setSessionModel("claude-opus-5-5");
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", context_tokens: 30_000 }, async (e: unknown) => e);
+    shared.id = "sess-RA10";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", context_tokens: 30_000 }, async (e: unknown) => e);
+    await jev(kit, "off");
+    await jev(kit, "on");
+    kit.setTier("sonnet", 0.5);
+    assert.notEqual(await step("r2", "implement the next part"), "claude-haiku-4-5");
+  });
+
+  test("a ceiling lowered while an agent runs binds its later requests", async () => {
+    const kit = load();
+    kit.setTier("fable", 0.98, 3);
+    await kit.hooks.get("agent.spawn")!(kit.$, { tool_use_id: "tu1", prompt: "audit the code base carefully", description: "Audit", subagentType: "general-purpose", parentModel: "claude-opus-5-5", fork: false, background: true }, async (e: { model?: string }) => ({ model: e.model, agentId: "agent-c1" }));
+    const step = async (turnId: string) => {
+      let sent: { effort?: string } = {};
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId, index: 0, agentId: "agent-c1", model: "claude-fable-5-1", effort: "high" }, (e: { model: string; effort?: string }) => ((sent = e), answeredBy(e.model))));
+      return sent.effort;
+    };
+    assert.equal(await step("s1"), "xhigh");
+    await jev(kit, "ceiling medium");
+    assert.equal(await step("s2"), "medium");
+  });
+
+  test("/jev off <tier> and /jev none do not lift the ceiling", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw", JEV_ROUTER_CEILING: "fable:medium" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    for (const args of ["off fable", "none"]) {
+      const out = await jev(kit, args);
+      assert.match(out.text, /is not a command/, args);
+    }
+    assert.match((await jev(kit, "")).text, /fable: medium|fable medium|medium/);
+    assert.match((await jev(kit, "ceiling off")).text, /max/, "the ceiling command still opens it");
+  });
+
+  test("with only a gateway key, /jev compact and the status line say the engine summarises", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw" });
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    assert.match((await jev(kit, "compact")).text, /gateway cannot score/);
+    assert.match((await jev(kit, "")).text, /compact\s+on, but the gateway cannot score/);
+  });
+});

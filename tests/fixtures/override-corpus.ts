@@ -192,6 +192,22 @@ export const OVERRIDE_CORPUS_ROUND7: readonly (readonly [string, string | null])
   ["If possible, use opus for this", "opus"],
   ["when you are ready, switch to opus", "opus"],
   ["Thanks! If you could, switch to haiku", "haiku"],
+  // conditions that are the person's say-so, or set phrases
+  ["Until further notice, use opus", "opus"],
+  ["until I say otherwise, use opus", "opus"],
+  ["Once again, use opus", "opus"],
+  ["if you want, use opus", "opus"],
+  ["if u can, use opus", "opus"],
+  ["If it's not too much trouble, use opus", "opus"],
+  ["if that's okay with you, use opus", "opus"],
+  ["Whenever you're ready, use opus", "opus"],
+  ["If you have a sec, use opus", "opus"],
+  ["Unless you disagree, use opus", "opus"],
+  ["if needed, use opus", "opus"],
+  ["when in doubt, use opus", "opus"],
+  // a new paragraph after the tier is not the tier naming it
+  ["use opus\n\nTokens are expiring too early in auth.ts, fix it", "opus"],
+  ["Switch to opus\n\nKeys in config.json are out of date; regenerate them", "opus"],
   // a tier naming something else
   ["make sure to use sonnet pricing", null],
   ["try to use haiku ids in the test", null],

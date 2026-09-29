@@ -180,7 +180,8 @@ function compactionOf(result: CompactResult, ms: number): Compaction {
     of: result.stats.messagesBefore,
     reduction: reductionRatio(result),
     calls: {
-      kept: result.stats.kept,
+      // Pinned calls (the recent zone) are kept whole too.
+      kept: result.stats.kept + result.stats.pinned,
       cut: result.stats.resultsDropped,
       dropped: result.stats.callsDropped,
     },

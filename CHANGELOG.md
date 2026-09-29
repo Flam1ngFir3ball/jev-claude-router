@@ -250,6 +250,18 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **A notification's result is withheld however its fields are ordered**:
+  everything from the first notification tag on is read for its summary
+  only, whatever shape the envelope has.
+- `/jev off <tier>` and `/jev none` are refused as commands instead of being
+  read as lifting every effort cap; `/jev ceiling off` still does.
+- A ceiling lowered while an agent runs binds the agent's later requests.
+- With only a gateway key, `/jev compact` and the status line say the
+  engine's summary runs, rather than promising Jev's pruning.
+- A compaction's "calls kept" counts the recent calls kept whole too.
+- Tier naming reads "if you can", "until I say otherwise", "once again",
+  "when in doubt" and the like as requests, and a new paragraph after the
+  tier no longer counts as the tier naming something.
 - **After a Jev prune, the context estimate takes off what the scoring
   removed, once.** The engine's messages carry a tool's output on the call
   and on the reply; counted each time, the estimate could fall to nothing,

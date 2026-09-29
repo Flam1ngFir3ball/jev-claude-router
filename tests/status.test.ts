@@ -1438,7 +1438,6 @@ describe("round-7 full-read findings (2026-09-29)", () => {
   test("a typed prompt that only mentions the tag is sent whole", () => {
     const text = "Refactor the parser so each <task-notification> block is read with a real XML parser";
     assert.equal(hasNotification(text), false);
-    assert.equal(notificationStateOf(text), text);
   });
   test("a copied line with blank lines before its rule is dropped with the rule, however it streams", () => {
     const text = "> ✳️ opus · high · Jev 91% · 12ms\n\n\n---\n\nHello";
@@ -1541,5 +1540,29 @@ describe("status: linear on hostile text (2026-09-29)", () => {
     for (let i = 0; i < text.length; i += 3) for (const c of f.push({ kind: "text", index: 0, text: text.slice(i, i + 3) })) out += c.text;
     for (const c of f.end()) out += c.text;
     assert.equal(out, "Hello");
+  });
+});
+
+describe("status: a long copied summary still goes (2026-09-29)", () => {
+  test("a 40-turn summary copied at the end of a reply is stripped, whole or streamed", () => {
+    const dec = { tier: "opus" as const, model: "claude-opus-5-5", effort: "medium" as const, confidence: 0.9 };
+    const u = { model: "claude-opus-5-5", input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 200_000, cache_creation_input_tokens: 10_000 };
+    const turns: Attempt[] = Array.from({ length: 40 }, (_, i) => ({
+      prompt: "p",
+      ms: 1,
+      usage: u,
+      cost: 0.1,
+      ...(i ? { kind: "notify" as const } : {}),
+      decision: { ...dec, held: "fable" as const, heldCost: { stay: 0.13, go: 4.41, limit: 1 }, cappedEffort: "max" as const, jevFailed: "timed out after 1500ms" },
+    }));
+    const summary = replySummary(turns)!;
+    assert.ok(summary.length > 4_000);
+    const text = `Done.\n\n${summary}`;
+    assert.equal(withoutImitations(text), "Done.");
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    let out = "";
+    for (let i = 0; i < text.length; i += 7) for (const c of f.push({ kind: "text", index: 0, text: text.slice(i, i + 7) })) out += c.text;
+    for (const c of f.end()) out += c.text;
+    assert.equal(out, "Done.");
   });
 });

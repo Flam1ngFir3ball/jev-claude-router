@@ -268,7 +268,10 @@ export function notificationStateOf(text: string): string {
   // after the result's opening is sent: a result can quote a whole envelope,
   // `</task-notification>` and all (an agent reading this very code), so
   // nothing after it can be told from the result.
-  const first = text.search(ENVELOPE);
+  // Cut at the first opening tag of any shape: the caller has decided the
+  // text carries a notification, and whatever reads as one from there on
+  // is withheld, so an odd shape fails closed.
+  const first = text.search(/<task-notification\b/);
   if (first === -1) return text.trim();
   const before = text.slice(0, first).trim();
   const head = text.slice(first).split(/<result\b/)[0]!;
@@ -277,10 +280,10 @@ export function notificationStateOf(text: string): string {
 }
 
 /**
- * A notification's envelope, not a mention of the tag: it opens a line and
- * the task's id follows it, as the engine writes one.
+ * A notification's envelope, not a mention of the tag: one of the engine's
+ * own fields follows the opening tag, in any order.
  */
-const ENVELOPE = /(?:^|\n)[ \t]*<task-notification>\s*<task-id>/;
+const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:task-id|tool-use-id|status|summary|output-file|result)>/;
 
 /** Whether `text` carries a task's notification anywhere, typed text before it or not. */
 export function hasNotification(text: string): boolean {
@@ -1115,7 +1118,11 @@ export function statusReport(status: Status): string {
     lines.push(
       `  compact   ${
         status.compactOn
-          ? `on, Jev prunes tool calls${status.compaction ? ` · last: ${compactionLine(status.compaction)}` : ""}`
+          ? `${
+              status.provider.ok && status.provider.name !== "typesafe"
+                ? "on, but the gateway cannot score tool calls (needs TYPESAFE_API_KEY): the engine summarises"
+                : "on, Jev prunes tool calls"
+            }${status.compaction ? ` · last: ${compactionLine(status.compaction)}` : ""}`
           : "off (/jev compact on)"
       }`,
     );
@@ -1275,25 +1282,35 @@ export function isRouteLine(text: string): boolean {
 const IMITATED_LINE = new RegExp(`^> ${ROUTE_LINE_BODY}(?:\\n+---(?:\\n+|$)|\\n+|$)`);
 
 /**
- * A summary the model wrote itself at the end of its text: a fence whose
- * first line has the summary's shape, and nothing after the fence.
- */
-const IMITATED_SUMMARY = /```\n[^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\s*$/;
-
-/**
  * `text` without a summary it ends in, and the blank lines before it. The
  * newlines are dropped by hand: a leading `\n*` in the pattern made a text
  * ending in many blank lines quadratic (100k of them took eight seconds).
  */
 function withoutSummary(text: string): string {
-  // A summary is a few short lines: only the tail is looked at, so a long
-  // summary-shaped line cannot make the pattern quadratic in the reply.
-  const from = Math.max(0, text.length - SUMMARY_MAX);
-  const m = IMITATED_SUMMARY.exec(from === 0 ? text : text.slice(from));
-  if (m === null) return text;
-  let end = from + m.index;
+  const at = summaryAt(text);
+  if (at === -1) return text;
+  let end = at;
   while (end > 0 && text[end - 1] === "\n") end--;
   return text.slice(0, end);
+}
+
+/**
+ * Where a summary the model wrote itself at the end of its text opens, or
+ * -1: a closing fence at the very end, after a newline; the fence before it
+ * followed by a newline; no backtick between; a first line that reads
+ * `(N% cached)`. By hand: the pattern this replaces rescanned a long
+ * summary-shaped line from every position, quadratic in the reply.
+ */
+function summaryAt(text: string): number {
+  const e = text.trimEnd().length;
+  if (!text.slice(0, e).endsWith("\n```")) return -1;
+  const close = e - 3;
+  const open = text.lastIndexOf("```", close - 1);
+  if (open === -1) return -1;
+  const body = text.slice(open + 3, close);
+  if (!body.startsWith("\n") || body.includes("`")) return -1;
+  const eol = body.indexOf("\n", 1);
+  return /\(\d+% cached\)/.test(body.slice(1, eol)) ? open : -1;
 }
 
 /** One line: newlines and the space around them become a single space. */
@@ -1368,13 +1385,13 @@ const LINE_RULE_BARE = "---\n\n";
  * line a turn under a head line; past this a fence is the model's own code,
  * streamed rather than held, and left alone at the end.
  */
-const SUMMARY_MAX = 4_000;
+const SUMMARY_MAX = 16_000;
 
 /**
  * The longest first line a route line can have. Past it the block's start
  * is ordinary text, streamed rather than held for a newline.
  */
-const ROUTE_LINE_MAX = 600;
+const ROUTE_LINE_MAX = 1_000;
 
 /** A summary's first line, once the fence has opened. */
 const SUMMARY_HEAD = /^[^\n`]*\(\d+% cached\)/;

@@ -10,6 +10,7 @@ import {
 import { labelOf, withLabel } from "./label.ts";
 import {
   asAsked,
+  capTo,
   ceilingAt,
   ceilingOf,
   effortNamed,
@@ -920,8 +921,6 @@ export function register(on: On) {
    * compaction forgets only what was warm; see session.compact.)
    */
   const clearRouting = () => {
-    // A restored model to check belongs to the state being dropped.
-    liveModelDue = null;
     decisions.clear();
     byTurn.clear();
     pending.clear();
@@ -1129,6 +1128,8 @@ export function register(on: On) {
       // is looked up again on the next hook, when it has — and that lookup
       // must not restore, or it would undo the clear.
       clearRouting();
+      // A restored model to check belongs to the conversation left.
+      liveModelDue = null;
       reply = [];
       replyAgents = new Set();
       snapshotKey = undefined;
@@ -1192,6 +1193,7 @@ export function register(on: On) {
         // process was on (a resume's own model switch is not reported).
         sessionModel = null;
         clearRouting();
+        liveModelDue = null;
         reply = [];
         replyAgents = new Set();
         attempts.length = 0;
@@ -1468,11 +1470,15 @@ export function register(on: On) {
       } else if (want !== "") {
         return { text: unknownCommandReply(sub, false) };
       }
+      // Only TypeSafe direct answers the yes/no questions scoring asks.
+      const gatewayOnly = settings.provider.ok && settings.provider.name !== "typesafe";
       return {
         text:
           `compaction by Jev ${settings.compactOn ? "on" : "off"}` +
           (settings.compactOn
-            ? ": at each compaction, Jev scores every tool call and the stale ones are dropped or cut; the conversation stays verbatim. /jev compact off restores the engine's summary."
+            ? gatewayOnly
+              ? ": but the gateway cannot score tool calls, so the engine's own summary runs until TYPESAFE_API_KEY is set."
+              : ": at each compaction, Jev scores every tool call and the stale ones are dropped or cut; the conversation stays verbatim. /jev compact off restores the engine's summary."
             : ": the engine's own summary runs. /jev compact on to prune with Jev instead."),
       };
     }
@@ -1520,7 +1526,10 @@ export function register(on: On) {
     const [head, ...rest] = sub.split(/\s+/);
     if (head !== undefined && head !== "") {
       const legacy = rest[0] === "on" || rest[0] === "off";
-      if ((effortNamed(head) !== null || head === "ultra") && !legacy) {
+      // Only an effort's own name: `off` and `none` open the ceiling under
+      // `/jev ceiling`, but `/jev off fable` or `/jev none` is a slip for
+      // another command, not a request to lift every cap.
+      if (((effortNamed(head) !== null && head !== "off" && head !== "none") || head === "ultra") && !legacy) {
         const result = ceilingCommand(sub, settings.ceiling);
         if (!sameCeiling(result.ceiling, settings.ceiling)) overridden.add("ceiling");
         settings.ceiling = result.ceiling;
@@ -1975,10 +1984,12 @@ export function register(on: On) {
     // A subagent's conversation starts at its first step, which runs some
     // efforts as others (FIRST_TURN_EFFORT); every step after is deep in
     // that conversation and gets what Jev asked.
+    // The ceiling is applied again at each step, so one lowered while the
+    // agent runs binds its later requests, as it does a go-ahead's.
     if (decision !== undefined && e.agentId !== undefined) {
       decision = stepped.has(e.agentId)
-        ? asAsked(decision)
-        : firstTurnEffort(decision);
+        ? capTo(asAsked(decision), settings.ceiling)
+        : firstTurnEffort(capTo(decision, settings.ceiling));
       stepped.add(e.agentId);
       if (stepped.size > CACHE_LIMIT * 4) {
         for (const id of stepped) if (!spawned.has(id)) stepped.delete(id);

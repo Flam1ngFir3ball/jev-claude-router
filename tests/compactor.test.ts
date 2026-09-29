@@ -279,3 +279,24 @@ describe("shortOf rounds down without float error (2026-09-29)", async () => {
     assert.equal(shortOf(0.25 - 1e-12, 0.25), "only 24% removed, needs 25%");
   });
 });
+
+describe("the kept count includes calls kept for being recent (2026-09-29)", () => {
+  test("calls kept + cut + dropped is every tool call", async () => {
+    const input = transcript(10);
+    const r = await pruneTranscript({
+      messages: input,
+      provider: typesafe,
+      fetch: jev([]),
+      sleep: never,
+      timeoutMs: 8000,
+      minReduction: 0.25,
+      options: { preserveRecentMessages: 6 },
+    });
+    assert.ok(r.ok, JSON.stringify(r.compaction));
+    if (!r.ok) return;
+    const { kept, cut, dropped } = r.compaction.calls;
+    assert.equal(kept + cut + dropped, 10);
+    const left = r.messages.flatMap((m) => m.toolUses).length;
+    assert.equal(kept + cut, left, "every call still in the transcript is counted as kept or cut");
+  });
+});
