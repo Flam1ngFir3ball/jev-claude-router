@@ -125,8 +125,8 @@ export function reasonsOf(attempt: Attempt): string[] {
   if (d.held !== undefined) {
     // Same rung, different model: a session model off the ladder.
     const wanted =
-      d.heldModel !== undefined && d.held === d.tier ? d.heldModel : d.held;
-    const kept = d.held === d.tier ? d.model : d.tier;
+      d.heldModel !== undefined && d.held === d.tier ? plain(d.heldModel) : d.held;
+    const kept = d.held === d.tier ? plain(d.model) : d.tier;
     out.push(
       d.heldWindow !== undefined
         ? `kept ${kept}: too long for ${wanted} (${kOf(d.heldWindow)})`
@@ -212,6 +212,16 @@ function outgrownOf(running: Decision | null, decision: Decision, contextTokens:
 }
 
 /** What started a turn nobody typed, in plain words; null for a typed prompt. */
+/**
+ * A name from outside the plugin (an agent's type, a model id) as plain
+ * words for the route line, the summary's fence and `/jev`: no backticks or
+ * newlines to close the fence or start a heading, and not too long.
+ */
+export function plain(text: string): string {
+  const flat = oneLine(String(text)).replace(/[`<>|*_#[\]]/g, "");
+  return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
+}
+
 export function originOf(
   attempt: Pick<Attempt, "kind" | "agent">,
 ): string | null {
@@ -219,7 +229,7 @@ export function originOf(
   if (attempt.kind === "continue") return "continuing";
   if (attempt.kind === "nudge") return "continuing";
   if (attempt.kind === "agent")
-    return attempt.agent?.type ? `${attempt.agent.type} agent` : "agent";
+    return attempt.agent?.type ? `${plain(attempt.agent.type)} agent` : "agent";
   return null;
 }
 
@@ -233,7 +243,7 @@ const tagOf = (text: string, tag: string) =>
  */
 export function notificationOf(text: string): string | null {
   if (!NOTIFICATION.test(text)) return null;
-  return tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`;
+  return plain(tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`);
 }
 
 /**
@@ -794,7 +804,7 @@ function sureOf(d: Decision, kind?: Attempt["kind"], continued?: boolean): strin
 function shortModel(model: string): string {
   // A usage record without a model id must not throw inside turn.step.
   if (typeof model !== "string" || model === "") return "unknown model";
-  return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+  return plain(model.replace(/^claude-/, "").replace(/-\d{8}$/, ""));
 }
 
 function attemptLine(attempt: Attempt): string {
@@ -974,7 +984,7 @@ export function replySummary(turns: readonly Attempt[]): string | null {
   // What its agents ran on and cost.
   if (agents.length > 0) {
     const legs = agents.map((a) => {
-      const name = a.agent?.type ?? "agent";
+      const name = plain(a.agent?.type ?? "agent");
       // What ran it: the model the API reported, else the tier routed to.
       const on = a.usage
         ? shortModel(a.usage.model)
@@ -1181,7 +1191,6 @@ export function toggleReply(enabled: boolean): string {
 export function liveLine(attempt: Attempt): string {
   // One line, always: a reason carrying a newline (an engine error, say)
   // would break the blockquote and no longer read as this line.
-  const oneLine = (text: string) => text.replace(/\s*\n\s*/g, " ");
   if ("skipped" in attempt) {
     return `> ⚠️ not routed: ${oneLine(attempt.skipped)}`;
   }
@@ -1233,7 +1242,30 @@ const IMITATED_LINE = new RegExp(`^> ${ROUTE_LINE_BODY}(?:\\n+---(?:\\n+|$)|\\n+
  * A summary the model wrote itself at the end of its text: a fence whose
  * first line has the summary's shape, and nothing after the fence.
  */
-const IMITATED_SUMMARY = /\n*```\n[^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\s*$/;
+const IMITATED_SUMMARY = /```\n[^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*```\s*$/;
+
+/**
+ * `text` without a summary it ends in, and the blank lines before it. The
+ * newlines are dropped by hand: a leading `\n*` in the pattern made a text
+ * ending in many blank lines quadratic (100k of them took eight seconds).
+ */
+function withoutSummary(text: string): string {
+  const m = IMITATED_SUMMARY.exec(text);
+  if (m === null) return text;
+  let end = m.index;
+  while (end > 0 && text[end - 1] === "\n") end--;
+  return text.slice(0, end);
+}
+
+/** One line: newlines and the space around them become a single space. */
+function oneLine(text: string): string {
+  if (!text.includes("\n")) return text;
+  return text
+    .split("\n")
+    .map((t) => t.trim())
+    .filter((t) => t !== "")
+    .join(" ");
+}
 
 /**
  * The model's text without a route line or summary it wrote itself. Both
@@ -1243,7 +1275,7 @@ const IMITATED_SUMMARY = /\n*```\n[^\n`]*\(\d+% cached\)[^\n`]*\n(?:[^\n`]*\n)*`
  * line or summary quoted in the middle of a reply stays.
  */
 export function withoutImitations(text: string): string {
-  return text.replace(IMITATED_LINE, "").replace(IMITATED_SUMMARY, "");
+  return withoutSummary(text.replace(IMITATED_LINE, ""));
 }
 
 /** How a route line opens, for telling a partial one from ordinary text. */
@@ -1343,7 +1375,7 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
       this.settled = true;
     }
     if (final) {
-      const all = this.held.replace(IMITATED_SUMMARY, "");
+      const all = withoutSummary(this.held);
       this.held = "";
       return all;
     }
@@ -1378,9 +1410,12 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
     return this.backToBlankLines(text, text.length);
   }
 
-  /** Holds the blank lines before a fence with it, so none dangle if it goes. */
+  /**
+   * Holds the blank lines before a fence with it, so none dangle if it goes:
+   * a few, not a run of them, which would be rescanned on every piece.
+   */
   private backToBlankLines(text: string, p: number): number {
-    while (p > 0 && text[p - 1] === "\n") p--;
+    for (let held = 0; p > 0 && text[p - 1] === "\n" && held < 4; held++) p--;
     return p;
   }
 }

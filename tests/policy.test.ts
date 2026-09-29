@@ -911,7 +911,7 @@ describe("parseOverride: requests phrased every which way still route (2026-09-2
 });
 
 describe("parseOverride against the labelled corpus (2026-09-29)", async () => {
-  const { OVERRIDE_CORPUS, OVERRIDE_CORPUS_MORE } = await import("./fixtures/override-corpus.ts");
+  const { OVERRIDE_CORPUS, OVERRIDE_CORPUS_MORE, OVERRIDE_CORPUS_ROUND5 } = await import("./fixtures/override-corpus.ts");
   // Phrasings a regex reads wrong on purpose, each for a reason: a question
   // that ends in an order, a quoted route with a clause break inside it,
   // code with a colon, and "can we" asked about an example. Any other
@@ -922,11 +922,26 @@ describe("parseOverride against the labelled corpus (2026-09-29)", async () => {
     "CHANGELOG: route to opus on override",
     "  if tier == x: use opus",
     "can we use opus in the README example?",
+    // "we need to" is how a request is often put, and a colon opens a
+    // clause that may be an order (`TODO: use opus`) or a quote.
+    "We need to switch to haiku in the nightly job",
+    "The docs say: use opus for refactors",
   ]);
   test("every labelled prompt reads as labelled, bar the known few", () => {
-    const wrong = [...OVERRIDE_CORPUS, ...OVERRIDE_CORPUS_MORE]
+    const wrong = [...OVERRIDE_CORPUS, ...OVERRIDE_CORPUS_MORE, ...OVERRIDE_CORPUS_ROUND5]
       .filter(([text, tier]) => !KNOWN.has(text) && parseOverride(text) !== tier)
       .map(([text, tier]) => `${JSON.stringify(text)}: want ${tier}, got ${parseOverride(text)}`);
     assert.deepEqual(wrong, []);
+  });
+});
+
+describe("parseOverride stays fast on long prompts (2026-09-29)", () => {
+  test("20k characters of route phrases and negations parse in well under a second", () => {
+    for (const unit of ["don't use opus ", "use opus "]) {
+      const text = unit.repeat(Math.ceil(20_000 / unit.length));
+      const start = performance.now();
+      parseOverride(text);
+      assert.ok(performance.now() - start < 500, `${unit}: ${Math.round(performance.now() - start)}ms`);
+    }
   });
 });

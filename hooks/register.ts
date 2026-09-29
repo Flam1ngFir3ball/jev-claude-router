@@ -102,8 +102,7 @@ async function ownerOf(
   key: string,
 ): Promise<number | null> {
   try {
-    const stamp = await $.store.get(`${OWNER_PREFIX}${key}`);
-    return typeof stamp === "number" ? stamp : null;
+    return claimOf(await $.store.get(`${OWNER_PREFIX}${key}`))?.birth ?? null;
   } catch {
     return null;
   }
@@ -189,6 +188,31 @@ function turnKey(
 
 /** Store key prefix for which copy of the module owns a session. */
 const OWNER_PREFIX = "owner:";
+
+/**
+ * A claim unrefreshed for this long belongs to a copy that is gone. The
+ * holder refreshes it on every turn, so only a copy that died (a process
+ * killed without its session.end) lets it age this far.
+ */
+const OWNER_TTL_MS = 30 * 60 * 1000;
+
+/** How often the holder refreshes its claim, well inside `OWNER_TTL_MS`. */
+const OWNER_REFRESH_MS = 5 * 60 * 1000;
+
+/**
+ * An owner record: the holding copy's stamp and when it last claimed. A
+ * record from before `at` existed is a bare stamp, which was its load time.
+ */
+function claimOf(raw: unknown): { birth: number; at: number } | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return { birth: raw, at: raw };
+  if (
+    typeof raw === "object" && raw !== null &&
+    typeof (raw as { birth?: unknown }).birth === "number" &&
+    typeof (raw as { at?: unknown }).at === "number"
+  )
+    return { birth: (raw as { birth: number }).birth, at: (raw as { at: number }).at };
+  return null;
+}
 
 /** How old a claim on a session with no snapshot must be before it is dropped. */
 const ORPHAN_OWNER_MS = 24 * 60 * 60 * 1000;
@@ -418,8 +442,8 @@ async function saveSnapshot(
       // or a /clear) has no snapshot to be pruned with; one a day old is
       // nobody's live session any more.
       for (const owner of orphanOwnerKeys(keys, OWNER_PREFIX, key)) {
-        const stamp = await $.store.get(owner);
-        if (typeof stamp !== "number" || Date.now() - stamp > ORPHAN_OWNER_MS)
+        const claim = claimOf(await $.store.get(owner));
+        if (claim === null || Date.now() - claim.at > ORPHAN_OWNER_MS)
           await $.store.delete(owner);
       }
       // Keys are kept in the order they were first written, and the oldest
@@ -465,10 +489,16 @@ async function ownsSession(
 ): Promise<boolean> {
   try {
     const at = `${OWNER_PREFIX}${key}`;
-    const stored = await $.store.get(at);
-    const owner = typeof stored === "number" ? stored : 0;
-    if (owner > birth) return false;
-    if (claim && owner < birth) await $.store.set(at, birth);
+    const owner = claimOf(await $.store.get(at));
+    // A newer copy that has not been seen for a while is gone (a process
+    // killed without its session.end): it no longer holds the session.
+    if (owner !== null && owner.birth > birth && Date.now() - owner.at < OWNER_TTL_MS) return false;
+    // A newer copy (or one taking over from a gone one) writes its claim;
+    // the holder refreshes its own every few minutes, which keeps it from
+    // going stale while in use without a store write on every step.
+    const age = owner === null ? Infinity : Date.now() - owner.at;
+    if (claim && (owner === null || owner.birth < birth || age >= OWNER_TTL_MS || (owner.birth === birth && age >= OWNER_REFRESH_MS)))
+      await $.store.set(at, { birth, at: Date.now() });
     return true;
   } catch {
     return true;
@@ -552,7 +582,7 @@ async function releaseSession(
 ): Promise<void> {
   try {
     const at = `${OWNER_PREFIX}${key}`;
-    if ((await $.store.get(at)) === birth) await $.store.delete(at);
+    if (claimOf(await $.store.get(at))?.birth === birth) await $.store.delete(at);
   } catch {
     // Nothing to release, or the store is unreadable: the next claim decides.
   }
@@ -765,6 +795,8 @@ export function register(on: On) {
    * `agent.spawn`, which is the same id the loop's `turn.step` carries.
    */
   const spawned = new Map<string, Attempt>();
+  /** Agents the router left alone (forks, a named model), for one history row each. */
+  const unrouted = new Map<string, Attempt>();
   /** Agents whose first step has run, so later steps get Jev's effort. */
   const stepped = new Set<string>();
 
@@ -946,9 +978,10 @@ export function register(on: On) {
     attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
     reply.push(attempt);
     // A reply that never closes (the engine's nudges alone, or quiet) must
-    // not grow the snapshot without end: past the limit its oldest turns go,
-    // and its summary, if one comes, counts the rest.
-    if (reply.length > REPLY_LIMIT) reply.splice(0, reply.length - REPLY_LIMIT);
+    // not grow the snapshot without end: past the limit the oldest turns
+    // after its first go. The first is kept: it is the one the person typed,
+    // which lets the summary be written at all.
+    if (reply.length > REPLY_LIMIT) reply.splice(1, reply.length - REPLY_LIMIT);
   };
 
   on("session.start", async ($, e, next) => {
@@ -1013,11 +1046,14 @@ export function register(on: On) {
       // running from before the clear keeps its routing.
       lastCompaction = null;
       summarisedAgents.clear();
-      const live = new Set(
-        (await $.agent.list().catch(() => [])).filter((a) => a.status === "running").map((a) => a.id),
-      );
-      for (const id of [...spawned.keys()]) if (!live.has(id)) spawned.delete(id);
-      for (const id of [...stepped]) if (!live.has(id)) stepped.delete(id);
+      // An unreadable list keeps them all: it says nothing about which run.
+      const rows = await $.agent.list().catch(() => null);
+      if (rows !== null) {
+        const live = new Set(rows.filter((a) => a.status === "running").map((a) => a.id));
+        for (const id of [...spawned.keys()]) if (!live.has(id)) spawned.delete(id);
+        for (const id of [...stepped]) if (!live.has(id)) stepped.delete(id);
+      }
+      unrouted.clear();
     }
     // A resume or fork into a different session, in a process already
     // running one: the old session's routing must not carry over. Its state
@@ -1046,6 +1082,7 @@ export function register(on: On) {
         lastCompaction = null;
         prunedCache = null;
         spawned.clear();
+        unrouted.clear();
         stepped.clear();
         summarisedAgents.clear();
         clearRouting();
@@ -1749,7 +1786,7 @@ export function register(on: On) {
       // to it, so a resumed agent's later turns add their usage to the same
       // row rather than opening one each. Recording it again here listed
       // every routed subagent twice.
-      attempt = spawned.get(e.agentId);
+      attempt = spawned.get(e.agentId) ?? unrouted.get(e.agentId);
       if (attempt !== undefined) {
         // Touch keeps the row warm; spawned itself is never trimmed — dropping
         // an in-flight agent silently reverts its later steps to the session
@@ -1768,7 +1805,10 @@ export function register(on: On) {
         };
         record(attempt);
         // One row per agent, as a routed spawn has: its later turns join it.
-        spawned.set(e.agentId, attempt);
+        // Kept apart from `spawned` and capped on its own, so forks neither
+        // grow the snapshot nor crowd out routed agents.
+        unrouted.set(e.agentId, attempt);
+        trim(unrouted);
       }
       byTurn.set(e.turnId, attempt);
       trimByTurn();

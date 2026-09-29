@@ -76,8 +76,14 @@ export function messageOf(error: unknown): string {
  * advice, e.g. "ECONNREFUSED" or "getaddrinfo ENOTFOUND host".
  */
 export function shortError(detail: string): string {
+  // Cut first, and newlines folded by splitting: `\s*\n\s*` is quadratic
+  // on a long run of spaces with no newline in it.
   const bare = detail
-    .replace(/\s*\n\s*/g, " ")
+    .slice(0, 2000)
+    .split("\n")
+    .map((t) => t.trim())
+    .filter((t) => t !== "")
+    .join(" ")
     .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "")
     .split(/[.?!]\s/)[0]!
     .replace(/^(\w+): \1\b:?\s*/, "$1: ")

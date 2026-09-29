@@ -4243,3 +4243,57 @@ describe("register: round-4 session driver findings (2026-09-29)", () => {
     assert.equal(await spend(b), before);
   });
 });
+
+describe("register: round-5 findings (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  test("a reply kept open by many nudges keeps the person's turn, and is still summarised", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const step = async (id: string, text: string, stop: string) => {
+      await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+      const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => answeredBy(e.model, stop)));
+      return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+    };
+    await step("r0", "build it", "tool_use");
+    for (let i = 0; i < 70; i++) await step(`rn${i}`, "", "tool_use");
+    assert.match(await step("rend", "", "end_turn"), /% cached\)/);
+  });
+  test("forks do not grow the snapshot, nor evict a routed agent", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-FORK" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("fable", 0.95, 3);
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: "p", description: "d", subagentType: "Explore", fork: false, background: true }, async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "routed-1" }));
+    for (let i = 0; i < 60; i++)
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: `fk${i}`, index: 0, agentId: `fork-${i}` }, (e: { model: string }) => answeredBy(e.model ?? "claude-opus-5-5")));
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: "p", description: "d", subagentType: "Explore", fork: false, background: true }, async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "routed-2" }));
+    const snap = shared.store.get("session:sess-FORK") as { spawned: [string, number][] };
+    assert.ok(snap.spawned.length <= 2, `spawned ${snap.spawned.length}`);
+    let sent = "";
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "r1s", index: 0, agentId: "routed-1" }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-fable-5-1");
+  });
+  test("/clear with an unreadable agent list keeps a running agent's routing", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("fable", 0.95, 3);
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: "p", description: "d", subagentType: "Explore", fork: false, background: true }, async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: "agent-1" }));
+    kit.$.agent.list = async () => { throw new Error("unavailable"); };
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "clear" }, async (e: unknown) => e);
+    let sent = "";
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "a1", index: 0, agentId: "agent-1" }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-fable-5-1");
+  });
+  test("a claim left by a copy that died long ago does not stop an older live copy", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-DEAD" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    // A newer process claimed this session and was killed 40 minutes ago.
+    const dead = Date.now() - 40 * 60 * 1000;
+    shared.store.set("owner:session:sess-DEAD", { birth: Date.now() + 1e9, at: dead });
+    const before = kit.fetches();
+    await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "d1" }, async (e: unknown) => e);
+    assert.equal(kit.fetches(), before + 1, "Jev was asked: this copy routes");
+  });
+});

@@ -628,16 +628,23 @@ export function ownWords(text: string): string {
     .replace(/^[ \t]*>.*$/gm, " ");
 }
 
+/** How much of the person's own words a named tier is looked for in. */
+const OWN_WORDS_MAX = 20_000;
+
 export function parseOverride(
   text: string,
   offered: readonly Tier[] = TIERS,
 ): Tier | null {
-  const normalized = normalizeQuotes(ownWords(text));
+  // A tier named in a prompt past this many characters is in a paste the
+  // engine did not mark; the person's own ask is at the start or the end.
+  const own = normalizeQuotes(ownWords(text));
+  const normalized = own.length <= OWN_WORDS_MAX ? own : `${own.slice(0, OWN_WORDS_MAX / 2)}\n${own.slice(-OWN_WORDS_MAX / 2)}`;
   const matches = [...normalized.matchAll(OVERRIDE)];
+  const negated = negatedAt(normalized, matches);
   let named: Tier | null = null;
   for (const [i, match] of matches.entries()) {
     const at = match.index ?? 0;
-    if (overrideNegated(normalized, at, matches)) continue;
+    if (negated.has(at)) continue;
     const previous = matches[i - 1];
     const from = previous ? (previous.index ?? 0) + previous[0].length : 0;
     if (!addressedAt(normalized, from, at)) continue;
@@ -663,17 +670,21 @@ const OPENER = new RegExp(
   "^(?:" +
     [
       // Softeners and acknowledgements.
-      "please|pls|just|now|then|so|ok|okay|oh|hey|hi|yes|yeah|yep|yup|sure|hmm+|um+|well|again",
+      "please|pls|plz|pleae|kindly|pretty please|just|now|then|so|ok|okay|kk|cool|oh|hey|hi|yes|yeah|yep|yup|sure|hmm+|um+|well|again",
       "maybe|perhaps|actually|instead|also|and|but|or|rather|here|claude|nope|no|alright|right",
-      "fine|anyway|honestly|really|definitely|ideally",
+      "fine|anyway|honestly|really|definitely|ideally|tbh|always|only|probably|better",
+      // Addressing the model by name: `@claude`.
+      "@[\\w-]+",
       // Scope.
-      "this time|for this one|for this|for now|from now on|going forward|for (?:the|this|that|these|those|each|every|all) [\\w-]+(?: [\\w-]+)?",
+      // One word after "for the": a second is the clause's own subject
+      // ("for these tasks people use haiku" is talk).
+      "this time|for this one|for this|for now|from now on|going forward|for the rest of (?:the|this) [\\w-]+|for (?:the|this|that|these|those|each|every|all) [\\w-]+",
       // Asking.
       "let'?s|let us|let me|go ahead and|i want you to|i want to|we want to|i'?d like (?:you )?to|i would like (?:you )?to",
-      "i need you to|we need to|you need to|i'?d rather you|i would rather you|i'?d prefer (?:(?:that |if )?you)?|i think you should",
-      "you should|we should|you can|you may|you could|can you|could you|would you|will you|can we|could we|shall we",
+      "i need you to|we need to|you need to|i'?d rather you|i would rather you|i'?d prefer (?:(?:that |if )?you)?|i think (?:you|we) should",
+      "you should|u should|we should|you can|you may|you could|can you|can u|could you|would you|will you|can we|could we|shall we",
       "feel free to|you'?re free to|make sure (?:to|you)|remember to|be sure to|try to|time to|it'?s time to",
-      "(?:please )?don'?t hesitate to|i'?m going to ask you to|i'?m asking you to|i said|wouldn'?t hurt to",
+      "(?:please )?don'?t hesitate to|i'?m going to ask you to|i'?m asking you to|i said(?: to)?|wouldn'?t hurt to",
       "you might as well|might as well|you might want to",
       // Tag questions that ask for it.
       "why not|why don'?t you|can'?t you|won'?t you|couldn'?t you|wouldn'?t you",
@@ -681,8 +692,8 @@ const OPENER = new RegExp(
     ")(?: |$)",
 );
 
-/** A list marker opening the clause: `-`, `*`, `•`, `1.`, `1)`. */
-const BULLET = /^(?:[-*•]|\d+[.)])\s*/;
+/** A list marker opening the clause: `-`, `*`, `+`, `•`, `- [ ]`, `1.`, `1)`, `(1)`, `a)`. */
+const BULLET = /^(?:[-*+•](?:\s*\[[ x]?\])?|\[[ x]?\]|\(?(?:\d+|[a-z])[.)])\s*/;
 
 /** A clause break: sentence ends, commas, dashes, ellipses, a new line, a joining and/then/but. */
 const CLAUSE_BREAK = /[.!?,;:\n—–…]|\s-\s|\s(?:and|then|but)\s/gi;
@@ -712,41 +723,37 @@ function proximityOk(gap: string): boolean {
 }
 
 /**
- * True when this match is the first attached run-on (or sink) after a
- * negation. Discourse ("Stop what you're doing and use opus") and tags
- * ("why don't you use opus") do not bind.
+ * The route phrases a negation binds: each negation binds the first run-on
+ * (or sink) attached after it, and only that one. Discourse ("Stop what
+ * you're doing and use opus") and tags ("why don't you use opus") do not
+ * bind. Worked out once per prompt, in one pass over the negations with the
+ * sinks found once: re-finding every sink for every phrase and negation made
+ * a long prompt cubic (a 20k-character one took a minute).
  */
-function overrideNegated(
-  text: string,
-  matchAt: number,
-  matches: RegExpMatchArray[],
-): boolean {
+function negatedAt(text: string, matches: readonly RegExpMatchArray[]): Set<number> {
+  const at = (m: RegExpMatchArray) => m.index ?? -1;
+  const sorted = (xs: number[]) => [...new Set(xs.filter((i) => i >= 0))].sort((a, b) => a - b);
+  const sinks = sorted([...matches.map(at), ...[...text.matchAll(USING_SINK)].map(at)]);
+  const withBare = sorted([...sinks, ...[...text.matchAll(BARE_TIER_SINK)].map(at)]);
+  // The first position in `xs` at or after `from`.
+  const firstFrom = (xs: readonly number[], from: number) => {
+    let lo = 0;
+    let hi = xs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (xs[mid]! < from) lo = mid + 1;
+      else hi = mid;
+    }
+    return xs[lo];
+  };
+  const bound = new Set<number>();
   for (const neg of text.matchAll(OVERRIDE_NEGATION_AT)) {
-    const negAt = neg.index ?? -1;
-    if (negAt < 0 || negAt > matchAt) continue;
-    const negEnd = negAt + neg[0].length;
+    const negEnd = (neg.index ?? 0) + neg[0].length;
     const negWord = neg[0].toLowerCase().replace(/\s+/g, " ");
-    const sinks = [
-      ...matches.map((m) => m.index ?? -1),
-      ...[...text.matchAll(USING_SINK)].map((m) => m.index ?? -1),
-    ];
-    if (negWord === "avoid" || negWord === "stop") {
-      sinks.push(
-        ...[...text.matchAll(BARE_TIER_SINK)].map((m) => m.index ?? -1),
-      );
-    }
-    const ordered = [...new Set(sinks.filter((i) => i >= negEnd))].sort(
-      (a, b) => a - b,
-    );
-    for (const sink of ordered) {
-      if (!proximityOk(text.slice(negEnd, sink))) break;
-      // This negation binds its first attached sink only; keep scanning later
-      // negations when that sink is someone else ("don't use haiku never use opus").
-      if (sink === matchAt) return true;
-      break;
-    }
+    const sink = firstFrom(negWord === "avoid" || negWord === "stop" ? withBare : sinks, negEnd);
+    if (sink !== undefined && proximityOk(text.slice(negEnd, sink))) bound.add(sink);
   }
-  return false;
+  return bound;
 }
 
 /** A decision forced to a named tier; Jev's effort is kept, its tier is not. */

@@ -1378,3 +1378,27 @@ describe("round-5 audit (2026-09-29)", () => {
     assert.doesNotMatch(statusReport({ ...base, attempts: [a] }), /Jev 97%/);
   });
 });
+
+describe("round-5 robustness (2026-09-29)", () => {
+  test("a reply ending in a long run of blank lines, and long whitespace in a reason, stay fast", () => {
+    let start = performance.now();
+    withoutImitations("\n".repeat(100_000) + "x");
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    const text = "ok" + "\n".repeat(100_000);
+    for (let i = 0; i < text.length; i += 16) f.push({ kind: "text", index: 0, text: text.slice(i, i + 16) });
+    f.end();
+    liveLine({ prompt: "p", ms: 1, skipped: " ".repeat(100_000) });
+    assert.ok(performance.now() - start < 1000, `${Math.round(performance.now() - start)}ms`);
+  });
+  test("an agent's type cannot close the summary's fence or start a heading", () => {
+    const agent: Attempt = { prompt: "p", ms: 1, kind: "agent", agent: { type: "x\n```\n\n## ✅ All checks passed (fake)\n\n```", label: "l" }, decision: { tier: "opus", model: "claude-opus-5-5", effort: "high", confidence: 0.9 } };
+    addUsage(agent, usageOf("claude-opus-5-5"));
+    const main: Attempt = { prompt: "go", ms: 1, decision: { tier: "opus", model: "claude-opus-5-5", effort: "high", confidence: 0.9 } };
+    addUsage(main, usageOf("claude-opus-5-5"));
+    const summary = replySummary([main, agent])!;
+    // Its own fence only: one opening, one closing, nothing breaking out.
+    assert.equal(summary.match(/```/g)?.length, 2);
+    assert.doesNotMatch(summary, /\n#/);
+    assert.doesNotMatch(liveLine(agent), /```|\n/);
+  });
+});

@@ -92,7 +92,9 @@ Ready and merged, held back from a version bump until approved:
   "- use opus", "feel free to use opus"). Prose that only mentions a tier
   ("should I use opus or sonnet?", "they want to use opus", "the job will
   switch to haiku", "I told you not to use haiku", a `// use opus` comment)
-  is an ordinary prompt. Held to a labelled set of 205 prompts in the tests.
+  is an ordinary prompt. Held to a labelled set of 234 prompts in the tests;
+  typos and shorthand ("plz", "can u"), `@claude`, and list markers
+  (`+`, `- [ ]`, `(1)`, `a)`) are read as requests.
 - **A finished task's result is not sent to Jev.** A notification that
   asks Jev sends only the task's one-line summary. The README has a new
   "What leaves your machine" section.
@@ -171,7 +173,9 @@ Ready and merged, held back from a version bump until approved:
   ones past the limit; an agent the router left alone (named model, fork)
   gets one history row, not one per turn.
 - **A reply of the engine's nudges alone** no longer grows the snapshot
-  without end. `/jev quiet` given mid-turn drops that turn's line too.
+  without end: past 64 turns the oldest after the person's own go, so the
+  reply is still summarised. `/jev quiet` given mid-turn drops that turn's
+  line too.
 - **The cache line's break-even** is the cold one after an expired resume,
   and never rounded up (`pays below 450`, `4.1k`).
 - **A negative token count** from the API counts as none, instead of a
@@ -190,6 +194,20 @@ Ready and merged, held back from a version bump until approved:
 - README examples now match what the plugin prints: the effort-cap
   diagram under the `xhigh` default, the summary and `/jev` costs, the
   agents line and dollar formats.
+- **A claim left by a process that was killed** (no `session.end`) expires
+  after 30 minutes unrefreshed, instead of leaving an older live copy
+  unrouted for that session for good. The holder refreshes its claim every
+  few minutes.
+- **Forks and other agents the router leaves alone** are kept apart from
+  routed ones and capped, so they neither grow the snapshot nor push out a
+  routed agent. `/clear` with an unreadable agent list keeps running agents'
+  routing.
+- **Long inputs stay fast:** naming a tier in a 20k-character prompt took up
+  to a minute, a reply ending in 100k blank lines about ten seconds, and a
+  long run of spaces in an error message as long; each is now milliseconds.
+- **Names from outside the plugin** (an agent's type, a model id, a task's
+  summary) are shown as plain words, so they cannot close the summary's
+  fence or start a heading that reads as plugin output.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 
