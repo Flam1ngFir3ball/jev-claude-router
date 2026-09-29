@@ -4524,3 +4524,43 @@ describe("register: round-7 full-read findings (2026-09-29)", () => {
     assert.deepEqual(out.props.modes, ["jev: not routed"]);
   });
 });
+
+describe("register: two processes loaded in the same millisecond (2026-09-29)", () => {
+  test("only one of them routes the session", async () => {
+    const g = globalThis as { __jevRouterNewest?: number; __jevRouterLive?: unknown };
+    const realNow = Date.now;
+    const realRandom = Math.random;
+    const T = realNow();
+    const store = new Map<string, unknown>();
+    // Each "process" has its own globals; both load at T with a fraction that ties.
+    const loadAt = () => {
+      g.__jevRouterNewest = 0;
+      g.__jevRouterLive = undefined;
+      let calls = 0;
+      Date.now = () => T;
+      Math.random = () => (calls++ === 0 ? 0.3 : realRandom());
+      try {
+        return load(undefined, { store, id: "sess-TIE" });
+      } finally {
+        Date.now = realNow;
+        Math.random = realRandom;
+      }
+    };
+    try {
+      const a = loadAt();
+      await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+      const b = loadAt();
+      await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+      const routes = async (kit: ReturnType<typeof load>, id: string) => {
+        await kit.hooks.get("turn.start")!(kit.$, { text: `work ${id}`, turnId: id }, async (e: unknown) => e);
+        const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+        return /^> ✳️/.test(chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""));
+      };
+      const both = [await routes(a, "ta"), await routes(b, "tb")];
+      assert.equal(both.filter(Boolean).length, 1, `routed: ${both}`);
+    } finally {
+      Date.now = realNow;
+      Math.random = realRandom;
+    }
+  });
+});

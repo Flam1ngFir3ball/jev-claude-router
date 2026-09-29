@@ -245,6 +245,9 @@ Ready and merged, held back from a version bump until approved:
 - A copied route line with blank lines before its `---` rule is dropped
   with the rule when it streams, as when it arrives whole; the compaction
   fallback never reads "only 25% removed, needs 25%".
+- **Two processes loaded in the same millisecond** no longer both route a
+  session: their load stamps could be equal, and a per-copy id in the
+  `seen:` record now decides which one holds it.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 

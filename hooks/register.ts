@@ -214,14 +214,20 @@ function stampOf(raw: unknown): number | null {
   return null;
 }
 
-/** A `seen:` record: which copy claimed, and when. */
-function seenOf(raw: unknown): { birth: number; at: number } | null {
+/** A `seen:` record: which copy claimed (its stamp, and its id when written), and when. */
+function seenOf(raw: unknown): { birth: number; at: number; nonce?: string } | null {
   if (
     typeof raw === "object" && raw !== null &&
     typeof (raw as { birth?: unknown }).birth === "number" &&
     typeof (raw as { at?: unknown }).at === "number"
-  )
-    return { birth: (raw as { birth: number }).birth, at: (raw as { at: number }).at };
+  ) {
+    const nonce = (raw as { nonce?: unknown }).nonce;
+    return {
+      birth: (raw as { birth: number }).birth,
+      at: (raw as { at: number }).at,
+      ...(typeof nonce === "string" ? { nonce } : {}),
+    };
+  }
   return null;
 }
 
@@ -509,6 +515,8 @@ async function ownsSession(
   key: string,
   birth: number,
   claim: boolean,
+  /** This copy's own id, which tells two copies with the same stamp apart. */
+  nonce?: string,
 ): Promise<boolean> {
   try {
     const ownerKey = `${OWNER_PREFIX}${key}`;
@@ -523,14 +531,19 @@ async function ownsSession(
     // killed without its session.end): it no longer holds the session.
     const gone = lastSeen !== null && Date.now() - lastSeen >= OWNER_TTL_MS;
     if (owner !== null && owner > birth && !gone) return false;
+    // The same stamp from another copy (two processes loaded in the same
+    // millisecond: the stamp's fraction is too coarse at this size to keep
+    // them apart): the one whose id the seen: record holds keeps it.
+    if (owner === birth && seen !== null && seen.birth === birth && seen.nonce !== undefined && nonce !== undefined && seen.nonce !== nonce && !gone)
+      return false;
     if (claim) {
       // The owner record stays a bare stamp, which earlier versions read.
       if (owner === null || owner < birth || gone) {
         await $.store.set(ownerKey, birth);
-        await $.store.set(seenKey, { birth, at: Date.now() });
+        await $.store.set(seenKey, { birth, at: Date.now(), ...(nonce !== undefined ? { nonce } : {}) });
       } else if (owner === birth && (lastSeen === null || Date.now() - lastSeen >= OWNER_REFRESH_MS)) {
         // The holder refreshes every few minutes, not on every step.
-        await $.store.set(seenKey, { birth, at: Date.now() });
+        await $.store.set(seenKey, { birth, at: Date.now(), ...(nonce !== undefined ? { nonce } : {}) });
       }
     }
     return true;
@@ -715,6 +728,8 @@ export function register(on: On) {
   );
   runtime.__jevRouterNewest = birth;
   const superseded = () => birth < (runtime.__jevRouterNewest ?? 0);
+  /** This copy's own id, for telling it from another loaded in the same millisecond. */
+  const nonce = `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
   // A reload mid-turn: the copy being replaced holds what it has not saved
   // yet (mid-turn saves are throttled), so this copy takes its live state
   // for the same session, once, over the store's older snapshot.
@@ -1060,7 +1075,7 @@ export function register(on: On) {
     // A reloaded copy gets its own session.start, so it claims the session
     // the moment it loads; an older copy then stands aside from the next
     // turn on, instead of both asking Jev on the first one.
-    if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true));
+    if (snapshotKey) inert = !(await ownsSession($, snapshotKey, birth, true, nonce));
     sessionModel = await sessionModelOf($);
     return next(e);
   });
@@ -1073,7 +1088,7 @@ export function register(on: On) {
     // once the claim is gone, a later copy restores from the store alone.
     // Only the copy that still holds the session: one a reload replaced
     // may not have learnt it yet, and would write its stale state over.
-    if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false)))
+    if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false, nonce)))
       await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
     if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
     return next(e);
@@ -1089,7 +1104,7 @@ export function register(on: On) {
       // next lookup claims afresh.
       // Only the copy that still holds the session: one a reload replaced
       // may not have learnt it yet, and would write its stale state over.
-      if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false)))
+      if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false, nonce)))
         await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
       // A new conversation, and a new transcript id: its state is saved
@@ -1137,7 +1152,7 @@ export function register(on: On) {
         // session later stands aside for good.
         // Only the copy that still holds the session: one a reload replaced
         // may not have learnt it yet, and would write its stale state over.
-        if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false)))
+        if (snapshotKey && settings && !inert && !superseded() && (await ownsSession($, snapshotKey, birth, false, nonce)))
           await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
         if (snapshotKey && !inert) await releaseSession($, snapshotKey, birth);
         // Settings too: what a command set in the old session is not the
@@ -1254,7 +1269,7 @@ export function register(on: On) {
     const mine =
       !inert &&
       !superseded() &&
-      !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false)));
+      !(snapshotKey && !(await ownsSession($, snapshotKey, birth, false, nonce)));
     if (enabled && settings.compactOn && !instructed && transcript.length > 0 && cached !== null && mine) {
       const tail = transcript.slice(cached.handles.length);
       pruned = {
@@ -1396,7 +1411,7 @@ export function register(on: On) {
     if (
       inert ||
       superseded() ||
-      (snapshotKey && !(await ownsSession($, snapshotKey, birth, false)))
+      (snapshotKey && !(await ownsSession($, snapshotKey, birth, false, nonce)))
     ) {
       inert = true;
       return next(e);
@@ -1559,7 +1574,7 @@ export function register(on: On) {
     // session now, so a turn that stood aside does not switch routing off
     // for the rest of a session with no id to claim.
     if (superseded()) inert = true;
-    else inert = snapshotKey ? !(await ownsSession($, snapshotKey, birth, true)) : false;
+    else inert = snapshotKey ? !(await ownsSession($, snapshotKey, birth, true, nonce)) : false;
     if (inert) return next(e);
     // The last turn switched and then ended with no response on the new
     // model: nothing was written there, so what was warm before still is.
@@ -1821,7 +1836,7 @@ export function register(on: On) {
     if (
       inert ||
       superseded() ||
-      (snapshotKey && !(await ownsSession($, snapshotKey, birth, true)))
+      (snapshotKey && !(await ownsSession($, snapshotKey, birth, true, nonce)))
     ) {
       inert = true;
       for await (const chunk of next(e)) yield chunk;
@@ -2171,7 +2186,7 @@ export function register(on: On) {
     if (
       inert ||
       superseded() ||
-      (snapshotKey && !(await ownsSession($, snapshotKey, birth, true)))
+      (snapshotKey && !(await ownsSession($, snapshotKey, birth, true, nonce)))
     ) {
       inert = true;
       return next(e);
