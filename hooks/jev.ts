@@ -82,7 +82,7 @@ export const MIN_TIMEOUT_MS = 100;
 export function timeoutOf(raw: string | undefined): number {
   const v = (raw ?? "").trim();
   const parsed = Number(v);
-  if (!/^\d+(?:\.\d+)?$/.test(v) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
+  if (!/^\d+(?:\.\d+)?(?:e\+?\d+)?$/i.test(v) || parsed < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
   return Math.min(parsed, MAX_TIMEOUT_MS);
 }
 
@@ -115,6 +115,8 @@ export type AskArgs = {
   provider: ProviderResult;
   state: string;
   offered: readonly Tier[];
+  /** Who wrote `state`, which the question to Jev says; `prompt` when absent. */
+  source?: StateSource;
   timeoutMs?: number;
   /**
    * Aborted by the caller when the answer is no longer wanted (the turn was
@@ -140,7 +142,27 @@ export type HttpInitLike = {
  *
  * The model field is added by askJev depending on which provider is used.
  */
-export function requestBodyOf(state: string, offered: readonly Tier[]) {
+/** What the text Jev grades is: a typed prompt, a subagent's task, a finished task's report. */
+export type StateSource = "prompt" | "task" | "notification";
+
+/**
+ * How the text is introduced to Jev. A subagent's task is written by the
+ * model, and a finished task's report is a line about work done, not the
+ * work to do next: graded as a developer's request, "Agent X completed"
+ * reads as trivial when the turn is about to work through its results.
+ */
+const TIER_QUESTION: Record<StateSource, string> = {
+  prompt: "A developer typed this request to a coding agent. Which model tier should answer it?",
+  task:
+    "A coding agent handed this task to a subagent of its own. Which model tier " +
+    "should the subagent run on?",
+  notification:
+    "A background task the coding agent started has finished and reported back; " +
+    "this is its report. The agent now works through the result and decides what " +
+    "to do next. Which model tier should do that?",
+};
+
+export function requestBodyOf(state: string, offered: readonly Tier[], source: StateSource = "prompt") {
   const criteria: Record<string, string> = {};
   for (const tier of offered) criteria[tier] = TIER_CRITERIA[tier];
 
@@ -149,9 +171,7 @@ export function requestBodyOf(state: string, offered: readonly Tier[]) {
     questions: {
       tier: {
         type: "choice",
-        instructions:
-          "A developer typed this request to a coding agent. Which model tier " +
-          "should answer it?",
+        instructions: TIER_QUESTION[source],
         criteria,
       },
       effort: {
@@ -210,7 +230,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
   });
 
   const body = {
-    ...requestBodyOf(stateOf(state), offered),
+    ...requestBodyOf(stateOf(state), offered, args.source),
     model: provider.model,
   };
 

@@ -21,8 +21,11 @@ import {
   usd,
 } from "../hooks/pricing.ts";
 
-const ttl = process.argv[2] === "5m" ? "5m" : "1h";
-const outTok = Number(process.argv[3]) || 1500;
+// Arguments in either order: `5m`/`1h` for the cache, a number for output.
+const args = process.argv.slice(2);
+const ttl = args.includes("5m") ? "5m" : "1h";
+const given = args.find((a) => /^\d+$/.test(a));
+const outTok = given !== undefined && Number(given) > 0 ? Number(given) : 1500;
 const contexts = [2, 5, 10, 20, 40, 60, 100, 150, 200, 300].map((k) => k * 1000);
 const pairs = [
   ["fable", "opus"],
@@ -54,7 +57,10 @@ for (const ctx of contexts) {
 console.log("\nA downgrade pays only below (tokens of context):");
 for (const [from, to] of pairs) {
   const be = breakEvenTokens(from, to, outTok, ttl);
-  console.log(`  ${`${from}→${to}`.padEnd(14)} ${be === 0 ? "never" : `${Math.round(be / 1000)}k`}`);
+  // Rounded down: rounding up printed a size at which the switch is held.
+  const k = be / 1000;
+  const shown = be === 0 ? "never" : k < 1 ? `${be}` : `${Math.floor(k * 10) / 10}k`;
+  console.log(`  ${`${from}→${to}`.padEnd(14)} ${shown}`);
 }
 console.log(`
 Measured over a week of this machine's transcripts (2026-09-23): the median

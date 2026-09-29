@@ -236,3 +236,10 @@ describe("compactTimeoutOf: seconds written by mistake (2026-09-29)", () => {
     assert.equal(compactTimeoutOf("2000"), 2000);
   });
 });
+
+describe("compactTimeoutOf: a small budget is honoured (2026-09-29)", () => {
+  test("300 is 300; 8 is a slip for seconds", () => {
+    assert.equal(compactTimeoutOf("300"), 300);
+    assert.equal(compactTimeoutOf("8"), DEFAULT_COMPACT_TIMEOUT_MS);
+  });
+});

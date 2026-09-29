@@ -899,3 +899,13 @@ describe("env parsers (2026-09-29)", () => {
     assert.equal(thresholdOf("1.5"), DEFAULT_STICKY_CONFIDENCE);
   });
 });
+
+
+describe("parseOverride: requests phrased every which way still route (2026-09-29)", () => {
+  test("requests route", () => {
+    for (const text of ["Can we use opus?","can we switch to opus","Could we use opus","yes use opus","Yeah use opus here","hey use opus","Hmm use opus","again use opus","Maybe use opus","for this one use opus","This time use opus","From now on use opus","Sounds good! For the refactor use opus","I'd prefer you use opus","You can use opus","feel free to use opus","Let me use opus","I said use opus","- use opus","* use opus","• use opus","1) use opus","Tasks:\n- fix login\n- use opus for this","\tuse opus","Notes:\n    use opus for this","Fix 'em all, use opus for the users' page","Use opus.","now use fable to plan","go ahead and use opus","then, use opus","Let's use opus","please use opus","Can you use fable for this?","let's switch to haiku","I want you to use opus","ok, use sonnet","just use opus","I'd like to use fable here","use opus for this","why don't you use opus","why not use opus","can't you use opus?","won't you use opus","don't use haiku, use opus","don't use haiku use opus","stop using haiku and use opus","Stop what you are doing and use opus","You may not want this, but use opus","avoid haiku — use opus"]) assert.notEqual(parseOverride(text), null, JSON.stringify(text));
+  });
+  test("talk about a tier does not", () => {
+    for (const text of ["should I use opus or sonnet for this?","why do we use haiku for the classifier?","Explain when to use fable vs opus","Refactor config so that production workloads use sonnet by default","I told you not to use haiku","no need to use opus here","I don't think we should use opus","rather than use opus, just fix the typo","the README says 'use opus' for planning","look at this:\n    // use opus\nwhat is it for?","we use sonnet in prod","do not use sonnet","never use fable for this","I don't want to use haiku","how to use opus","which to use opus","the jobs use haiku"]) assert.equal(parseOverride(text), null, JSON.stringify(text));
+  });
+});

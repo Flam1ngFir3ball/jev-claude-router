@@ -19,6 +19,7 @@ import {
   REPLY_SEPARATOR,
   statusReport,
   unknownCommandReply,
+  notificationStateOf,
   toggleReply,
   type Status,
   addUsage,
@@ -93,7 +94,7 @@ describe("status report", () => {
   });
 
   test("a missing key is stated loudly, not implied", () => {
-    assert.match(statusReport({ ...base, provider: noProvider }), /NO KEYS/);
+    assert.match(statusReport({ ...base, provider: noProvider }), /NOT SET UP — no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY/);
   });
 
   test("routing off says how to turn it back on", () => {
@@ -1284,5 +1285,55 @@ describe("a failed Jev call on an outgrown tier says it moved, not kept (2026-09
     assert.doesNotMatch(line, /kept sonnet/);
     assert.match(line, /Jev timed out after 1500ms/);
     assert.match(line, /haiku too long, moved up only to sonnet/);
+  });
+});
+
+describe("status: round-3 audit (2026-09-29)", () => {
+  const opus = { tier: "opus" as const, model: "claude-opus-5-5", effort: "high" as const, confidence: 0.9 };
+  test("the provider line names why nothing will route", () => {
+    const report = statusReport({ ...base, provider: { ok: false, reason: "TYPESAFE_BASE_URL must use https" } });
+    assert.match(report, /provider\s+NOT SET UP — TYPESAFE_BASE_URL must use https/);
+  });
+  test("a running tier turned off is not called outgrown", () => {
+    const jevSays = (tier: string): ProviderResult extends never ? never : Parameters<typeof attemptOf>[1] =>
+      ({ ok: true, ms: 5, answers: { tier: { type: "choice", choice: tier, confidence: 0.99 }, effort: { type: "score", score: 1 } } }) as never;
+    const a = attemptOf("2+2", jevSays("haiku"), ["haiku", "sonnet", "fable"], {
+      sticky: null,
+      running: opus,
+      economics: { contextTokens: 250_000, outputTokens: 1500, ttl: "1h" },
+    } as never);
+    assert.ok("decision" in a);
+    assert.notEqual(a.decision.outgrew, "opus");
+    assert.doesNotMatch(liveLine(a), /opus too long/);
+  });
+  test("a held turn's summary shows no confidence for the tier it stayed on", () => {
+    const held: Attempt = { prompt: "p", ms: 1, decision: { ...opus, tier: "fable", model: "claude-fable-5-1", confidence: 0.4, held: "haiku", heldBar: 0.75 } };
+    addUsage(held, usageOf("claude-fable-5-1"));
+    const summary = replySummary([held])!;
+    assert.doesNotMatch(summary.split("\n")[1] ?? summary, /· Jev 40% ·/);
+    assert.match(summary, /kept fable: Jev 40% on haiku/);
+  });
+  test("a multi-turn summary marks a tier the person named", () => {
+    const named: Attempt = { prompt: "use opus", ms: 0, decision: { ...opus, forced: true } };
+    const woke: Attempt = { prompt: "done", ms: 1, kind: "notify", decision: opus };
+    addUsage(named, usageOf("claude-opus-5-5"));
+    addUsage(woke, usageOf("claude-opus-5-5"));
+    assert.match(replySummary([named, woke])!, /2 turns: opus \(your pick\), opus/);
+  });
+  test("the session line reads a [1m] session model as the same model", () => {
+    const report = statusReport({ ...base, sessionModel: "claude-opus-5-5[1m]", running: opus });
+    assert.match(report, /session\s+claude-opus-5-5\[1m\], still on it/);
+  });
+  test("an upgrade limit of 0 reads as a rule, not $0.0000", () => {
+    assert.match(statusReport({ ...base, price: true, upgradeMax: 0 }), /an upgrade may not cost more than staying/);
+  });
+  test("/jev tiers and /jev ceiling take commas; /jev sticky takes false/no/none as off", () => {
+    assert.deepEqual([...tiersCommand("off fable,haiku", []).excluded].sort(), ["fable", "haiku"]);
+    assert.equal(ceilingCommand("medium fable,opus", ceilingAt("xhigh")).ceiling.opus, "medium");
+    for (const off of ["false", "no", "none"]) assert.equal(stickyCommand(off, 0.6).sticky, null, off);
+  });
+  test("a notification's state for Jev is its summary and any text after it, never the result", () => {
+    const text = '<task-notification><task-id>a</task-id><summary>Agent "x" completed</summary><result>SECRET</result></task-notification>\nnow fix it';
+    assert.equal(notificationStateOf(text), 'Agent "x" completed\nnow fix it');
   });
 });

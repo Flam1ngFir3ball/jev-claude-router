@@ -86,11 +86,12 @@ Ready and merged, held back from a version bump until approved:
   text lists `tiers`; the sticky line names `/jev sticky on`; the cache
   line skips tiers turned off and a subagent's output.
 
-- **Naming a tier only routes when it is said to the model.** "should I
-  use opus or sonnet?", "make production use sonnet by default" and "I
-  told you not to use haiku" no longer force a tier; "use opus", "please
-  switch to fable" and "can you use sonnet" still do. Single-quoted
-  phrases and indented code are not read for it.
+- **Talk about a tier no longer forces it.** "should I use opus or
+  sonnet?", "make production use sonnet by default", "I told you not to use
+  haiku" and a `// use opus` code comment are ordinary prompts; requests
+  phrased any other way ("yes use opus", "can we use opus?", "for this one
+  use opus", a bulleted "- use opus") still route. A short single-quoted
+  phrase is not read for it.
 - **A finished task's result is not sent to Jev.** A notification that
   asks Jev sends only the task's one-line summary. The README has a new
   "What leaves your machine" section.
@@ -117,17 +118,55 @@ Ready and merged, held back from a version bump until approved:
   with the call (so `npm run try-prompts` no longer waits out the full
   timeout), a fetch that throws at once is a failure rather than a
   rejection, and a provider's error text is kept as plain words.
-- **Settings:** `JEV_ROUTER_COMPACT_TIMEOUT_MS` below 500 is taken for a
-  mistake; `JEV_ROUTER_EXCLUDE` accepts semicolons and spaces;
+- **Settings:** `JEV_ROUTER_COMPACT_TIMEOUT_MS` below 100 is taken for a
+  mistake (a small budget above that is honoured); `JEV_ROUTER_EXCLUDE` accepts semicolons and spaces;
   `JEV_ROUTER_UPGRADE_MAX` refuses negatives and hex, as the timeouts now
   do; `JEV_ROUTER_STICKY_CONFIDENCE=60.5` is 60.5% again (only `1`–`10`
   must be whole); `JEV_ROUTER_PROVIDER` accepts `vercel` and `direct`.
+
+- **A reload mid-turn keeps what the old copy had not saved yet**: the new
+  copy takes its live state for the same session, so the spend and summary
+  of a long tool-using turn are no longer short by the last few steps.
+  Spend and the warm model while `/jev off` are saved too.
+- **`/model` right after `/resume`** into another session is no longer
+  undone by that session's snapshot.
+- **An expired cache** is saved with the session and is judged afresh on
+  each resume, so it neither carries into another session nor is lost on a
+  reload.
+- **A go-ahead after the engine's summary compaction** continues on the
+  tier that proposed the work instead of running unrouted.
+- **Fable's first-request effort** applies to the conversation's first
+  request only, not to every step of its first turn.
+- **The question to Jev says who wrote the text**: a subagent's task and a
+  finished task's report are framed as such, not as a developer's request.
+- **A finished task that wakes an idle session** gets its route line again
+  when the previous turn ended without a summary.
+- **Past the agent limit**, failed and killed agents are dropped before
+  completed ones, which a message could still resume. A spawn another hook
+  denied is not recorded. A subagent's compaction no longer replaces the
+  main loop's saved scoring.
+- **`/jev`:** `/jev -- off` and tabs between words are read as typed;
+  `/jev tiers` and `/jev ceiling` take commas; `/jev sticky` takes
+  `false`, `no` and `none` as off. The status names why the provider is not
+  set up instead of always saying "no keys", reads a `[1m]` session model
+  as the one running, and says an upgrade limit of 0 plainly. A held turn's
+  summary no longer shows the other tier's confidence as its own; a
+  multi-turn summary marks a tier you named; a running tier that was turned
+  off is not called outgrown.
+- **Snapshots:** every stored attempt is checked before it is trusted, as
+  are the sticky bar and the last context size; old snapshots are pruned by
+  when they were last saved, so a long-running session is never the one
+  dropped.
+- **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
+  Vertex (`claude-…@date`) model ids.
 
 ### Chores
 
 - `npm run check-gateway`, a duplicate of `check-jev`, is removed.
 - `check-jev` and `try-prompts` fall back to the shell's environment when
   `~/.claude/settings.json` is missing, instead of crashing.
+- `measure-switch-cost` takes its output size alone or after the cache
+  length, and prints break-evens rounded down.
 - `npm run setup` fetches the types and turns on the pre-commit hook in
   one step; `npm run types` fails on an HTTP error instead of writing the
   error page into the type file.

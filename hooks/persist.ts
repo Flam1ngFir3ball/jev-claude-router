@@ -88,10 +88,14 @@ export type State = {
    * confirmed the switch; null when there is nothing to take back.
    */
   unconfirmed: { was: Decision | null } | null;
+  /** The engine said the resumed session's cache expired, and no response has written it since. */
+  cacheExpired: boolean;
 };
 
 type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
   v: number;
+  /** When it was written, for pruning the least recently used first. */
+  savedAt: number;
   pool: Attempt[];
   attempts: number[];
   reply: number[];
@@ -114,6 +118,7 @@ export function pack(state: State): Packed {
   };
   return {
     v: SNAPSHOT_VERSION,
+    savedAt: Date.now(),
     pool,
     attempts: state.attempts.map(ref),
     reply: state.reply.map(ref),
@@ -141,11 +146,49 @@ export function pack(state: State): Packed {
     summarisedAgents: state.summarisedAgents,
     compaction: state.compaction,
     unconfirmed: state.unconfirmed,
+    cacheExpired: state.cacheExpired,
   };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A finite number no smaller than 0. */
+const isCount = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+
+/**
+ * A decision as the router writes one: a tier and effort it knows, a model
+ * id, a confidence 0–1.
+ */
+function isValidDecision(v: unknown): v is Decision {
+  return (
+    isRecord(v) &&
+    (TIERS as readonly unknown[]).includes(v.tier) &&
+    typeof v.model === "string" &&
+    (EFFORTS as readonly unknown[]).includes(v.effort) &&
+    typeof v.confidence === "number" &&
+    Number.isFinite(v.confidence) &&
+    v.confidence >= 0 &&
+    v.confidence <= 1
+  );
+}
+
+/** An attempt as the router writes one: a prompt, a time, a decision or a reason, usage in numbers. */
+function isValidAttempt(v: unknown): boolean {
+  if (!isRecord(v) || typeof v.prompt !== "string" || typeof v.ms !== "number" || !Number.isFinite(v.ms)) return false;
+  if ("decision" in v ? !isValidDecision(v.decision) : typeof v.skipped !== "string") return false;
+  if (v.cost !== undefined && !isCount(v.cost)) return false;
+  if (v.usage !== undefined) {
+    const u = v.usage;
+    if (
+      !isRecord(u) ||
+      typeof u.model !== "string" ||
+      ![u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].every(isCount)
+    )
+      return false;
+  }
+  return true;
+}
 
 /**
  * The state back from what the store returned, or null for anything that is
@@ -156,7 +199,9 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 export function unpack(raw: unknown): State | null {
   if (!isRecord(raw) || raw.v !== SNAPSHOT_VERSION) return null;
   const pool = raw.pool;
-  if (!Array.isArray(pool) || !pool.every(isRecord)) return null;
+  // Every attempt is checked as a decision is: a corrupt one reaches the
+  // route line, the summary and the spend total, which trust its fields.
+  if (!Array.isArray(pool) || !pool.every(isValidAttempt)) return null;
   const at = (i: unknown): Attempt | null =>
     typeof i === "number" && Number.isInteger(i) && i >= 0 && i < pool.length
       ? (pool[i] as Attempt)
@@ -189,18 +234,7 @@ export function unpack(raw: unknown): State | null {
   if (spawned === null || turns === null) return null;
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  // Validate Decision fields to catch corruption in the store: tier, model,
-  // effort are expected strings; confidence is 0–1. Fail open: invalid
-  // decisions are dropped rather than trusted to their detriment.
-  const isValidDecision = (v: unknown): v is Decision =>
-    isRecord(v) &&
-    (TIERS as readonly unknown[]).includes(v.tier) &&
-    typeof v.model === "string" &&
-    (EFFORTS as readonly unknown[]).includes(v.effort) &&
-    typeof v.confidence === "number" &&
-    Number.isFinite(v.confidence) &&
-    v.confidence >= 0 &&
-    v.confidence <= 1;
+  // Invalid decisions are dropped rather than trusted to their detriment.
   const decisions: [string, Decision][] = Array.isArray(raw.decisions)
     ? raw.decisions.filter(
         (p): p is [string, Decision] =>
@@ -210,8 +244,8 @@ export function unpack(raw: unknown): State | null {
   const decision = (v: unknown) => (isValidDecision(v) ? v : null);
   const lastUsage =
     isRecord(raw.lastUsage) &&
-    typeof raw.lastUsage.context === "number" &&
-    typeof raw.lastUsage.output === "number"
+    isCount(raw.lastUsage.context) &&
+    isCount(raw.lastUsage.output)
       ? { context: raw.lastUsage.context, output: raw.lastUsage.output }
       : null;
   // Every tier's cap must be an effort: one missing or misspelled would
@@ -239,12 +273,13 @@ export function unpack(raw: unknown): State | null {
     lastUsage,
     sessionModel:
       typeof raw.sessionModel === "string" ? raw.sessionModel : null,
-    spent: typeof raw.spent === "number" ? raw.spent : 0,
+    spent: isCount(raw.spent) ? raw.spent : 0,
     enabled: raw.enabled !== false,
     announce: raw.announce !== false,
     // A snapshot from before this field exists has turns behind it.
     answered: raw.answered !== false,
-    sticky: typeof raw.sticky === "number" ? raw.sticky : null,
+    // A bar outside 0–1 would hold every switch, or none.
+    sticky: typeof raw.sticky === "number" && raw.sticky > 0 && raw.sticky < 1 ? raw.sticky : null,
     ceiling: Object.fromEntries(TIERS.map((t) => [t, ceiling[t]])) as Ceiling,
     // Absent (a snapshot from before this field existed) is left undefined
     // — a signal to leave the environment's own JEV_ROUTER_EXCLUDE seeding
@@ -273,6 +308,7 @@ export function unpack(raw: unknown): State | null {
       isRecord(raw.unconfirmed) && (raw.unconfirmed.was === null || isValidDecision(raw.unconfirmed.was))
         ? { was: raw.unconfirmed.was as Decision | null }
         : null,
+    cacheExpired: raw.cacheExpired === true,
   };
 }
 
@@ -306,11 +342,28 @@ export function orphanOwnerKeys(keys: readonly string[], ownerPrefix: string, cu
   });
 }
 
-/** The snapshot keys to drop so `SNAPSHOTS_KEPT` remain, oldest first. */
-export function staleKeys(keys: readonly string[], current: string): string[] {
+/** When a stored snapshot was written, or null for one from before the field or not a snapshot. */
+export function savedAtOf(raw: unknown): number | null {
+  return isRecord(raw) && typeof raw.savedAt === "number" && Number.isFinite(raw.savedAt) ? raw.savedAt : null;
+}
+
+/**
+ * The snapshot keys to drop so `SNAPSHOTS_KEPT` remain, least recently saved
+ * first when `savedAt` says (a session saved on every turn is never the one
+ * dropped, however long ago it started), else in the store's key order.
+ */
+export function staleKeys(
+  keys: readonly string[],
+  current: string,
+  savedAt?: ReadonlyMap<string, number>,
+): string[] {
   const sessions = keys.filter(
     (k) => k.startsWith(SNAPSHOT_PREFIX) && k !== current,
   );
   const excess = sessions.length + 1 - SNAPSHOTS_KEPT;
-  return excess > 0 ? sessions.slice(0, excess) : [];
+  if (excess <= 0) return [];
+  const order = sessions
+    .map((k, i) => ({ k, i, at: savedAt?.get(k) ?? -Infinity }))
+    .sort((a, b) => a.at - b.at || a.i - b.i);
+  return order.slice(0, excess).map((x) => x.k);
 }

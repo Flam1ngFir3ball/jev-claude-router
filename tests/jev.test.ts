@@ -398,3 +398,14 @@ describe("audit regressions (2026-09-29)", () => {
     assert.equal(timeoutOf("0x1F40"), DEFAULT_TIMEOUT_MS);
   });
 });
+
+describe("round-3 audit (2026-09-29)", () => {
+  test("the question names who wrote the text", () => {
+    assert.match(requestBodyOf("x", TIERS).questions.tier.instructions, /A developer typed/);
+    assert.match(requestBodyOf("x", TIERS, "task").questions.tier.instructions, /subagent/);
+    assert.match(requestBodyOf("x", TIERS, "notification").questions.tier.instructions, /works through the result/);
+  });
+  test("a timeout written as 1e3 is a thousand", () => {
+    assert.equal(timeoutOf("1e3"), 1000);
+  });
+});

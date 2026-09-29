@@ -5,6 +5,7 @@ import {
   timeoutOf,
   type HttpInitLike,
   type HttpResponseLike,
+  type StateSource,
 } from "./jev.ts";
 import { labelOf, withLabel } from "./label.ts";
 import {
@@ -38,6 +39,8 @@ import {
   pack,
   SNAPSHOT_PREFIX,
   orphanOwnerKeys,
+  savedAtOf,
+  SNAPSHOTS_KEPT,
   staleKeys,
   unpack,
   OVERRIDABLE,
@@ -68,6 +71,7 @@ import {
   FOOTER_SEPARATOR,
   REPLY_SEPARATOR,
   notificationOf,
+  notificationStateOf,
   notificationTaskOf,
   replySummary,
   spawnAttemptOf,
@@ -300,6 +304,7 @@ async function classify(
   offered: readonly Tier[],
   settings: Settings,
   signal?: AbortSignal,
+  source: StateSource = "prompt",
 ) {
   return askJev({
     fetch: (url, init) => $.http.fetch(url, init),
@@ -307,6 +312,7 @@ async function classify(
     provider: settings.provider,
     state: text,
     offered,
+    source,
     timeoutMs: settings.timeoutMs,
     signal,
   });
@@ -377,7 +383,15 @@ async function saveSnapshot(
   try {
     if (first) {
       const keys = await $.store.keys();
-      for (const stale of staleKeys(keys, key)) {
+      // Only read when there is something to prune: one get per session.
+      const sessions = keys.filter((k) => k.startsWith(SNAPSHOT_PREFIX) && k !== key);
+      const savedAt = new Map<string, number>();
+      if (sessions.length + 1 > SNAPSHOTS_KEPT)
+        for (const k of sessions) {
+          const at = savedAtOf(await $.store.get(k));
+          if (at !== null) savedAt.set(k, at);
+        }
+      for (const stale of staleKeys(keys, key, savedAt)) {
         await $.store.delete(stale);
         await $.store.delete(`${OWNER_PREFIX}${stale}`);
       }
@@ -604,13 +618,31 @@ export function register(on: On) {
   // A copy's stamp is always above every one already there, so two loaded
   // in the same millisecond still have an order; the fraction keeps copies
   // in different processes, which share only the store, from tying.
-  const runtime = globalThis as { __jevRouterNewest?: number };
+  const runtime = globalThis as {
+    __jevRouterNewest?: number;
+    /** The newest copy's live state, for the copy that replaces it. */
+    __jevRouterLive?: () => { key: string; state: unknown } | null;
+  };
   const birth = Math.max(
     Date.now() + Math.random() * 0.001,
     (runtime.__jevRouterNewest ?? 0) + 0.001,
   );
   runtime.__jevRouterNewest = birth;
   const superseded = () => birth < (runtime.__jevRouterNewest ?? 0);
+  // A reload mid-turn: the copy being replaced holds what it has not saved
+  // yet (mid-turn saves are throttled), so this copy takes its live state
+  // for the same session, once, over the store's older snapshot.
+  let previousLive = runtime.__jevRouterLive;
+  runtime.__jevRouterLive = () =>
+    snapshotKey ? { key: snapshotKey, state: pack(stateNow()) } : null;
+  // Only over a snapshot the store holds for the key: a copy for a session
+  // that was never saved is a fresh one, not a reload of the last.
+  const restoredFrom = (key: string, stored: State | null): State | null => {
+    const previous = previousLive?.();
+    previousLive = undefined;
+    if (stored === null || !previous || previous.key !== key) return stored;
+    return unpack(JSON.parse(JSON.stringify(previous.state))) ?? stored;
+  };
   /** True once a newer copy has claimed the session: this one stands aside. */
   let inert = false;
   /** The engine said the resumed session's cache has expired, and no response has written it since. */
@@ -803,6 +835,7 @@ export function register(on: On) {
     summarisedAgents: [...summarisedAgents],
     compaction: lastCompaction,
     unconfirmed,
+    cacheExpired,
   });
 
   /** Puts a restored snapshot back, over what the environment seeded. */
@@ -832,6 +865,7 @@ export function register(on: On) {
     answered = s.answered;
     lastCompaction = s.compaction;
     unconfirmed = s.unconfirmed;
+    cacheExpired = s.cacheExpired;
     summarisedAgents.clear();
     for (const id of s.summarisedAgents) summarisedAgents.add(id);
     // Only what a command set outranks the environment; the rest stays as
@@ -879,7 +913,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(await loadSnapshot($, snapshotKey));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
       restoreOnKey = true;
     }
     // A reloaded copy gets its own session.start, so it claims the session
@@ -923,6 +957,8 @@ export function register(on: On) {
       // Compaction cache: the next turn starts fresh, so any previous prune
       // score is invalid.
       prunedCache = null;
+      // A new conversation has no cache to have expired.
+      cacheExpired = false;
     }
     // A resume or fork into a different session, in a process already
     // running one: the old session's routing must not carry over. Its state
@@ -940,6 +976,9 @@ export function register(on: On) {
         overridden.clear();
         enabled = true;
         announce = true;
+        // The old session's expired cache is not this one's; the resume
+        // event below says whether this one's has.
+        cacheExpired = false;
         clearRouting();
         reply = [];
         replyAgents = new Set();
@@ -953,11 +992,10 @@ export function register(on: On) {
     }
     // The cache has expired: what is running is still known, and the next
     // switch is priced with staying as a write too, snapshot or not.
-    if (
-      (e.source === "resume" || e.source === "fork") &&
-      e.prompt_cache_likely_expired === true
-    )
-      cacheExpired = true;
+    // Every resume says afresh whether its own cache has expired; what an
+    // earlier one said is not this session's.
+    if (e.source === "resume" || e.source === "fork")
+      cacheExpired = e.prompt_cache_likely_expired === true;
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&
@@ -984,7 +1022,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(await loadSnapshot($, snapshotKey));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
       restoreOnKey = true;
     }
     // Jev prunes the transcript instead of the engine summarising it:
@@ -1003,7 +1041,10 @@ export function register(on: On) {
     // compacts ahead of time and then for real a message or two later, and
     // those messages are inside the zone pruning never touches anyway.
     const handles = transcript.map((m) => m.handle ?? "");
+    // The cache is the main loop's: a subagent's transcript is another
+    // conversation, and must neither reuse nor replace its scoring.
     const cached =
+      e.agentId === undefined &&
       prunedCache !== null &&
       handles.every((h) => h !== "") &&
       handles.length >= prunedCache.handles.length &&
@@ -1066,7 +1107,7 @@ export function register(on: On) {
       // `true | undefined` spelling of isError (rebuilt blocks carry false).
       if (result.ok) {
         pruned = { messages: result.messages as unknown as typeof e.messages };
-        prunedCache = {
+        if (e.agentId === undefined) prunedCache = {
           handles,
           messages: result.messages,
           reduction: result.compaction.reduction,
@@ -1094,9 +1135,10 @@ export function register(on: On) {
     if (e.trigger !== "precompute" && e.agentId === undefined) {
       if (pruned === null) {
         // The engine's summary: a new prefix, nothing warm, a small context.
+        // What a go-ahead continues is the work, not the cache, so it stays:
+        // "yes" after a compaction still runs on the tier that proposed it.
         running = null;
         unconfirmed = null;
-        continueFrom = null;
         lastUsage = null;
       } else if (lastUsage !== null) {
         // Pruned: the opening of the transcript stays verbatim, so the
@@ -1124,6 +1166,16 @@ export function register(on: On) {
     // A resume restores the model it left on; that is not a move, and the
     // resume hook has just seeded what is running on it.
     if (e.source === "resume") return next(e);
+    // A switch right after a resume into another session: that session's
+    // snapshot is restored first, or the next hook's restore would put its
+    // old model back over this switch.
+    settings = await seedSettings($, settings);
+    if (snapshotKey === undefined) {
+      snapshotKey = await snapshotKeyOf($);
+      if (snapshotKey !== null && restoreOnKey)
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
+      restoreOnKey = true;
+    }
     if (typeof e.to_model === "string") sessionModel = e.to_model;
     running = null;
     unconfirmed = null;
@@ -1137,7 +1189,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(await loadSnapshot($, snapshotKey));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
       restoreOnKey = true;
     }
     // An older copy hands /jev to the owner: answering itself would report
@@ -1150,8 +1202,10 @@ export function register(on: On) {
       inert = true;
       return next(e);
     }
-    const arg = e.args.trim().toLowerCase();
-    const sub = arg.replace(/^-+/, "");
+    // One space between words, whatever was typed (tabs, runs of spaces),
+    // and a leading dash or two dropped with any space after it: `/jev -- off`.
+    const arg = e.args.trim().toLowerCase().replace(/\s+/g, " ");
+    const sub = arg.replace(/^-+\s*/, "");
 
     // The dash-stripped spelling throughout, so `/jev --on` works as
     // `/jev --sticky` does.
@@ -1283,7 +1337,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(await loadSnapshot($, snapshotKey));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
       restoreOnKey = true;
     }
     // After the restore: a resumed session's own /jev off or on is what
@@ -1343,7 +1397,9 @@ export function register(on: On) {
         ? null
         // A task's notification carries the agent's whole result, which can
         // quote files it read: Jev is told only the task's one-line summary.
-        : classify($, notification ? (notificationOf(e.text) ?? "") : e.text, offered, settings, askAbort.signal);
+        : notification
+          ? classify($, notificationStateOf(e.text), offered, settings, askAbort.signal, "notification")
+          : classify($, e.text, offered, settings, askAbort.signal);
     const reported = await contextTokensOf($);
     // With no context yet (a fresh session) nothing tells two sessions
     // apart, so their claims are kept apart by the session's own key.
@@ -1478,8 +1534,10 @@ export function register(on: On) {
       }
     }
 
-    // A reply is open while it has turns and no summary yet.
-    const replyOpen = reply.length > 0;
+    // A reply is still open after its turn only while its summary waits on
+    // agents it spawned; one that ended without a summary (interrupted,
+    // failed, quiet) is not waiting for anything.
+    const replyOpen = reply.length > 0 && replyAgents.size > 0;
     // One place where the turn's outcome is settled, so the report and the
     // announcement can never disagree about what happened.
     if (afterSummary) {
@@ -1557,7 +1615,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(await loadSnapshot($, snapshotKey));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
       restoreOnKey = true;
     }
     if (
@@ -1590,6 +1648,12 @@ export function register(on: On) {
               running = warm;
               lastUsage = { context: carriedOf(u), output: u.output_tokens };
             }
+          }
+          // Saved as a routed step's usage is, or a reload loses it.
+          const now = Date.now();
+          if (!MID_TURN.has(chunk.stopReason ?? "") || now - lastMidTurnSave >= MID_TURN_SAVE_MS) {
+            lastMidTurnSave = now;
+            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
           }
         }
         yield chunk;
@@ -1653,6 +1717,10 @@ export function register(on: On) {
         for (const id of stepped) if (!spawned.has(id)) stepped.delete(id);
       }
     }
+    // The main loop's first-request effort is for that one request: once a
+    // response has come back, later steps of the same turn are deep in the
+    // conversation and get what Jev asked.
+    if (decision !== undefined && e.agentId === undefined && answered) decision = asAsked(decision);
     const step = decision
       ? next({ ...e, model: decision.model, effort: decision.effort })
       : next(e);
@@ -1690,8 +1758,12 @@ export function register(on: On) {
         unconfirmed !== null &&
         e.agentId === undefined &&
         (raw.kind === "text" || raw.kind === "thinking" || raw.kind === "tool" || raw.kind === "input")
-      )
+      ) {
         unconfirmed = null;
+        // Saved now: a turn cut short after this writes nothing else, and a
+        // reload would otherwise take back a switch that did happen.
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      }
       const at = (raw as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
       let pieces: StepChunk[] = [raw];
@@ -1872,7 +1944,7 @@ export function register(on: On) {
     if (snapshotKey === undefined) {
       snapshotKey = await snapshotKeyOf($);
       if (snapshotKey !== null && restoreOnKey)
-        applyState(await loadSnapshot($, snapshotKey));
+        applyState(restoredFrom(snapshotKey, await loadSnapshot($, snapshotKey)));
       restoreOnKey = true;
     }
     if (
@@ -1886,16 +1958,18 @@ export function register(on: On) {
 
     const attempt = spawnAttemptOf(
       e.description,
-      await classify($, e.prompt, settings.offered, settings),
+      await classify($, e.prompt, settings.offered, settings, undefined, "task"),
       settings.offered,
       { type: e.subagentType, label: e.description },
       settings.ceiling,
     );
-    record(attempt);
 
     const started = await next(
       "decision" in attempt ? { ...e, model: attempt.decision.model } : e,
     );
+    // Recorded once it started: a spawn another hook denied ran nowhere,
+    // and is not an agent of the reply.
+    if (started.agentId !== undefined) record(attempt);
     if (started.agentId !== undefined) {
       // Prefer dropping finished agents over FIFO: blind eviction silently
       // dropped effort routing for resumed agents. Always keep the id we
@@ -1904,18 +1978,21 @@ export function register(on: On) {
       replyAgents.add(justStarted);
       spawned.set(justStarted, attempt);
       if (spawned.size > CACHE_LIMIT) {
-        // The list holds every agent so far, finished ones too: only a
-        // running one is live. The oldest finished ones go first.
-        const live = new Set(
-          (await $.agent.list().catch(() => []))
-            .filter((a) => a.status === "running")
-            .map((a) => a.id),
+        // The list holds every agent so far, finished ones too. What goes
+        // first is what cannot come back (gone from the list, failed,
+        // killed); then, oldest first, completed ones, which a message could
+        // still resume. Running agents, and any status not known here, stay.
+        const status = new Map(
+          (await $.agent.list().catch(() => [])).map((a) => [a.id, a.status] as const),
         );
-        live.add(justStarted);
-        for (const id of [...spawned.keys()]) {
-          if (spawned.size <= CACHE_LIMIT) break;
-          if (!live.has(id)) spawned.delete(id);
-        }
+        const evict = (drop: (s: string | undefined) => boolean) => {
+          for (const id of [...spawned.keys()]) {
+            if (spawned.size <= CACHE_LIMIT) break;
+            if (id !== justStarted && drop(status.get(id))) spawned.delete(id);
+          }
+        };
+        evict((s) => s === undefined || s === "failed" || s === "killed");
+        evict((s) => s === "completed");
       }
     }
     if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());

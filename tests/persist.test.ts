@@ -180,3 +180,32 @@ describe("persist: a snapshot is checked, not trusted (2026-09-28)", () => {
     assert.equal(roundTrip(stateWith({ prompt: "p", ms: 1, decision }))!.overridden, undefined);
   });
 });
+
+describe("persist: round-3 audit (2026-09-29)", () => {
+  const packed = () => JSON.parse(JSON.stringify(pack(stateWith({ prompt: "p", ms: 1, decision }))));
+  test("an attempt with a bad decision, bad usage or a string cost is refused", () => {
+    for (const bad of [
+      { prompt: "x", ms: 1, decision: null },
+      { prompt: "x", ms: 1, decision, usage: { model: "m", input_tokens: "100", output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+      { prompt: "x", ms: 1, decision, cost: "0.5" },
+      { ms: 1, skipped: "why" },
+    ]) {
+      const raw = packed();
+      raw.pool[0] = bad;
+      assert.equal(unpack(raw), null, JSON.stringify(bad));
+    }
+  });
+  test("a sticky bar outside 0–1 and a negative context are not trusted", () => {
+    const raw = packed();
+    raw.sticky = 5;
+    raw.lastUsage = { context: -10, output: 1 };
+    const back = unpack(raw)!;
+    assert.equal(back.sticky, null);
+    assert.equal(back.lastUsage, null);
+  });
+  test("pruning drops the least recently saved, not the first written", () => {
+    const keys = Array.from({ length: SNAPSHOTS_KEPT + 1 }, (_, i) => `session:s${i}`);
+    const savedAt = new Map(keys.map((k, i) => [k, i === 0 ? 10_000 : i]));
+    assert.deepEqual(staleKeys(keys, "session:new", savedAt), ["session:s1", "session:s2"]);
+  });
+});

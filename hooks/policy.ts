@@ -619,11 +619,11 @@ export function ownWords(text: string): string {
     // A phrase in double quotes is being quoted, not said: "use opus".
     .replace(/"[^"\n]{1,200}"/g, " ")
     .replace(/\u201c[^\u201d\n]{1,200}\u201d/g, " ")
-    // Single quotes too, when they open after a space and close before one:
-    // the README says 'use opus'. An apostrophe (don't) opens after a letter.
-    .replace(/(^|[\s(])['\u2018][^'\u2018\u2019\n]{1,200}['\u2019](?=[\s.,;:!?)]|$)/g, "$1 ")
-    // Indented lines are code (a snippet pasted without a fence).
-    .replace(/^(?: {4,}|\t).*$/gm, " ")
+    // Single quotes too, around a short phrase with no punctuation inside:
+    // the README says 'use opus'. An apostrophe (don't, 'em, users') is not
+    // a quote: it does not both open after a space and close before one
+    // around a phrase that short and plain.
+    .replace(/(^|[\s(])['\u2018][^'\u2018\u2019\n.,;:!?]{1,60}['\u2019](?=[\s.,;:!?)]|$)/g, "$1 ")
     .replace(/^[ \t]*>.*$/gm, " ");
 }
 
@@ -647,29 +647,54 @@ export function parseOverride(
 }
 
 /**
- * What may open a clause ahead of the verb for it to be said to the model:
- * nothing ("use opus"), a softener ("please", "just", "ok"), a joiner
- * ("and", "then", "but") or a request ("can you", "why don't you", "let's").
- * A subject or any other lead-in ("production workloads use sonnet", "I told
- * you not to use haiku", "explain when to use fable", "should I use opus")
- * is talk about a tier, not a request to run on it.
+ * Lead-ins that make the route phrase talk about a tier rather than a request
+ * to run on it. Anything else ahead of the verb is fine ("yes", "for this one",
+ * "can we", "- " as a bullet): a request is phrased in endless ways, and the
+ * cost of missing one is a turn left to Jev, while the cost of a false one is
+ * a forced switch with no checks. So only what clearly is not a request is
+ * refused:
+ * - a question about the choice ("should I", "why do we", "when to"),
+ * - a clause with its own subject ("workloads use", "we use", "so that ..."),
+ * - a comparison or an aside ("rather than", "instead of", "no need to"),
+ * - a negation anywhere before it ("I don't think we should"), except the
+ *   tag questions that ask for it ("why don't you", "can't you", "won't you"),
+ * - a code comment (`//`, `#`).
  */
-const ADDRESSED_LEAD =
-  /^(?:(?:please|pls|just|now|then|so|ok|okay|also|instead|actually|and|but|or|let'?s|let\s+us|go\s+ahead\s+and|i\s+want\s+(?:you\s+)?to|i'?d\s+like\s+(?:you\s+)?to|i\s+would\s+like\s+(?:you\s+)?to|i\s+need\s+you\s+to|you\s+should|we\s+should|can\s+you|could\s+you|would\s+you|will\s+you|can'?t\s+you|won'?t\s+you|why\s+(?:not|don'?t\s+you))\s+)*$/i;
+const TALK_ABOUT: readonly RegExp[] = [
+  /^(?:should|shall|do|does|did|why|when|how|what|which|where|whether|is|are|was|were|have|has|had)\b(?!.*\b(?:why\s+(?:not|don'?t\s+you)))/,
+  /\b(?:that|which|where|when|if|because|whether|so)\s*$|\b(?:that|which|if|because|whether)\b/,
+  // A subject of its own, unless it is asked ("can we", "could I", "let's").
+  /(?<!\b(?:can|could|would|will|shall|may|let)\s)\b(?:i|we|they|he|she|it|people|everyone|nobody|users?|workloads?|jobs?|teams?|services?)\s*$/,
+  /\b(?:than|rather|instead\s+of|no\s+need\s+to|how\s+to|when\s+to|where\s+to|whether\s+to|which\s+to|not\s+to)\s*$/,
+  /\bto\s*$/,
+  /(?:\/\/|#|\/\*)/,
+];
+
+/** Leads that end in "to" and still ask for it ("I want you to", "I'd like to"). */
+const ASKING_TO = /\b(?:want|wants|like|need|prefer|asked|ask|going|free)(?:\s+(?:you|us|me))?\s+to\s*$|\bgo\s+ahead\s+and\s*$/;
+
+/** Negations ahead of the verb, and the tag questions that are not one. */
+const LEAD_NEGATION = /\b(?:not|never|no|n'?t|nor)\b|n't\b/;
+const TAG_QUESTION = /\b(?:why\s+(?:not|don'?t\s+you)|can'?t\s+you|won'?t\s+you|couldn'?t\s+you|wouldn'?t\s+you)\s*$/;
 
 /** A clause break: sentence ends, commas, dashes, ellipses, a new line, a joining and/then/but. */
 const CLAUSE_BREAK = /[.!?,;:\n—–…]|\s-\s|\s(?:and|then|but)\s/gi;
 
 /**
- * Whether the verb at `at` opens a clause addressed to the model: the text
- * between the last clause break (or the end of the previous route phrase,
- * `from`) and the verb is only an `ADDRESSED_LEAD`.
+ * Whether the verb at `at` asks the model to run on the tier: the text from
+ * the last clause break (or the end of the previous route phrase, `from`) up
+ * to the verb is not one of the `TALK_ABOUT` lead-ins.
  */
 function addressedAt(text: string, from: number, at: number): boolean {
   let start = from;
   for (const brk of text.slice(from, at).matchAll(CLAUSE_BREAK))
     start = from + (brk.index ?? 0) + brk[0].length;
-  return ADDRESSED_LEAD.test(`${text.slice(start, at).trim().toLowerCase()} `.trimStart());
+  const lead = text.slice(start, at).trim().toLowerCase().replace(/\s+/g, " ");
+  if (lead === "") return true;
+  if (TAG_QUESTION.test(lead)) return true;
+  if (LEAD_NEGATION.test(lead)) return false;
+  if (/\bto\s*$/.test(lead) && ASKING_TO.test(lead)) return true;
+  return !TALK_ABOUT.some((re) => re.test(lead));
 }
 
 /** True when the gap is only light bridge words and no clause break. */

@@ -44,14 +44,17 @@ export function compactOnOf(raw: string | undefined): boolean {
   return !(flag === "0" || flag === "false" || flag === "no" || flag === "off");
 }
 
-/** Below this a scoring budget is taken for a mistake (seconds written as `8`). */
-export const MIN_COMPACT_TIMEOUT_MS = 500;
+/**
+ * Below this a scoring budget is taken for a mistake (seconds written as
+ * `8`), as for JEV_ROUTER_TIMEOUT_MS; a small budget above it is honoured.
+ */
+export const MIN_COMPACT_TIMEOUT_MS = 100;
 
 /** `JEV_ROUTER_COMPACT_TIMEOUT_MS`, clamped; the default when unset or bad. */
 export function compactTimeoutOf(raw: string | undefined): number {
   const v = (raw ?? "").trim();
   const n = Number(v);
-  if (!/^\d+(?:\.\d+)?$/.test(v) || !Number.isFinite(n) || n < MIN_COMPACT_TIMEOUT_MS)
+  if (!/^\d+(?:\.\d+)?(?:e\+?\d+)?$/i.test(v) || !Number.isFinite(n) || n < MIN_COMPACT_TIMEOUT_MS)
     return DEFAULT_COMPACT_TIMEOUT_MS;
   return Math.min(n, MAX_COMPACT_TIMEOUT_MS);
 }

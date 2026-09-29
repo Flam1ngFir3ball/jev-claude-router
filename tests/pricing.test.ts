@@ -153,3 +153,11 @@ describe("usd: the places follow the rounded figure (2026-09-28)", () => {
     assert.equal(usd(0.0035), "$0.0035");
   });
 });
+
+describe("pricing: Bedrock and Vertex ids (2026-09-29)", () => {
+  test("priced by the model id inside", () => {
+    assert.deepEqual(priceOfModel("us.anthropic.claude-opus-5-5-v1:0"), PRICE.opus);
+    assert.deepEqual(priceOfModel("anthropic.claude-haiku-4-5"), PRICE.haiku);
+    assert.deepEqual(priceOfModel("claude-sonnet-5-5@20260901"), PRICE.sonnet);
+  });
+});

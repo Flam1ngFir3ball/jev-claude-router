@@ -3864,3 +3864,215 @@ describe("register: what a task's notification sends to Jev (2026-09-29)", () =>
     assert.doesNotMatch(lastState() ?? "", /sk-secret/);
   });
 });
+
+describe("register: round-3 audit (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const turnOn = async (kit: ReturnType<typeof load>, id: string, text = "x", answer = (m: string) => answeredBy(m)) => {
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+    const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => answer(e.model)));
+    return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+  };
+  const started = async (env?: Record<string, string | undefined>, shared = { store: new Map<string, unknown>(), id: `sess-${Math.random()}` }) => {
+    const kit = load(env, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    return { ...kit, shared };
+  };
+
+  test("/model right after a resume into another session is not undone by that session's snapshot", async () => {
+    const store = new Map<string, unknown>();
+    const b = await started(undefined, { store, id: "sess-M2" });
+    await turnOn(b, "m1");
+    await new Promise((r) => setTimeout(r, 5));
+    const shared = { store, id: "sess-M1" };
+    const a = await started(undefined, shared);
+    await turnOn(a, "m0");
+    shared.id = "sess-M2";
+    await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume" }, async (e: unknown) => e);
+    await a.hooks.get("classic.PostModelSwitch")!(a.$, { from_model: "claude-opus-5-5", to_model: "claude-haiku-4-5", source: "user" }, async (e: unknown) => e);
+    assert.match((await run(a.hooks, a.$, "")).text, /session\s+claude-haiku-4-5, nothing routed yet/);
+  });
+
+  test("what is spent with routing off survives a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-OFF" };
+    const a = await started(undefined, shared);
+    await turnOn(a, "o0");
+    await run(a.hooks, a.$, "off");
+    const spentOff = async (kit: ReturnType<typeof load>) => (await run(kit.hooks, kit.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1];
+    await turnOn(a, "o1");
+    const before = await spentOff(a);
+    await new Promise((r) => setTimeout(r, 5));
+    const b = load(undefined, shared);
+    assert.equal(await spentOff(b), before);
+  });
+
+  test("an expired cache on one resumed session does not carry into the next", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-EA" };
+    const kit = await started(undefined, shared);
+    await turnOn(kit, "e0");
+    shared.id = "sess-EB";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", prompt_cache_likely_expired: true }, async (e: unknown) => e);
+    shared.id = "sess-EC";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", context_tokens: 10_000, model: "claude-opus-5-5" }, async (e: unknown) => e);
+    kit.setContext(10_000);
+    kit.setTier("haiku", 0.95, 0);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "2+2", turnId: "e1" }, async (e: unknown) => e);
+    let sent = "";
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "e1", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-opus-5-5", "held on the warm cache, not priced as cold");
+  });
+
+  test("a spawn another hook denied is not recorded as an agent", async () => {
+    const kit = await started();
+    await kit.hooks.get("agent.spawn")!(
+      kit.$,
+      { prompt: "scan", description: "Scan repo", subagentType: "general-purpose", fork: false, background: false },
+      async () => ({ model: "claude-opus-5-5", deny: "not allowed" }),
+    );
+    assert.doesNotMatch((await run(kit.hooks, kit.$, "")).text, /Scan repo/);
+  });
+
+  test("/jev -- off, and a tab between words, are read as typed", async () => {
+    const kit = await started();
+    assert.match((await run(kit.hooks, kit.$, "-- off")).text, /routing off/);
+    assert.match((await run(kit.hooks, kit.$, "price\toff")).text, /price checks off/);
+    assert.match((await run(kit.hooks, kit.$, "sticky\t80%")).text, /80%/);
+  });
+
+  test("a reload mid-turn keeps the cost of steps not yet saved", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-MID" };
+    const a = await started(undefined, shared);
+    await turnOn(a, "p0");
+    await a.hooks.get("turn.start")!(a.$, { text: "big job", turnId: "p1" }, async (e: unknown) => e);
+    for (let i = 0; i < 3; i++)
+      await collect(a.hooks.get("turn.step")!(a.$, { turnId: "p1", index: i }, (e: { model: string }) => answeredBy(e.model, "tool_use")));
+    const before = (await run(a.hooks, a.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1];
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    assert.equal((await run(b.hooks, b.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1], before);
+  });
+
+  test("a go-ahead after the engine's summary compaction continues the tier that proposed the work", async () => {
+    const kit = await started();
+    kit.setTier("fable", 0.95, 3);
+    await turnOn(kit, "g1", "plan it");
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: [] }, async () => ({ messages: [] }));
+    let sent = "";
+    await kit.hooks.get("turn.start")!(kit.$, { text: "yes", turnId: "g2" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "g2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-fable-5-1");
+  });
+
+  test("Fable's first-request effort is for the first request only, not every step of the first turn", async () => {
+    const kit = load(undefined, { store: new Map(), id: "sess-FT" });
+    kit.setContext(null);
+    kit.setTier("fable", 0.95, 1);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "f1" }, async (e: unknown) => e);
+    const efforts: string[] = [];
+    for (let i = 0; i < 3; i++)
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "f1", index: i }, (e: { model: string; effort: string }) => (efforts.push(e.effort), answeredBy(e.model, i < 2 ? "tool_use" : "end_turn"))));
+    assert.equal(efforts[0], "high");
+    assert.deepEqual(efforts.slice(1), ["medium", "medium"]);
+  });
+
+  test("a notification after a turn that ended with no summary gets its own route line", async () => {
+    const kit = await started();
+    kit.fail();
+    await kit.hooks.get("turn.start")!(kit.$, { text: "go", turnId: "n1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "n1", index: 0 }, () => modelSays("partial")));
+    const woke = await turnOn(kit, "n2", "<task-notification><task-id>bash-1</task-id><summary>Background command finished</summary></task-notification>");
+    assert.match(woke, /^> ✳️ /);
+  });
+
+  test("past the limit, failed agents are dropped before completed ones, which a message could resume", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-TRIM" };
+    const kit = await started(undefined, shared);
+    const rows: { id: string; type: string; description: string; status: string }[] = [];
+    kit.$.agent.list = async () => rows;
+    for (let i = 0; i < 40; i++) {
+      const id = `agent-${i}`;
+      rows.push({ id, type: "Explore", description: "d", status: i < 10 ? "failed" : "completed" });
+      await kit.hooks.get("agent.spawn")!(
+        kit.$,
+        { prompt: "list files", description: "d", subagentType: "Explore", fork: false, background: true },
+        async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: id }),
+      );
+    }
+    const snap = shared.store.get("session:sess-TRIM") as { spawned: [string, number][] };
+    const kept = snap.spawned.map(([id]) => id);
+    assert.ok(kept.every((id) => Number(id.split("-")[1]) >= 8), `kept ${kept.join(",")}`);
+    assert.ok(kept.includes("agent-10"), "completed ones are kept while failed ones remain to drop");
+  });
+
+  test("a subagent's compaction does not replace the main loop's saved scoring", async () => {
+    const kit = await started({ TYPESAFE_API_KEY: "ts", AI_GATEWAY_API_KEY: undefined });
+    let calls = 0;
+    kit.$.http.fetch = (async (_u: string, init?: { body?: string }) => {
+      calls++;
+      const names = Object.keys(JSON.parse(init?.body ?? "{}").questions ?? {});
+      const answers: Record<string, { noul: number }> = {};
+      for (const n of names) answers[n] = { noul: 0.1 };
+      return { ok: true, status: 200, headers: {}, text: JSON.stringify({ answers }) };
+    }) as never;
+    const msgs = (tag: string) => {
+      const out: unknown[] = [{ role: "user", text: "go", toolUses: [], handle: `${tag}0` }];
+      for (let i = 1; i <= 10; i++) {
+        out.push({ role: "assistant", text: "", toolUses: [{ tool_use_id: `${tag}u${i}`, tool: "Read", input: {} }], handle: `${tag}a${i}` });
+        out.push({ role: "user", text: "", toolUses: [], toolResults: [{ tool_use_id: `${tag}u${i}`, text: "x".repeat(3000), isError: false }], handle: `${tag}r${i}` });
+      }
+      out.push({ role: "assistant", text: "done", toolUses: [], handle: `${tag}end` });
+      return out;
+    };
+    const main = msgs("m");
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "precompute", messages: main }, async () => ({ messages: [] }));
+    const afterMain = calls;
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", agentId: "agent-9", messages: msgs("s") }, async () => ({ messages: [] }));
+    const afterSub = calls;
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: main }, async () => ({ messages: [] }));
+    assert.equal(calls, afterSub, "the main loop's real compaction reused its scoring");
+    assert.ok(afterMain > 0);
+  });
+});
+
+describe("register: round-3 audit, persistence (2026-09-29)", () => {
+  test("an expired cache is still known after a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-EXP" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await a.hooks.get("classic.SessionStart")!(a.$, { source: "resume", prompt_cache_likely_expired: true, context_tokens: 60_000, model: "claude-opus-5-5" }, async (e: unknown) => e);
+    await a.hooks.get('command.run:{"command":"jev"}')!(a.$, { args: "quiet" });
+    await new Promise((r) => setTimeout(r, 5));
+    const b = load(undefined, shared);
+    b.setContext(60_000);
+    b.setTier("fable", 0.95, 3);
+    await b.hooks.get("turn.start")!(b.$, { text: "plan it", turnId: "x1" }, async (e: unknown) => e);
+    let sent = "";
+    await collect(b.hooks.get("turn.step")!(b.$, { turnId: "x1", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-fable-5-1", "staying is a rewrite too, so the upgrade is not held over the limit");
+  });
+  test("a switch confirmed by the first streamed text is saved, even when quiet writes no line", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-QC" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await a.hooks.get('command.run:{"command":"jev"}')!(a.$, { args: "quiet" });
+    a.setTier("opus", 0.95, 2);
+    await a.hooks.get("turn.start")!(a.$, { text: "implement", turnId: "q1" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "q1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    a.setTier("fable", 0.95, 3);
+    await a.hooks.get("turn.start")!(a.$, { text: "plan", turnId: "q2" }, async (e: unknown) => e);
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "q2", index: 0 }, () => modelSays("Let me")));
+    const snap = shared.store.get("session:sess-QC") as { unconfirmed: unknown };
+    assert.equal(snap.unconfirmed, null);
+  });
+  test("a notification's question to Jev says it is a task's report", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_NOTIFY_CONTINUE: "0" });
+    let instructions = "";
+    const inner = kit.$.http.fetch;
+    kit.$.http.fetch = (async (url: string, init?: { body?: string }) => {
+      instructions = JSON.parse(init?.body ?? "{}").questions?.tier?.instructions ?? "";
+      return inner(url, init);
+    }) as never;
+    await kit.hooks.get("turn.start")!(kit.$, { text: '<task-notification><task-id>t</task-id><summary>Agent "r" completed</summary></task-notification>', turnId: "k1" }, async (e: unknown) => e);
+    assert.match(instructions, /finished and reported back/);
+  });
+});

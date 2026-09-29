@@ -69,7 +69,13 @@ export function ttlOf(raw: string | undefined): Ttl {
 /** The price of the model the API named, or null for one we do not know. */
 export function priceOfModel(model: string): Price | null {
   if (typeof model !== "string") return null;
-  const id = model.toLowerCase();
+  // Bedrock spells an id `us.anthropic.claude-…-v1:0`, Vertex `claude-…@date`:
+  // the same model, priced by the id inside.
+  const id = model
+    .toLowerCase()
+    .replace(/^(?:[a-z]{2,}\.)*anthropic\./, "")
+    .replace(/-v\d+(?::\d+)?$/, "")
+    .replace(/@\d{8}$/, "");
   for (const [prefix, price] of OTHER_PRICE)
     if (id.startsWith(prefix)) return price;
   return null;

@@ -189,6 +189,11 @@ function stepUp(
   );
 }
 
+/** The tier a step-up says was too long: the running one if it was, else Jev's pick. */
+function outgrownOf(running: Decision | null, decision: Decision, contextTokens: number): Tier {
+  return running !== null && !fitsWindow(running.tier, contextTokens) ? running.tier : decision.tier;
+}
+
 /** What started a turn nobody typed, in plain words; null for a typed prompt. */
 export function originOf(
   attempt: Pick<Attempt, "kind" | "agent">,
@@ -212,6 +217,17 @@ const tagOf = (text: string, tag: string) =>
 export function notificationOf(text: string): string | null {
   if (!NOTIFICATION.test(text)) return null;
   return tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`;
+}
+
+/**
+ * What Jev is told about a notification turn: the task's one-line summary,
+ * and any text after the envelope, never the task's result, which can quote
+ * whatever the agent read.
+ */
+export function notificationStateOf(text: string): string {
+  const summary = notificationOf(text) ?? "";
+  const after = text.split("</task-notification>").slice(1).join(" ").trim();
+  return [summary, after].filter((p) => p !== "").join("\n");
 }
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
@@ -499,8 +515,11 @@ export function attemptOf(
             ...(decision.probabilities !== undefined
               ? { probabilities: decision.probabilities }
               : {}),
-            outgrew: hold.running?.tier ?? decision.tier,
-            ...(decision.tier !== (hold.running?.tier ?? decision.tier)
+            // What was too long: the running tier when it was (a running
+            // tier that fits but was turned off was not outgrown), else
+            // Jev's pick.
+            outgrew: outgrownOf(hold.running, decision, hold.economics.contextTokens),
+            ...(decision.tier !== outgrownOf(hold.running, decision, hold.economics.contextTokens)
               ? { wanted: decision.tier }
               : {}),
             ...(decision.forced ? { forced: true as const } : {}),
@@ -868,20 +887,25 @@ export function replySummary(turns: readonly Attempt[]): string | null {
       );
       // How the tier was settled, always in this spot: Jev's confidence, the
       // prompt's own pick, or a go-ahead carrying the last one on.
+      // A held turn's confidence is in the tier it did not move to; the
+      // note under this line says so, so none is shown here.
       const how = d.forced
         ? "your pick"
         : only.kind === "continue" || only.kind === "nudge"
           ? "continuing"
-          : sureOf(d, only.kind);
+          : d.held !== undefined
+            ? ""
+            : sureOf(d, only.kind);
       if (how !== "") head.push(how);
     } else {
       head.push(only.usage ? answeredBy(only) : "session model");
       head.push(`not routed: ${only.skipped}`);
     }
   } else {
+    // A tier the person named is marked, as the single-turn line says "your pick".
     const legs = main.map((t) =>
       "decision" in t
-        ? `${t.decision.tier}${t.usage && !answeredBy(t).endsWith("✓") ? " ⚠" : ""}`
+        ? `${t.decision.tier}${t.decision.forced ? " (your pick)" : ""}${t.usage && !answeredBy(t).endsWith("✓") ? " ⚠" : ""}`
         : "session",
     );
     const woken = main.filter((t) => t.kind === "notify").length;
@@ -981,7 +1005,9 @@ export function statusReport(status: Status): string {
       `  provider  ${status.provider.name} · ${key} is set · ${status.provider.model}`,
     );
   } else {
-    lines.push(`  provider  NO KEYS — nothing will route`);
+    // The reason names the fix: a missing key, a bad base URL, a provider
+    // forced without its key. "No keys" alone sent people after the wrong one.
+    lines.push(`  provider  NOT SET UP — ${status.provider.reason}; nothing will route`);
   }
 
   lines.push(`  budget    ${status.timeoutMs}ms`);
@@ -999,9 +1025,11 @@ export function statusReport(status: Status): string {
       `  price     ${
         status.price
           ? "on, a downgrade has to pay" +
-            (status.upgradeMax != null
-              ? `, an upgrade may cost ${usd(status.upgradeMax)} over staying`
-              : "")
+            (status.upgradeMax === 0
+              ? ", an upgrade may not cost more than staying"
+              : status.upgradeMax != null
+                ? `, an upgrade may cost ${usd(status.upgradeMax)} over staying`
+                : "")
           : "off (/jev price on)"
       }`,
     );
@@ -1052,7 +1080,8 @@ export function statusReport(status: Status): string {
 function sessionLine(status: Status): string {
   const model = status.sessionModel ?? "unknown";
   if (status.running === null) return `${model}, nothing routed yet`;
-  return status.running.model === model
+  // `[1m]` and a date are spellings of the same model.
+  return baseModel(status.running.model) === baseModel(model)
     ? `${model}, still on it`
     : `${model}, running on ${status.running.tier}`;
 }
@@ -1359,7 +1388,8 @@ export function stickyCommand(
 ): { sticky: number | null; text: string } {
   const arg = rest.trim().toLowerCase();
 
-  if (arg === "off") {
+  // The words JEV_ROUTER_STICKY reads as off. `0` stays a bar out of range.
+  if (arg === "off" || arg === "false" || arg === "no" || arg === "none") {
     return {
       sticky: null,
       text: "No confidence bar: switches follow Jev, subject to the price checks (/jev price). /jev sticky brings the bar back.",
@@ -1406,7 +1436,8 @@ export function tiersCommand(
   rest: string,
   current: readonly Tier[],
 ): { excluded: Tier[]; text: string } {
-  const parts = rest.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  // Commas and semicolons separate as spaces do, as JEV_ROUTER_EXCLUDE reads them.
+  const parts = rest.trim().toLowerCase().split(/[\s,;]+/).filter(Boolean);
   if (parts.length === 0) {
     return { excluded: [...current], text: tiersReply(current) };
   }
@@ -1483,7 +1514,8 @@ export function ceilingCommand(
   rest: string,
   current: Ceiling,
 ): { ceiling: Ceiling; text: string } {
-  const parts = rest.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  // Commas and semicolons separate as spaces do, as JEV_ROUTER_EXCLUDE reads them.
+  const parts = rest.trim().toLowerCase().split(/[\s,;]+/).filter(Boolean);
   if (parts.length === 0) {
     return { ceiling: current, text: ceilingReply(current) };
   }
