@@ -250,6 +250,22 @@ Ready and merged, held back from a version bump until approved:
   `seen:` record now decides which one holds it.
 - **A notification's text sent to Jev is its summaries alone**: a result
   that quotes the closing tag can no longer carry what follows it along.
+- **Typed text carries the engine's notification only when it ends with
+  one**, as the engine appends it: such text is cut at its first envelope,
+  whatever quotes it, so a result that quotes the closing tag or a fence
+  cannot reach Jev; a quoted example the person's request follows is sent
+  whole.
+- Only the chosen provider's key and pinned model are checked: a stale key
+  for the other provider, or a pin the gateway ignores, blocks nothing; a
+  pinned model with build metadata (`+build.5`) is accepted.
+- A saved model id of any spelling restores; only a line break or a
+  backtick makes it unreadable, so a new id cannot lose the whole snapshot.
+- "Missing bearer token." in an error is kept: only a key-like value after
+  `Bearer` is redacted.
+- `/jev` compares a long Bedrock or Vertex session model whole, not as cut
+  for the line; "if it works, switch to haiku" is a condition again.
+- A summary fence whose long first line streams in small pieces is held
+  without rescanning it for each piece.
 - **A resume that names no model no longer carries an earlier resume's
   model into another session**: resuming one session and then another
   could send the first one's model (a tier turned off included) to the

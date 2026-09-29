@@ -778,8 +778,9 @@ const POLITE_CONDITION = new RegExp(
       "you are (?:ok|okay|happy|fine|good) with (?:it|that|this)",
       "i (?:say|tell you) (?:otherwise|so|to stop)",
       "i (?:change my mind|change it|switch (?:it )?back)",
-      "(?:that|it) works(?: for you)?",
       "it'?s all the same to you",
+      // Acceptable to the model, not an outcome: "if it works" alone is one.
+      "(?:that|it|this) works for you",
       "possible",
       "(?:that|it)(?:'?s| is) (?:ok|okay|fine|alright|all right|not too much(?: trouble)?)(?: with you)?",
     ].join("|") +

@@ -437,3 +437,10 @@ describe("shortError never quotes a key (2026-09-29)", () => {
     assert.match(out, /Bearer …/);
   });
 });
+
+describe("shortError keeps advice about a bearer token (2026-09-29)", () => {
+  test("only a key-like value is redacted", async () => {
+    const { shortError } = await import("../hooks/jev.ts");
+    assert.equal(shortError("HTTP 401: Missing bearer token. Set AI_GATEWAY_API_KEY"), "HTTP 401: Missing bearer token");
+  });
+});

@@ -235,7 +235,11 @@ export function originOf(
   return null;
 }
 
-const NOTIFICATION = /^\s*<task-notification>/;
+/**
+ * A turn that is a task's notification: it opens with the envelope, an
+ * element after the tag (prose that opens with the tag is a prompt).
+ */
+const NOTIFICATION = /^\s*<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
 /**
  * A tag's text, found by hand: the lazy pattern it replaces rescanned to the
  * end from every opening tag, quadratic on a run of openings with no close.
@@ -253,8 +257,7 @@ const tagOf = (text: string, tag: string): string | undefined => {
  * the row should say instead of the XML envelope.
  */
 export function notificationOf(text: string): string | null {
-  // An envelope, not prose that opens with the tag.
-  if (!NOTIFICATION.test(text) || !hasNotification(text)) return null;
+  if (!NOTIFICATION.test(text)) return null;
   return plain(tagOf(text, "summary") ?? `task ${tagOf(text, "task-id") ?? "?"}`);
 }
 
@@ -282,59 +285,20 @@ export function notificationStateOf(text: string): string {
  * A notification's envelope, not a mention of the tag: an element follows
  * the opening tag (the engine's fields, in any order, or a comment).
  */
-const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/gi;
+const ENVELOPE = /<task-notification\b[^>\n]*>\s*<(?:[a-z][\w-]*[\s/>]|!--)/i;
 
 /**
  * Where the engine's notification starts in text the person typed ahead of
- * it, or -1. One the person quotes whole — its closing tag inside the same
- * closed code block, code span, paste or double quotes — is theirs, and
- * their request after it is sent. Only a quote that closes, and closes past
- * the envelope's own end, counts: an unclosed fence, or a paste opened in
- * the typed text and closed inside a task's result, cannot hide the
- * engine's envelope, so the result stays withheld.
+ * it, or -1. The engine appends its envelope, so text that carries one ends
+ * with the closing tag; a quoted example that the person's own request
+ * follows (in a fence, a paste, a sentence) does not, and is sent whole.
+ * Text that does end so is cut at its first envelope, wherever it is and
+ * whatever quotes it: a task's result can quote anything, fences and
+ * closing tags included, so nothing after the first envelope is trusted.
  */
 function envelopeAt(text: string): number {
-  // Closed quotes, as [start, end) spans.
-  const spans: [number, number][] = [];
-  for (const re of [/```[\s\S]*?```/g, /`[^`\n]*`/g, /"[^"\n]{0,400}"/g, /\u201c[^\u201d\n]{0,400}\u201d/g])
-    for (const m of text.matchAll(re)) spans.push([m.index!, m.index! + m[0].length]);
-  spans.push(...pastedSpans(text));
-  spans.sort((a, b) => a[0] - b[0]);
-  // Swept in order: the furthest a quote opened so far reaches.
-  let next = 0;
-  let reach = -1;
-  for (const m of text.matchAll(ENVELOPE)) {
-    const at = m.index!;
-    const close = text.indexOf("</task-notification", at);
-    // Prose that names the tag has neither a close nor a result after it.
-    if (close === -1 && text.indexOf("<result", at) === -1) continue;
-    while (next < spans.length && spans[next]![0] <= at) reach = Math.max(reach, spans[next++]![1]);
-    if (close !== -1 && reach > close) continue;
-    return at;
-  }
-  return -1;
-}
-
-/** The closed `<pasted_content …>…</pasted_content>` blocks, as spans; by hand, so linear. */
-function pastedSpans(text: string): [number, number][] {
-  const OPEN = "<pasted_content";
-  const CLOSE = "</pasted_content";
-  const spans: [number, number][] = [];
-  let at = text.indexOf(OPEN);
-  while (at !== -1) {
-    const next = text[at + OPEN.length];
-    if (next !== undefined && /\w/.test(next)) {
-      at = text.indexOf(OPEN, at + 1);
-      continue;
-    }
-    const close = text.indexOf(CLOSE, at);
-    if (close === -1) break;
-    const closeEnd = text.indexOf(">", close);
-    if (closeEnd === -1) break;
-    spans.push([at, closeEnd + 1]);
-    at = text.indexOf(OPEN, closeEnd + 1);
-  }
-  return spans;
+  if (!/<\/task-notification\s*>\s*$/i.test(text.slice(-200))) return -1;
+  return text.search(ENVELOPE);
 }
 
 /** Whether `text` carries a task's notification anywhere, typed text before it or not. */
@@ -344,7 +308,7 @@ export function hasNotification(text: string): boolean {
 
 /** The task a notification is about: the agent's id, as `$.agent.list()` names it. */
 export function notificationTaskOf(text: string): string | null {
-  if (!NOTIFICATION.test(text) || !hasNotification(text)) return null;
+  if (!NOTIFICATION.test(text)) return null;
   return tagOf(text, "task-id") ?? null;
 }
 
@@ -1218,8 +1182,9 @@ export function statusReport(status: Status): string {
 function sessionLine(status: Status): string {
   const model = status.sessionModel === null ? "unknown" : plain(status.sessionModel);
   if (status.running === null) return `${model}, nothing routed yet`;
-  // `[1m]` and a date are spellings of the same model.
-  return baseModel(status.running.model) === baseModel(model)
+  // `[1m]` and a date are spellings of the same model; compared whole, not
+  // as shown (a long Bedrock or Vertex id is cut for the line).
+  return status.sessionModel !== null && baseModel(status.running.model) === baseModel(status.sessionModel)
     ? `${model}, still on it`
     : `${model}, running on ${status.running.tier}`;
 }
@@ -1480,7 +1445,7 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
    * as it was when checked: text added after it is checked on its own,
    * rather than the whole fence rescanned for every piece.
    */
-  private pinned: { fence: number; length: number; close: number } | null = null;
+  private pinned: { fence: number; length: number; close: number; open?: true } | null = null;
 
   /** A text piece in; the pieces to pass on now. */
   push(chunk: C): C[] {
@@ -1559,8 +1524,13 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
     // Held from a fence (after the blank lines held with it) whose first
     // line is in: pinned, so later pieces are checked on their own.
     const fence = from === 0 ? this.held.search(/[^\n]/) : -1;
-    if (fence !== -1 && this.held.startsWith("```\n", fence) && this.held.indexOf("\n", fence + 4) !== -1)
-      this.pinned = { fence, length: this.held.length, close: this.held.indexOf("\n```", fence + 4) };
+    if (fence !== -1 && this.held.startsWith("```\n", fence)) {
+      this.pinned =
+        this.held.indexOf("\n", fence + 4) !== -1
+          ? { fence, length: this.held.length, close: this.held.indexOf("\n```", fence + 4) }
+          : // Its first line still arriving: held while it has no backtick.
+            { fence, length: this.held.length, close: -1, open: true };
+    }
     return now;
   }
 
@@ -1571,6 +1541,14 @@ export class ImitationFilter<C extends { kind: "text"; index: number; text: stri
   private stillPinned(): boolean {
     const pin = this.pinned;
     if (pin === null || this.held.length - pin.fence - 3 > SUMMARY_MAX) return false;
+    if (pin.open) {
+      // A newline ends the first line: checked whole, once. A backtick in
+      // it means no summary.
+      const added = this.held.slice(pin.length);
+      if (/[\n`]/.test(added)) return false;
+      this.pinned = { ...pin, length: this.held.length };
+      return true;
+    }
     let close = pin.close;
     if (close === -1) close = this.held.indexOf("\n```", Math.max(pin.fence + 4, pin.length - 4));
     if (close !== -1 && /\S/.test(this.held.slice(Math.max(close + 4, pin.length)))) return false;

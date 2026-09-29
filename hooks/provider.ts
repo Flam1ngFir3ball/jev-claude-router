@@ -123,17 +123,22 @@ export function providerOf(raw: ProviderEnv): ProviderResult {
     TYPESAFE_API_KEY: keyOf(raw.TYPESAFE_API_KEY),
     AI_GATEWAY_API_KEY: keyOf(raw.AI_GATEWAY_API_KEY),
   };
+  const chosen = chooseProvider(env);
+  if (!chosen.ok) return chosen;
+  // Only what the chosen provider uses is checked: a stale key for the
+  // other one, or a pinned model the gateway ignores, blocks nothing.
   // A key with a line break or other character inside it cannot go in a
   // header: the request would fail with an error quoting the header, key
   // and all, into the route line and the store. Refused up front instead.
-  for (const name of ["TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"] as const) {
-    const key = env[name];
-    if (key !== undefined && !/^[\x21-\x7e]+$/.test(key))
-      return { ok: false, reason: `${name} has a line break, space or other character a key cannot have` };
-  }
-  const pinned = (env.JEV_ROUTER_JEV_MODEL ?? "").trim();
-  if (pinned !== "" && !/^[\w.:/@-]{1,100}$/.test(pinned))
+  const keyName = chosen.name === "typesafe" ? "TYPESAFE_API_KEY" : "AI_GATEWAY_API_KEY";
+  if (!/^[\x21-\x7e]+$/.test(chosen.apiKey))
+    return { ok: false, reason: `${keyName} has a line break, space or other character a key cannot have` };
+  if (chosen.name === "typesafe" && !/^[\w.:/@+-]{1,100}$/.test(chosen.model))
     return { ok: false, reason: "JEV_ROUTER_JEV_MODEL is not a model id" };
+  return chosen;
+}
+
+function chooseProvider(env: ProviderEnv): ProviderResult {
   const named = (env.JEV_ROUTER_PROVIDER ?? "").toLowerCase().trim();
   // The gateway's other names are read as the gateway; anything else
   // unknown falls back to choosing by the keys set, as before.

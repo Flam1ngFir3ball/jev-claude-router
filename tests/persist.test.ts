@@ -246,3 +246,13 @@ describe("persist: a snapshot the router could not have written is refused (2026
     assert.equal(roundTrip({ ...s, sessionModel: "claude-opus-5\n# x" })!.sessionModel, null);
   });
 });
+
+describe("persist: a model id of an unforeseen spelling restores (2026-09-29)", () => {
+  test("spaces and plus signs are kept; a line break is not", () => {
+    const s = stateWith({ prompt: "p", ms: 1, decision });
+    assert.equal(roundTrip({ ...s, sessionModel: "Opus 4.1" })!.sessionModel, "Opus 4.1");
+    const plus = { ...decision, tier: "opus" as const, model: "claude-opus-4-1+beta" };
+    assert.deepEqual(roundTrip({ ...s, running: plus })!.running, plus);
+    assert.equal(roundTrip({ ...s, sessionModel: "claude-opus-5\n# x" })!.sessionModel, null);
+  });
+});

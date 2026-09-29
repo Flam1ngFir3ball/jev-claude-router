@@ -73,6 +73,9 @@ export function messageOf(error: unknown): string {
   }
 }
 
+/** A `Bearer` header value that looks like a key, for redacting from error text. */
+export const BEARER_VALUE = /\bBearer\s+(?=[^\s"']*[\d_])[^\s"']{8,}/gi;
+
 /**
  * An engine fetch error as a few words for the route line: without the
  * engine's "<plugin>: $.http.fetch(<url>) failed:" preamble, repeats and
@@ -91,7 +94,9 @@ export function shortError(detail: string): string {
     .join(" ")
     .replace(/^[\w.-]+: \$\.http\.fetch\([^)]*\) failed: /, "")
     // An error that quotes the request's header quotes the key with it.
-    .replace(/\bBearer\s+\S+/gi, "Bearer …")
+    // Only a value that looks like a key (long, with a digit or underscore):
+    // "Missing bearer token." is advice, not a key.
+    .replace(BEARER_VALUE, "Bearer …")
     .split(/[.?!]\s/)[0]!
     .replace(/^(\w+): \1\b:?\s*/, "$1: ")
     .replace(/:\s*$/, "")

@@ -1659,3 +1659,35 @@ describe("status: streamed and whole agree on long copies (2026-09-29)", () => {
     assert.ok(performance.now() - t < 1500, `${Math.round(performance.now() - t)}ms`);
   });
 });
+
+describe("status: the engine's notification is the text's end (2026-09-29)", () => {
+  test("a quoted example the person's request follows is sent whole, however it is quoted", () => {
+    for (const text of [
+      "Why does my parser choke on this?\n```\n<task-notification>\n<task-id>x</task-id>\n<result>partial output...\n```\nPlease rewrite the whole parser",
+      "In `<task-notification><summary>` the engine puts a summary; where is `<result>` rendered? Please refactor the renderer.",
+      "<pasted_content>\n<task-notification>\n<task-id>x</task-id>\n<result>log line</pasted_content>\nExplain this and redesign the pipeline.",
+    ])
+      assert.equal(hasNotification(text), false, text);
+  });
+  test("an envelope whose result quotes the closing tag and a fence, after an unclosed typed fence, withholds the result", () => {
+    const text =
+      "see ```\n<task-notification>\n<task-id>a1</task-id>\n<summary>Agent done</summary>\n<result>it prints </task-notification> then\n```\nSECRET_RESULT_TEXT\n```\n</result>\n</task-notification>";
+    assert.equal(hasNotification(text), true);
+    assert.equal(notificationStateOf(text), "see ```\nAgent done");
+  });
+  test("a long Bedrock session model is compared whole in /jev", () => {
+    const arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-4-1-20250805-v1:0";
+    const report = statusReport({ ...base, sessionModel: arn, running: { tier: "opus", model: arn, effort: "high", confidence: 1 } });
+    assert.match(report, /still on it/);
+  });
+  test("a summary fence whose long first line streams a character at a time stays linear", () => {
+    const text = ("```\n" + "x".repeat(15_900) + "\n").repeat(7);
+    const f = new ImitationFilter<{ kind: "text"; index: number; text: string }>();
+    const t = performance.now();
+    let out = "";
+    for (let i = 0; i < text.length; i++) for (const c of f.push({ kind: "text", index: 0, text: text[i]! })) out += c.text;
+    for (const c of f.end()) out += c.text;
+    assert.ok(performance.now() - t < 800, `${Math.round(performance.now() - t)}ms`);
+    assert.equal(out, withoutImitations(text));
+  });
+});

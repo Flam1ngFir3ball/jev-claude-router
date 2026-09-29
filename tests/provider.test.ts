@@ -266,3 +266,16 @@ describe("keys and model ids a header or the route line cannot carry (2026-09-29
     assert.ok(performance.now() - t < 200);
   });
 });
+
+describe("only what the chosen provider uses is checked (2026-09-29)", () => {
+  it("a stale key or pinned model for the other provider blocks nothing", () => {
+    const g = providerOf({ JEV_ROUTER_PROVIDER: "gateway", AI_GATEWAY_API_KEY: "vck_abc123", TYPESAFE_API_KEY: "paste key here" } as never);
+    assert.ok(g.ok && g.name === "gateway");
+    const t = providerOf({ TYPESAFE_API_KEY: "ts_live_abc", AI_GATEWAY_API_KEY: "has space" } as never);
+    assert.ok(t.ok && t.name === "typesafe");
+    const gm = providerOf({ AI_GATEWAY_API_KEY: "vck_abc123", JEV_ROUTER_JEV_MODEL: "jev-1.13.0+build.5" } as never);
+    assert.ok(gm.ok);
+    const tm = providerOf({ TYPESAFE_API_KEY: "ts_live_abc", JEV_ROUTER_JEV_MODEL: "jev-1.13.0+build.5" } as never);
+    assert.ok(tm.ok && tm.model === "jev-1.13.0+build.5");
+  });
+});

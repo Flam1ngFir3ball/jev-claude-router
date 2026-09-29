@@ -213,6 +213,8 @@ export const OVERRIDE_CORPUS_ROUND7: readonly (readonly [string, string | null])
   ["unless you think otherwise, use opus", "opus"],
   ["until I switch back, use opus", "opus"],
   ["if you hit a 429, use haiku", null],
+  ["Run the test suite. If it works, switch to haiku for the cleanup.", null],
+  ["Try the migration first; if that works, use sonnet for the rest.", null],
   ["Document it: when you're done, use sonnet", null],
   ["if you're able, use opus", "opus"],
   // a condition that mentions the person or the model is still a condition
