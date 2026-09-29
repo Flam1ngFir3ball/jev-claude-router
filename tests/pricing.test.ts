@@ -161,3 +161,15 @@ describe("pricing: Bedrock and Vertex ids (2026-09-29)", () => {
     assert.deepEqual(priceOfModel("claude-sonnet-5-5@20260901"), PRICE.sonnet);
   });
 });
+
+describe("round-4 audit (2026-09-29)", () => {
+  test("the cold break-even agrees with the cold verdict", () => {
+    const be = breakEvenTokens("fable", "haiku", 2000, "1h", PRICE.fable, true);
+    assert.equal(switchVerdict("fable", "haiku", be - 1, 2000, "1h", PRICE.fable, true).hold, false);
+    assert.equal(switchVerdict("fable", "haiku", be + 1, 2000, "1h", PRICE.fable, true).hold, true);
+    assert.ok(be > breakEvenTokens("fable", "haiku", 2000, "1h"));
+  });
+  test("Vertex's Opus 4 id is Opus 4.0's price", () => {
+    assert.equal(priceOfModel("claude-opus-4@20250514")?.input, 15);
+  });
+});

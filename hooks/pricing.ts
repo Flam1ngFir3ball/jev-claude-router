@@ -76,6 +76,8 @@ export function priceOfModel(model: string): Price | null {
     .replace(/^(?:[a-z]{2,}\.)*anthropic\./, "")
     .replace(/-v\d+(?::\d+)?$/, "")
     .replace(/@\d{8}$/, "");
+  // Bare, it is Opus 4.0 (Vertex's `claude-opus-4@date` comes to this).
+  if (id === "claude-opus-4") return OPUS_4_0;
   for (const [prefix, price] of OTHER_PRICE)
     if (id.startsWith(prefix)) return price;
   return null;
@@ -254,11 +256,14 @@ export function breakEvenTokens(
   ttl: Ttl = "1h",
   /** The running model's own price, as in `switchVerdict`. */
   fromPrice: Price = PRICE[from],
+  /** The running model's cache has expired, as in `switchVerdict`. */
+  fromCold = false,
 ): number {
   const write = (p: Price) => (ttl === "1h" ? p.write1h : p.write5m);
   // stay = ctx·read(from) + out·output(from); go = ctx·(write(to)+write(from)) + out·output(to)
   // go < stay  ⇔  ctx·(write(to)+write(from)−read(from)) < out·(output(from)−output(to))
-  const perCtx = write(PRICE[to]) + write(fromPrice) - fromPrice.read;
+  // Cold, staying writes too: read(from) becomes write(from).
+  const perCtx = write(PRICE[to]) + write(fromPrice) - (fromCold ? write(fromPrice) : fromPrice.read);
   const perOut = fromPrice.output - PRICE[to].output;
   if (perOut <= 0 || perCtx <= 0) return 0;
   return Math.floor((outputTokens * perOut) / perCtx);

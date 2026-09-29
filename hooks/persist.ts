@@ -90,6 +90,8 @@ export type State = {
   unconfirmed: { was: Decision | null } | null;
   /** The engine said the resumed session's cache expired, and no response has written it since. */
   cacheExpired: boolean;
+  /** When the snapshot was written; only from `unpack`, since `pack` stamps its own. */
+  savedAt?: number;
 };
 
 type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
@@ -309,6 +311,7 @@ export function unpack(raw: unknown): State | null {
         ? { was: raw.unconfirmed.was as Decision | null }
         : null,
     cacheExpired: raw.cacheExpired === true,
+    ...(typeof raw.savedAt === "number" && Number.isFinite(raw.savedAt) ? { savedAt: raw.savedAt } : {}),
   };
 }
 

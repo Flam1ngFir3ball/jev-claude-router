@@ -1526,7 +1526,7 @@ describe("register: a downgrade priced against the context", () => {
     await turn(hooks, $, "v1", "plan");
     setContext(200_000);
     const status = await run(hooks, $, "");
-    assert.match(status.text, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
+    assert.match(status.text, /cache\s+1h writes · 200k context · fable→haiku pays below [\d.]+k/);
     assert.match(status.text, /spent\s+\$0\.\d+ this session/);
     assert.match(status.text, /fable-5-1 ✓ · \$0\.\d+ · 10k in \(90% cached\) · 3k out/);
   });
@@ -4077,5 +4077,116 @@ describe("register: round-3 audit, persistence (2026-09-29)", () => {
     }) as never;
     await kit.hooks.get("turn.start")!(kit.$, { text: '<task-notification><task-id>t</task-id><summary>Agent "r" completed</summary></task-notification>', turnId: "k1" }, async (e: unknown) => e);
     assert.match(instructions, /finished and reported back/);
+  });
+});
+
+describe("register: round-4 audit (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  const turnOn = async (kit: ReturnType<typeof load>, id: string, text = "x") => {
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+    const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    return chunks.filter((c) => c.kind === "text").map((c) => c.text).join("");
+  };
+  const spend = async (kit: ReturnType<typeof load>) => (await run(kit.hooks, kit.$, "")).text.match(/spent\s+(\$[\d.]+)/)?.[1];
+
+  test("a reload does not take the old copy's state over a newer snapshot another process saved", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-NEWER" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await turnOn(a, "h1");
+    // What the first process's copy holds: its own last save.
+    const stale = JSON.parse(JSON.stringify(shared.store.get("session:sess-NEWER"))) as { savedAt: number };
+    await new Promise((r) => setTimeout(r, 1100));
+    // Another process goes on in the session and saves.
+    const other = load(undefined, shared);
+    await other.hooks.get("session.start")!(other.$, {}, async (e: unknown) => e);
+    for (const id of ["h2", "h3", "h4"]) await turnOn(other, id);
+    const newer = await spend(other);
+    await new Promise((r) => setTimeout(r, 5));
+    // Back in the first process, the plugin reloads. The harness runs both
+    // "processes" in one runtime, so the replaced copy's live state is set
+    // to what the first process's copy would hold.
+    (globalThis as { __jevRouterLive?: unknown }).__jevRouterLive = () => ({ key: "session:sess-NEWER", state: stale, savedAt: stale.savedAt });
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    assert.equal(await spend(b), newer);
+  });
+
+  test("a resume that says the cache expired is not overruled by the resumed session's snapshot", async () => {
+    const store = new Map<string, unknown>();
+    const s2 = load(undefined, { store, id: "sess-X2" });
+    await s2.hooks.get("session.start")!(s2.$, {}, async (e: unknown) => e);
+    await turnOn(s2, "z1");
+    await new Promise((r) => setTimeout(r, 5));
+    const shared = { store, id: "sess-X1" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await turnOn(kit, "z0");
+    shared.id = "sess-X2";
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume", prompt_cache_likely_expired: true, context_tokens: 60_000, model: "claude-opus-5-5" }, async (e: unknown) => e);
+    kit.setContext(60_000);
+    kit.setTier("fable", 0.95, 3);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "plan it", turnId: "z2" }, async (e: unknown) => e);
+    let sent = "";
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "z2", index: 0 }, (e: { model: string }) => ((sent = e.model), answeredBy(e.model))));
+    assert.equal(sent, "claude-fable-5-1");
+  });
+
+  test("an agent spawned in parallel, not listed yet, outlives completed ones past the limit", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-PAR" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    const rows: { id: string; type: string; description: string; status: string }[] = [];
+    kit.$.agent.list = async () => rows;
+    const spawn = (id: string) =>
+      kit.hooks.get("agent.spawn")!(kit.$, { prompt: "list", description: "d", subagentType: "Explore", fork: false, background: true }, async (e: { model?: string }) => ({ model: e.model ?? "inherit", agentId: id }));
+    for (let i = 0; i < 31; i++) {
+      rows.push({ id: `c${i}`, type: "Explore", description: "d", status: "completed" });
+      await spawn(`c${i}`);
+    }
+    await spawn("X");
+    rows.push({ id: "Y", type: "Explore", description: "d", status: "running" });
+    await spawn("Y");
+    const snap = shared.store.get("session:sess-PAR") as { spawned: [string, number][] };
+    assert.ok(snap.spawned.some(([id]) => id === "X"), "X kept");
+  });
+
+  test("an agent the router left alone gets one row, not one per turn", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("agent.spawn")!(kit.$, { prompt: "p", description: "Named", subagentType: "Explore", fork: false, background: true, model: "haiku" }, async () => ({ model: "claude-haiku-4-5", agentId: "agent-1" }));
+    for (const t of ["s1", "s2", "s3"])
+      await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: t, index: 0, agentId: "agent-1" }, (e: { model: string }) => answeredBy(e.model ?? "claude-haiku-4-5")));
+    const rows = (await run(kit.hooks, kit.$, "")).text.split("\n").filter((l) => /not routed/.test(l));
+    assert.equal(rows.length, 1);
+  });
+
+  test("a reply of the engine's nudges alone stays bounded in the snapshot", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-NUDGE" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await turnOn(kit, "t0", "go");
+    for (let i = 0; i < 150; i++) await kit.hooks.get("turn.start")!(kit.$, { text: "", turnId: `nu${i}` }, async (e: unknown) => e);
+    const snap = shared.store.get("session:sess-NUDGE") as { reply: number[] };
+    assert.ok(snap.reply.length <= 64, `reply ${snap.reply.length}`);
+  });
+
+  test("/clear forgets the last compaction", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("session.compact")!(kit.$, { trigger: "auto", messages: [{ role: "user", text: "a", toolUses: [], handle: "h" }] }, async () => ({ messages: [] }));
+    assert.match((await run(kit.hooks, kit.$, "")).text, /last:/);
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "clear" }, async (e: unknown) => e);
+    assert.doesNotMatch((await run(kit.hooks, kit.$, "")).text, /last:/);
+  });
+
+  test("/jev quiet between turn.start and the first text drops that turn's line", async () => {
+    const kit = load();
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "qq" }, async (e: unknown) => e);
+    await run(kit.hooks, kit.$, "quiet");
+    const chunks = await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "qq", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    assert.doesNotMatch(chunks.filter((c) => c.kind === "text").map((c) => c.text).join(""), /^> ✳️/);
   });
 });

@@ -56,6 +56,20 @@ export function stateOf(text: string): string {
     : `${headOf(trimmed, MAX_STATE_CHARS)}…`;
 }
 
+/**
+ * An error's message as text, whatever was thrown: a fetch may reject with
+ * something that is not an Error, or one whose message is not a string, and
+ * turning that into text must not itself throw.
+ */
+export function messageOf(error: unknown): string {
+  try {
+    if (error instanceof Error && typeof error.message === "string") return error.message;
+    return String(error);
+  } catch {
+    return "unknown error";
+  }
+}
+
 /** A timeout from the environment, or the default when it is unusable. */
 /**
  * An engine fetch error as a few words for the route line: without the
@@ -285,8 +299,7 @@ export async function askJev(args: AskArgs): Promise<JevResult> {
         ms: since(),
       };
     }
-    const detail = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: `request failed: ${shortError(detail)}`, ms: since() };
+    return { ok: false, reason: `request failed: ${shortError(messageOf(error))}`, ms: since() };
   } finally {
     timer.abort();
     if (onCeded) args.signal?.removeEventListener("abort", onCeded);

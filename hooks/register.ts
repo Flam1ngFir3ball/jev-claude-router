@@ -96,6 +96,12 @@ type Engine = {
   clock: { sleep: (ms: number, options?: { signal?: AbortSignal }) => Promise<unknown> };
 };
 
+/** How much later than a copy's own last save a stored snapshot must be to count as another's. */
+const HANDOFF_SLACK_MS = 1000;
+
+/** Turns a reply keeps for its summary; past this the oldest go. */
+const REPLY_LIMIT = 64;
+
 /** Whether two ceilings cap every tier the same. */
 const sameCeiling = (a: Ceiling, b: Ceiling) => TIERS.every((t) => a[t] === b[t]);
 
@@ -621,7 +627,7 @@ export function register(on: On) {
   const runtime = globalThis as {
     __jevRouterNewest?: number;
     /** The newest copy's live state, for the copy that replaces it. */
-    __jevRouterLive?: () => { key: string; state: unknown } | null;
+    __jevRouterLive?: () => { key: string; state: unknown; savedAt: number } | null;
   };
   const birth = Math.max(
     Date.now() + Math.random() * 0.001,
@@ -634,19 +640,25 @@ export function register(on: On) {
   // for the same session, once, over the store's older snapshot.
   let previousLive = runtime.__jevRouterLive;
   runtime.__jevRouterLive = () =>
-    snapshotKey ? { key: snapshotKey, state: pack(stateNow()) } : null;
+    snapshotKey ? { key: snapshotKey, state: pack(stateNow()), savedAt: lastSavedAt } : null;
   // Only over a snapshot the store holds for the key: a copy for a session
   // that was never saved is a fresh one, not a reload of the last.
+  // And only when the store's snapshot is the replaced copy's own last save:
+  // one saved later came from another process that went on in the session,
+  // and is newer than anything this process holds.
   const restoredFrom = (key: string, stored: State | null): State | null => {
     const previous = previousLive?.();
     previousLive = undefined;
     if (stored === null || !previous || previous.key !== key) return stored;
+    if (stored.savedAt !== undefined && stored.savedAt > previous.savedAt + HANDOFF_SLACK_MS) return stored;
     return unpack(JSON.parse(JSON.stringify(previous.state))) ?? stored;
   };
   /** True once a newer copy has claimed the session: this one stands aside. */
   let inert = false;
   /** The engine said the resumed session's cache has expired, and no response has written it since. */
   let cacheExpired = false;
+  /** A resume or fork event has said whether the cache expired: that outranks a snapshot's word. */
+  let resumeSpoke = false;
   /**
    * A response has been received in this conversation. The engine runs some
    * efforts as others on a conversation's first request only
@@ -805,6 +817,14 @@ export function register(on: On) {
   /** False right after `/clear`: the next key lookup must not restore. */
   let restoreOnKey = true;
 
+  /** When this copy last saved, for a replacing copy to tell its snapshot from a newer one. */
+  let lastSavedAt = 0;
+  /** The state to save, noting when. */
+  const stateToSave = (): State => {
+    lastSavedAt = Date.now();
+    return stateNow();
+  };
+
   /** The settings a `/jev` command set this session, which outrank the environment. */
   const overridden = new Set<Overridable>();
 
@@ -865,7 +885,9 @@ export function register(on: On) {
     answered = s.answered;
     lastCompaction = s.compaction;
     unconfirmed = s.unconfirmed;
-    cacheExpired = s.cacheExpired;
+    // A resume event this copy saw speaks for the session now; a snapshot
+    // saved before it does not.
+    if (!resumeSpoke) cacheExpired = s.cacheExpired;
     summarisedAgents.clear();
     for (const id of s.summarisedAgents) summarisedAgents.add(id);
     // Only what a command set outranks the environment; the rest stays as
@@ -901,6 +923,10 @@ export function register(on: On) {
     attempts.unshift(attempt);
     attempts.length = Math.min(attempts.length, HISTORY_LIMIT);
     reply.push(attempt);
+    // A reply that never closes (the engine's nudges alone, or quiet) must
+    // not grow the snapshot without end: past the limit its oldest turns go,
+    // and its summary, if one comes, counts the rest.
+    if (reply.length > REPLY_LIMIT) reply.splice(0, reply.length - REPLY_LIMIT);
   };
 
   on("session.start", async ($, e, next) => {
@@ -959,6 +985,15 @@ export function register(on: On) {
       prunedCache = null;
       // A new conversation has no cache to have expired.
       cacheExpired = false;
+      // Nor a compaction, or finished agents of its own. An agent still
+      // running from before the clear keeps its routing.
+      lastCompaction = null;
+      summarisedAgents.clear();
+      const live = new Set(
+        (await $.agent.list().catch(() => [])).filter((a) => a.status === "running").map((a) => a.id),
+      );
+      for (const id of [...spawned.keys()]) if (!live.has(id)) spawned.delete(id);
+      for (const id of [...stepped]) if (!live.has(id)) stepped.delete(id);
     }
     // A resume or fork into a different session, in a process already
     // running one: the old session's routing must not carry over. Its state
@@ -979,6 +1014,12 @@ export function register(on: On) {
         // The old session's expired cache is not this one's; the resume
         // event below says whether this one's has.
         cacheExpired = false;
+        // Its compaction, scoring and agents are the old session's too.
+        lastCompaction = null;
+        prunedCache = null;
+        spawned.clear();
+        stepped.clear();
+        summarisedAgents.clear();
         clearRouting();
         reply = [];
         replyAgents = new Set();
@@ -994,8 +1035,10 @@ export function register(on: On) {
     // switch is priced with staying as a write too, snapshot or not.
     // Every resume says afresh whether its own cache has expired; what an
     // earlier one said is not this session's.
-    if (e.source === "resume" || e.source === "fork")
+    if (e.source === "resume" || e.source === "fork") {
       cacheExpired = e.prompt_cache_likely_expired === true;
+      resumeSpoke = true;
+    }
     if (
       (e.source === "resume" || e.source === "fork") &&
       running === null &&
@@ -1155,7 +1198,7 @@ export function register(on: On) {
         };
       }
     }
-    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
     return pruned ?? next(e);
   });
 
@@ -1180,7 +1223,7 @@ export function register(on: On) {
     running = null;
     unconfirmed = null;
     continueFrom = null;
-    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
     return next(e);
   });
 
@@ -1212,7 +1255,7 @@ export function register(on: On) {
     if (sub === "on" || sub === "off") {
       enabled = sub === "on";
       if (!enabled) clearRouting();
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       return { text: toggleReply(enabled) };
     }
 
@@ -1221,7 +1264,7 @@ export function register(on: On) {
       if (want === "on" || want === "off") {
         settings.priceCheck = want === "on";
         overridden.add("priceCheck");
-        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       } else if (want !== "") {
         return { text: unknownCommandReply(sub, false) };
       }
@@ -1237,7 +1280,7 @@ export function register(on: On) {
       if (want === "on" || want === "off") {
         settings.compactOn = want === "on";
         overridden.add("compactOn");
-        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       } else if (want !== "") {
         return { text: unknownCommandReply(sub, false) };
       }
@@ -1252,7 +1295,7 @@ export function register(on: On) {
 
     if (sub === "quiet" || sub === "loud") {
       announce = sub === "loud";
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       return { text: announceReply(announce) };
     }
 
@@ -1262,7 +1305,7 @@ export function register(on: On) {
       const result = stickyCommand(sub.slice("sticky".length), settings.sticky);
       if (result.sticky !== settings.sticky) overridden.add("sticky");
       settings.sticky = result.sticky;
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       return { text: result.text };
     }
 
@@ -1273,7 +1316,7 @@ export function register(on: On) {
       );
       if (!sameCeiling(result.ceiling, settings.ceiling)) overridden.add("ceiling");
       settings.ceiling = result.ceiling;
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       return { text: result.text };
     }
 
@@ -1283,7 +1326,7 @@ export function register(on: On) {
       if (tiers.excluded.join() !== settings.excluded.join()) overridden.add("excludedTiers");
       settings.excluded = tiers.excluded;
       settings.offered = tiers.offered;
-      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+      if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       return { text: result.text };
     }
 
@@ -1297,7 +1340,7 @@ export function register(on: On) {
         const result = ceilingCommand(sub, settings.ceiling);
         if (!sameCeiling(result.ceiling, settings.ceiling)) overridden.add("ceiling");
         settings.ceiling = result.ceiling;
-        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
         return { text: result.text };
       }
       return { text: unknownCommandReply(sub, legacy) };
@@ -1320,6 +1363,7 @@ export function register(on: On) {
         compactOn: settings.compactOn,
         compaction: lastCompaction,
         ttl: settings.ttl,
+        cold: cacheExpired,
         contextTokens,
         sessionModel,
         running,
@@ -1582,7 +1626,7 @@ export function register(on: On) {
       continueFrom = null;
     }
 
-    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
 
     return next(e);
   });
@@ -1653,7 +1697,7 @@ export function register(on: On) {
           const now = Date.now();
           if (!MID_TURN.has(chunk.stopReason ?? "") || now - lastMidTurnSave >= MID_TURN_SAVE_MS) {
             lastMidTurnSave = now;
-            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
           }
         }
         yield chunk;
@@ -1695,6 +1739,8 @@ export function register(on: On) {
           agent,
         };
         record(attempt);
+        // One row per agent, as a routed spawn has: its later turns join it.
+        spawned.set(e.agentId, attempt);
       }
       byTurn.set(e.turnId, attempt);
       trimByTurn();
@@ -1762,7 +1808,7 @@ export function register(on: On) {
         unconfirmed = null;
         // Saved now: a turn cut short after this writes nothing else, and a
         // reload would otherwise take back a switch that did happen.
-        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+        if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
       }
       const at = (raw as { index?: unknown }).index;
       if (typeof at === "number" && at > lastIndex) lastIndex = at;
@@ -1783,6 +1829,11 @@ export function register(on: On) {
           // since the turn began leaves it to the owner, once, and a line an
           // inner copy already wrote is not written again.
           pending.delete(e.turnId);
+          // `/jev quiet` since the turn began: no line after all.
+          if (!announce) {
+            yield chunk;
+            continue;
+          }
           // The line's whole shape, not its opening: a reply that opens
           // with its own "> ⚠️ " warning is not a line a copy wrote.
           if (isRouteLine(chunk.text) || !(await holdsNow())) {
@@ -1795,7 +1846,7 @@ export function register(on: On) {
             text: `${liveLine(attempt)}${REPLY_SEPARATOR}${chunk.text}`,
           };
           // Saved now, so a reload later in the turn does not write it twice.
-          if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+          if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
           continue;
         }
       }
@@ -1858,7 +1909,7 @@ export function register(on: On) {
           const now = Date.now();
           if (!MID_TURN.has(chunk.stopReason ?? "") || now - lastMidTurnSave >= MID_TURN_SAVE_MS) {
             lastMidTurnSave = now;
-            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
           }
         }
 
@@ -1909,7 +1960,7 @@ export function register(on: On) {
             trimSet(summarisedAgents);
             reply = [];
             replyAgents = new Set();
-            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+            if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
           }
         }
       }
@@ -1991,11 +2042,14 @@ export function register(on: On) {
             if (id !== justStarted && drop(status.get(id))) spawned.delete(id);
           }
         };
-        evict((s) => s === undefined || s === "failed" || s === "killed");
+        evict((s) => s === "failed" || s === "killed");
         evict((s) => s === "completed");
+        // Not in the list yet (spawned a moment ago, in parallel) or the list
+        // unreadable: last, and oldest first, so a fresh one outlives the rest.
+        evict((s) => s === undefined);
       }
     }
-    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateNow(), firstSave());
+    if (snapshotKey && settings && !inert) await saveSnapshot($, snapshotKey, stateToSave(), firstSave());
     return started;
   });
 

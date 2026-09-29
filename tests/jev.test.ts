@@ -409,3 +409,13 @@ describe("round-3 audit (2026-09-29)", () => {
     assert.equal(timeoutOf("1e3"), 1000);
   });
 });
+
+describe("round-4 audit (2026-09-29)", () => {
+  test("a fetch that rejects with something that is not an Error is still a named failure", async () => {
+    for (const thrown of [Object.create(null), Object.assign(new Error("x"), { message: 42 })]) {
+      const got = await askJev({ ...base, fetch: async () => { throw thrown; } });
+      assert.equal(got.ok, false);
+      if (!got.ok) assert.match(got.reason, /^request failed: /);
+    }
+  });
+});

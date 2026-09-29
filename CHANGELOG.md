@@ -86,12 +86,13 @@ Ready and merged, held back from a version bump until approved:
   text lists `tiers`; the sticky line names `/jev sticky on`; the cache
   line skips tiers turned off and a subagent's output.
 
-- **Talk about a tier no longer forces it.** "should I use opus or
-  sonnet?", "make production use sonnet by default", "I told you not to use
-  haiku" and a `// use opus` code comment are ordinary prompts; requests
-  phrased any other way ("yes use opus", "can we use opus?", "for this one
-  use opus", a bulleted "- use opus") still route. A short single-quoted
-  phrase is not read for it.
+- **Talk about a tier no longer forces it.** A route phrase counts only
+  when what opens its clause is a softener, a scope or a way of asking
+  ("yes use opus", "can we use opus?", "for the migration use fable",
+  "- use opus", "feel free to use opus"). Prose that only mentions a tier
+  ("should I use opus or sonnet?", "they want to use opus", "the job will
+  switch to haiku", "I told you not to use haiku", a `// use opus` comment)
+  is an ordinary prompt. Held to a labelled set of 205 prompts in the tests.
 - **A finished task's result is not sent to Jev.** A notification that
   asks Jev sends only the task's one-line summary. The README has a new
   "What leaves your machine" section.
@@ -160,8 +161,24 @@ Ready and merged, held back from a version bump until approved:
 - **A tier you named that did not fit** (kept on the running tier, or
   stepped up past it) reads "you picked haiku", not "your pick" on the tier
   that actually ran.
+- **A reload never takes the old copy's state over a newer snapshot**
+  another process saved in the same session; and a resume that says the
+  cache expired is not overruled by the resumed session's snapshot.
+- **`/clear` and a resume into another session** forget the previous
+  conversation's compaction and finished agents; an agent still running
+  across `/clear` keeps its routing.
+- **Agents:** one spawned a moment ago, not yet listed, outlives completed
+  ones past the limit; an agent the router left alone (named model, fork)
+  gets one history row, not one per turn.
+- **A reply of the engine's nudges alone** no longer grows the snapshot
+  without end. `/jev quiet` given mid-turn drops that turn's line too.
+- **The cache line's break-even** is the cold one after an expired resume,
+  and never rounded up (`pays below 450`, `4.1k`).
+- **A negative token count** from the API counts as none, instead of a
+  negative cost and a snapshot that can no longer load. A fetch that
+  rejects with something other than an Error is still a named failure.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
-  Vertex (`claude-…@date`) model ids.
+  Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 
 ### Chores
 

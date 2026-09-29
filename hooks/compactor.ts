@@ -23,7 +23,7 @@ import type {
   ToolResult,
   ToolUse,
 } from "./compaction/types.ts";
-import type { HttpInitLike, HttpResponseLike } from "./jev.ts";
+import { messageOf, type HttpInitLike, type HttpResponseLike } from "./jev.ts";
 import type { ProviderResult } from "./provider.ts";
 
 /** Below this share removed, the engine's summary does better; its default. */
@@ -253,7 +253,7 @@ export async function pruneTranscript(args: {
     if (short !== undefined) return { ok: false, compaction: { ...compaction, fallback: short } };
     return { ok: true, messages: toEngineMessages(args.messages, result.messages), compaction };
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = messageOf(error);
     // Shown in /jev and saved: plain words only, whatever the provider sent.
     return none(detail.replace(/\s+/g, " ").replace(/[`*_#<>\[\]()|]/g, "").slice(0, 120));
   } finally {

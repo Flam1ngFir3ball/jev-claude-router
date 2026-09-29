@@ -909,3 +909,24 @@ describe("parseOverride: requests phrased every which way still route (2026-09-2
     for (const text of ["should I use opus or sonnet for this?","why do we use haiku for the classifier?","Explain when to use fable vs opus","Refactor config so that production workloads use sonnet by default","I told you not to use haiku","no need to use opus here","I don't think we should use opus","rather than use opus, just fix the typo","the README says 'use opus' for planning","look at this:\n    // use opus\nwhat is it for?","we use sonnet in prod","do not use sonnet","never use fable for this","I don't want to use haiku","how to use opus","which to use opus","the jobs use haiku"]) assert.equal(parseOverride(text), null, JSON.stringify(text));
   });
 });
+
+describe("parseOverride against the labelled corpus (2026-09-29)", async () => {
+  const { OVERRIDE_CORPUS, OVERRIDE_CORPUS_MORE } = await import("./fixtures/override-corpus.ts");
+  // Phrasings a regex reads wrong on purpose, each for a reason: a question
+  // that ends in an order, a quoted route with a clause break inside it,
+  // code with a colon, and "can we" asked about an example. Any other
+  // disagreement is a regression.
+  const KNOWN = new Set([
+    "isn't it better to use opus? do it",
+    "the regex matches use opus and switch to fable",
+    "CHANGELOG: route to opus on override",
+    "  if tier == x: use opus",
+    "can we use opus in the README example?",
+  ]);
+  test("every labelled prompt reads as labelled, bar the known few", () => {
+    const wrong = [...OVERRIDE_CORPUS, ...OVERRIDE_CORPUS_MORE]
+      .filter(([text, tier]) => !KNOWN.has(text) && parseOverride(text) !== tier)
+      .map(([text, tier]) => `${JSON.stringify(text)}: want ${tier}, got ${parseOverride(text)}`);
+    assert.deepEqual(wrong, []);
+  });
+});

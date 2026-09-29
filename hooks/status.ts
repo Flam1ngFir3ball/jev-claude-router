@@ -325,7 +325,9 @@ export function normalUsage(usage: {
   cache_read_input_tokens?: unknown;
   cache_creation_input_tokens?: unknown;
 }): Usage {
-  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  // A count the API could never mean (negative, NaN) is none: a negative
+  // one would make a cost negative and the snapshot unloadable.
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
   return {
     model: typeof usage.model === "string" ? usage.model : "",
     input_tokens: n(usage.input_tokens),
@@ -345,6 +347,8 @@ export const kept = (text: string) => (text.length > PROMPT_KEPT ? text.slice(0,
 
 export type Status = {
   enabled: boolean;
+  /** The resumed session's cache expired and nothing has written it since. */
+  cold?: boolean;
   surface: string | null;
   provider: ProviderResult;
   timeoutMs: number;
@@ -803,6 +807,12 @@ function attemptLine(attempt: Attempt): string {
   return `  ${when}  ${d.tier}·${d.effort}  ${notes.join("; ")}  ${what}`;
 }
 
+/** Thousands rounded down, for a limit that must not be overstated: 4.1k, 45k. */
+function kOfDown(n: number): string {
+  const k = n / 1000;
+  return k < 10 ? `${Math.floor(k * 10) / 10}k` : `${Math.floor(k)}k`;
+}
+
 /** Thousands or millions, rounded, for token counts: 130k, 2k, 3.3M. */
 function kOf(n: number): string {
   const k = Math.round(n / 1000);
@@ -1118,17 +1128,21 @@ function cacheLine(status: Status): string {
         last?.usage?.output_tokens ?? TYPICAL_OUTPUT_TOKENS,
         TYPICAL_OUTPUT_TOKENS,
       );
+      // Cold as the switch is priced: a resumed cache that expired costs a
+      // write to stay on as well.
       const be = breakEvenTokens(
         from,
         to,
         out,
         status.ttl,
         priceOfModel(running.model) ?? PRICE[from],
+        status.cold === true,
       );
+      // Never a figure above the real one: under 1k it is shown whole.
       parts.push(
         be === 0
           ? `${from}→${to} never pays`
-          : `${from}→${to} pays below ${be < 1000 ? "1k" : kOf(be)}`,
+          : `${from}→${to} pays below ${be < 1000 ? `${be}` : kOfDown(be)}`,
       );
     }
   }

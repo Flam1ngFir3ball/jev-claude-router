@@ -243,3 +243,11 @@ describe("compactTimeoutOf: a small budget is honoured (2026-09-29)", () => {
     assert.equal(compactTimeoutOf("8"), DEFAULT_COMPACT_TIMEOUT_MS);
   });
 });
+
+describe("pruneTranscript never rejects (2026-09-29)", () => {
+  test("a fetch that rejects with a bare object falls back with a reason", async () => {
+    const r = await pruneTranscript({ messages: transcript(3), provider: typesafe, fetch: async () => { throw Object.create(null); }, sleep: never, timeoutMs: 8000, minReduction: 0, options: { preserveRecentMessages: 0 } });
+    assert.equal(r.ok, false);
+    assert.equal(typeof r.compaction.fallback, "string");
+  });
+});

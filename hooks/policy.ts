@@ -647,35 +647,41 @@ export function parseOverride(
 }
 
 /**
- * Lead-ins that make the route phrase talk about a tier rather than a request
- * to run on it. Anything else ahead of the verb is fine ("yes", "for this one",
- * "can we", "- " as a bullet): a request is phrased in endless ways, and the
- * cost of missing one is a turn left to Jev, while the cost of a false one is
- * a forced switch with no checks. So only what clearly is not a request is
- * refused:
- * - a question about the choice ("should I", "why do we", "when to"),
- * - a clause with its own subject ("workloads use", "we use", "so that ..."),
- * - a comparison or an aside ("rather than", "instead of", "no need to"),
- * - a negation anywhere before it ("I don't think we should"), except the
- *   tag questions that ask for it ("why don't you", "can't you", "won't you"),
- * - a code comment (`//`, `#`).
+ * What may stand ahead of the verb, between the start of its clause and the
+ * verb, for the phrase to be said to the model. Measured against a labelled
+ * set of prompts (tests/fixtures/override-corpus.ts): refusing only what
+ * looks like talk (a deny-list) let through prose with any subject not
+ * listed ("anyone can use opus", "they want to use opus", "the job will
+ * switch to haiku"), so this lists what a request opens with instead —
+ * softeners, acknowledgements, scope ("for the migration", "this time"),
+ * and the ways of asking — and anything else is talk about a tier. The cost
+ * of a miss is a turn left to Jev; of a false match, a forced switch with no
+ * checks, which is the one to avoid.
  */
-const TALK_ABOUT: readonly RegExp[] = [
-  /^(?:should|shall|do|does|did|why|when|how|what|which|where|whether|is|are|was|were|have|has|had)\b(?!.*\b(?:why\s+(?:not|don'?t\s+you)))/,
-  /\b(?:that|which|where|when|if|because|whether|so)\s*$|\b(?:that|which|if|because|whether)\b/,
-  // A subject of its own, unless it is asked ("can we", "could I", "let's").
-  /(?<!\b(?:can|could|would|will|shall|may|let)\s)\b(?:i|we|they|he|she|it|people|everyone|nobody|users?|workloads?|jobs?|teams?|services?)\s*$/,
-  /\b(?:than|rather|instead\s+of|no\s+need\s+to|how\s+to|when\s+to|where\s+to|whether\s+to|which\s+to|not\s+to)\s*$/,
-  /\bto\s*$/,
-  /(?:\/\/|#|\/\*)/,
-];
+const OPENER = new RegExp(
+  "^(?:" +
+    [
+      // Softeners and acknowledgements.
+      "please|pls|just|now|then|so|ok|okay|oh|hey|hi|yes|yeah|yep|yup|sure|hmm+|um+|well|again",
+      "maybe|perhaps|actually|instead|also|and|but|or|rather|here|claude|nope|no|alright|right",
+      "fine|anyway|honestly|really|definitely|ideally",
+      // Scope.
+      "this time|for this one|for this|for now|from now on|going forward|for (?:the|this|that|these|those|each|every|all) [\\w-]+(?: [\\w-]+)?",
+      // Asking.
+      "let'?s|let us|let me|go ahead and|i want you to|i want to|we want to|i'?d like (?:you )?to|i would like (?:you )?to",
+      "i need you to|we need to|you need to|i'?d rather you|i would rather you|i'?d prefer (?:(?:that |if )?you)?|i think you should",
+      "you should|we should|you can|you may|you could|can you|could you|would you|will you|can we|could we|shall we",
+      "feel free to|you'?re free to|make sure (?:to|you)|remember to|be sure to|try to|time to|it'?s time to",
+      "(?:please )?don'?t hesitate to|i'?m going to ask you to|i'?m asking you to|i said|wouldn'?t hurt to",
+      "you might as well|might as well|you might want to",
+      // Tag questions that ask for it.
+      "why not|why don'?t you|can'?t you|won'?t you|couldn'?t you|wouldn'?t you",
+    ].join("|") +
+    ")(?: |$)",
+);
 
-/** Leads that end in "to" and still ask for it ("I want you to", "I'd like to"). */
-const ASKING_TO = /\b(?:want|wants|like|need|prefer|asked|ask|going|free)(?:\s+(?:you|us|me))?\s+to\s*$|\bgo\s+ahead\s+and\s*$/;
-
-/** Negations ahead of the verb, and the tag questions that are not one. */
-const LEAD_NEGATION = /\b(?:not|never|no|n'?t|nor)\b|n't\b/;
-const TAG_QUESTION = /\b(?:why\s+(?:not|don'?t\s+you)|can'?t\s+you|won'?t\s+you|couldn'?t\s+you|wouldn'?t\s+you)\s*$/;
+/** A list marker opening the clause: `-`, `*`, `•`, `1.`, `1)`. */
+const BULLET = /^(?:[-*•]|\d+[.)])\s*/;
 
 /** A clause break: sentence ends, commas, dashes, ellipses, a new line, a joining and/then/but. */
 const CLAUSE_BREAK = /[.!?,;:\n—–…]|\s-\s|\s(?:and|then|but)\s/gi;
@@ -683,18 +689,19 @@ const CLAUSE_BREAK = /[.!?,;:\n—–…]|\s-\s|\s(?:and|then|but)\s/gi;
 /**
  * Whether the verb at `at` asks the model to run on the tier: the text from
  * the last clause break (or the end of the previous route phrase, `from`) up
- * to the verb is not one of the `TALK_ABOUT` lead-ins.
+ * to the verb is nothing but `OPENER`s.
  */
 function addressedAt(text: string, from: number, at: number): boolean {
   let start = from;
   for (const brk of text.slice(from, at).matchAll(CLAUSE_BREAK))
     start = from + (brk.index ?? 0) + brk[0].length;
-  const lead = text.slice(start, at).trim().toLowerCase().replace(/\s+/g, " ");
-  if (lead === "") return true;
-  if (TAG_QUESTION.test(lead)) return true;
-  if (LEAD_NEGATION.test(lead)) return false;
-  if (/\bto\s*$/.test(lead) && ASKING_TO.test(lead)) return true;
-  return !TALK_ABOUT.some((re) => re.test(lead));
+  let lead = text.slice(start, at).trim().toLowerCase().replace(/\s+/g, " ").replace(BULLET, "");
+  for (let guard = 0; lead !== "" && guard < 12; guard++) {
+    const m = lead.match(OPENER);
+    if (m === null) return false;
+    lead = lead.slice(m[0].length).trimStart();
+  }
+  return lead === "";
 }
 
 /** True when the gap is only light bridge words and no clause break. */

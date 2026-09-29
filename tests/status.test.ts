@@ -24,11 +24,13 @@ import {
   type Status,
   addUsage,
   cacheRatio,
+  normalUsage,
   type Attempt,
   type Usage,
   withoutImitations,
   ImitationFilter,
 } from "../hooks/status.ts";
+import { breakEvenTokens } from "../hooks/pricing.ts";
 import {
   ceilingAt,
   DEFAULT_STICKY_CONFIDENCE,
@@ -1081,7 +1083,7 @@ describe("a downgrade held on its price", () => {
     const routed: Attempt = { prompt: "plan", ms: 300, decision: onFable };
     addUsage(routed, usageOf("claude-fable-5-1", { output_tokens: 1500, cache_read_input_tokens: 199_000, cache_creation_input_tokens: 0 }));
     const report = statusReport({ ...base, contextTokens: 200_000, running: onFable, attempts: [routed] });
-    assert.match(report, /cache\s+1h writes · 200k context · fable→haiku pays below \d+k/);
+    assert.match(report, /cache\s+1h writes · 200k context · fable→haiku pays below [\d.]+k/);
   });
 });
 
@@ -1347,5 +1349,20 @@ describe("a named tier that did not run is not called your pick (2026-09-29)", (
     assert.doesNotMatch(replySummary([kept])!, /your pick/);
     const ran: Attempt = { prompt: "use opus", ms: 0, decision: { tier: "opus", model: "claude-opus-5-5", effort: "medium", confidence: 0, forced: true } };
     assert.match(liveLine(ran), /your pick/);
+  });
+});
+
+describe("round-4 audit (2026-09-29)", () => {
+  const onFable = { tier: "fable" as const, model: "claude-fable-5-1", effort: "xhigh" as const, confidence: 0.9 };
+  test("the cache line's break-even is the cold one when the cache expired, and never rounded up", () => {
+    const warm = statusReport({ ...base, contextTokens: 50_000, running: onFable });
+    const cold = statusReport({ ...base, contextTokens: 50_000, running: onFable, cold: true });
+    const be = (r: string) => r.match(/fable→haiku pays below ([\d.]+)(k?)/)!;
+    const n = (m: RegExpMatchArray) => Number(m[1]) * (m[2] === "k" ? 1000 : 1);
+    assert.ok(n(be(cold)) > n(be(warm)));
+    assert.ok(n(be(warm)) <= breakEvenTokens("fable", "haiku", 1500, "1h"));
+  });
+  test("a negative token count is none", () => {
+    assert.equal(normalUsage({ model: "m", input_tokens: -1000 }).input_tokens, 0);
   });
 });
