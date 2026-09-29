@@ -1873,7 +1873,7 @@ export function register(on: On) {
       const was = running;
       running = asAsked(attempt.decision);
       continueFrom = running;
-      if (unconfirmed === null && (was === null || baseModel(was.model) !== baseModel(running.model)))
+      if (unconfirmed === null && (was === null || !sameModelAs(was.model, running.model)))
         unconfirmed = { was };
     } else {
       // Unrouted: the session model answered. A following go-ahead must not

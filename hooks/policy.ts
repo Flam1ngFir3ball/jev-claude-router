@@ -6,7 +6,7 @@
  * `node` in tests.
  */
 
-import {
+import { sameModelAs,
   baseModel,
   fitsWindow,
   tierOfModel,
@@ -401,7 +401,8 @@ export function stickyDecision(
   // opus is still a switch, to `claude-opus-5-5` and a cold cache. The
   // engine's `[1m]` suffix is not a different model, and the session's own
   // spelling is what is sent back, so nothing changes under it.
-  if (baseModel(fresh.model) === baseModel(previous.model))
+  // A provider's spelling (`…@date`, `us.anthropic.…`) is the same model too.
+  if (sameModelAs(fresh.model, previous.model))
     return fresh.model === previous.model
       ? fresh
       : { ...fresh, model: previous.model };
@@ -486,10 +487,16 @@ export function sessionDecision(model: string): Decision | null {
   // A spelling a snapshot could not hold (a control character, markdown, a
   // runaway length) is not adopted: saved, it would lose the whole state.
   if (!MODEL_ID.test(model)) return null;
-  // An alias (`opus`, `opusplan`, `sonnet[1m]`) names a setting, not the
-  // model the engine runs (`opusplan` runs Sonnet outside plan mode): no
-  // placeholder is made of it, so nothing is held to a model not running.
-  if (MODEL_ALIAS.test(model)) return null;
+  // An alias that names no one model (`opusplan` runs Sonnet outside plan
+  // mode; `default` is whatever the account gets) makes no placeholder, so
+  // nothing is held to a model not running. A tier's own alias (`opus`,
+  // `sonnet[1m]`) runs that tier's model, and stands for it.
+  if (AMBIGUOUS_ALIAS.test(model)) return null;
+  const plainAlias = /^(opus|sonnet|haiku|fable)(?:\[1m\])?$/i.exec(model);
+  if (plainAlias) {
+    const tier = plainAlias[1]!.toLowerCase() as Tier;
+    return { tier, model: MODEL_OF[tier], effort: "medium", confidence: 1 };
+  }
   const tier = tierOfModel(model);
   if (tier === null) return null;
   return { tier, model, effort: "medium", confidence: 1 };
@@ -502,8 +509,8 @@ export function sessionDecision(model: string): Decision | null {
  */
 export const MODEL_ID = /^[\w.:/@+\[\]-]{1,512}$/;
 
-/** A model alias the engine may report, not a model id. */
-export const MODEL_ALIAS = /^(?:opus|sonnet|haiku|fable|opusplan|default|best)(?:\[1m\])?$/i;
+/** A model alias that names no one model: a placeholder cannot be made of it. */
+export const AMBIGUOUS_ALIAS = /^(?:opusplan|default|best)(?:\[1m\])?$/i;
 
 /**
  * A turn the engine started, not the person: its "say what you are doing,

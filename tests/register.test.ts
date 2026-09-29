@@ -5205,3 +5205,43 @@ describe("register: model spellings (2026-09-29)", () => {
     assert.equal(t1.sent, "claude-opus-5-5");
   });
 });
+
+describe("register: a tier's own alias stands for its model (2026-09-29)", () => {
+  const stepOn = async (kit: ReturnType<typeof load>, id: string, text: string, engine: string) => {
+    await kit.hooks.get("turn.start")!(kit.$, { text, turnId: id }, async (e: unknown) => e);
+    let sent = "";
+    let out = "";
+    const chunks = (await collect(
+      kit.hooks.get("turn.step")!(kit.$, { turnId: id, index: 0, model: engine, effort: "medium" }, (e: { model: string }) => {
+        sent = e.model;
+        return (async function* () {
+          yield { kind: "text", index: 0, text: "ok", ref: 1 };
+          yield { kind: "stop", stopReason: "end_turn", usage: { model: e.model, input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 120_000, cache_creation_input_tokens: 0 } };
+        })();
+      }),
+    )) as { kind: string; text?: string }[];
+    for (const c of chunks) if (c.kind === "text") out += c.text;
+    return { sent, line: out.split("\n")[0]! };
+  };
+  for (const alias of ["opus", "opus[1m]"])
+    test(`a session on ${alias} keeps its warm cache on the first routed turn`, async () => {
+      const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
+      kit.setSessionModel(alias);
+      kit.setContext(120_000);
+      await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+      kit.setTier("sonnet", 0.6, 2);
+      const t = await stepOn(kit, "al1", "implement it", "claude-opus-5-5");
+      assert.equal(t.sent, "claude-opus-5-5");
+      assert.match(t.line, /kept opus/);
+    });
+  test("a provider's spelling of the session model is not priced as a switch to itself", async () => {
+    const kit = load({ AI_GATEWAY_API_KEY: "gw-key", JEV_ROUTER_STICKY: undefined });
+    kit.setSessionModel("claude-opus-5-5@20260901");
+    kit.setContext(120_000);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    kit.setTier("opus", 0.9, 2);
+    const t = await stepOn(kit, "vx1", "plan it", "claude-opus-5-5@20260901");
+    assert.equal(t.sent, "claude-opus-5-5@20260901");
+    assert.doesNotMatch(t.line, /kept claude/);
+  });
+});
