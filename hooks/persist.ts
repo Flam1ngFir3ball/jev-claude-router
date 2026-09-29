@@ -36,6 +36,8 @@ export type State = {
   reply: Attempt[];
   replyAgents: string[];
   spawned: [string, Attempt][];
+  /** Agents the router left alone, one history row each. */
+  unrouted: [string, Attempt][];
   /**
    * The turns in flight: their attempts, their decisions, and which still
    * await their route line. A reload mid-turn used to leave the rest of
@@ -94,7 +96,7 @@ export type State = {
   savedAt?: number;
 };
 
-type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
+type Packed = Omit<State, "attempts" | "reply" | "spawned" | "unrouted" | "turns"> & {
   v: number;
   /** When it was written, for pruning the least recently used first. */
   savedAt: number;
@@ -102,6 +104,7 @@ type Packed = Omit<State, "attempts" | "reply" | "spawned" | "turns"> & {
   attempts: number[];
   reply: number[];
   spawned: [string, number][];
+  unrouted: [string, number][];
   turns: [string, number][];
 };
 
@@ -126,6 +129,7 @@ export function pack(state: State): Packed {
     reply: state.reply.map(ref),
     replyAgents: [...state.replyAgents],
     spawned: state.spawned.map(([id, a]) => [id, ref(a)]),
+    unrouted: (state.unrouted ?? []).map(([id, a]) => [id, ref(a)]),
     turns: state.turns.map(([id, a]) => [id, ref(a)]),
     decisions: state.decisions,
     pending: [...state.pending],
@@ -232,8 +236,9 @@ export function unpack(raw: unknown): State | null {
     return out;
   };
   const spawned = pairs(raw.spawned);
+  const unrouted = pairs(raw.unrouted);
   const turns = pairs(raw.turns);
-  if (spawned === null || turns === null) return null;
+  if (spawned === null || unrouted === null || turns === null) return null;
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   // Invalid decisions are dropped rather than trusted to their detriment.
@@ -265,6 +270,7 @@ export function unpack(raw: unknown): State | null {
       (id): id is string => typeof id === "string",
     ),
     spawned,
+    unrouted,
     turns,
     decisions,
     pending: strings(raw.pending),

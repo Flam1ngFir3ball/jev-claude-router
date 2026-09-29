@@ -208,6 +208,9 @@ Ready and merged, held back from a version bump until approved:
 - **Names from outside the plugin** (an agent's type, a model id, a task's
   summary) are shown as plain words, so they cannot close the summary's
   fence or start a heading that reads as plugin output.
+- **A resume into another session** reads that session's model afresh
+  instead of keeping the one this process was on, and an agent the router
+  left alone keeps its single history row across a reload.
 - **Prices** are found for Bedrock (`us.anthropic.claude-…-v1:0`) and
   Vertex (`claude-…@date`) model ids, including Vertex's Opus 4.
 

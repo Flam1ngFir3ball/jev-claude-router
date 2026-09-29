@@ -27,6 +27,7 @@ import {
   stickyOf,
   thresholdOf,
   tierFilter,
+  DEFAULT_CEILING,
   EFFORTS,
   TIERS,
   type Ceiling,
@@ -258,8 +259,8 @@ const MID_TURN: ReadonlySet<string> = new Set([
 
 /**
  * Everything the router reads from the environment, read once. None of it
- * changes within a session, and reading fourteen variables on every turn was
- * fourteen awaits ahead of the Jev call. `sticky`, `ceiling`, `offered` and
+ * changes within a session, and reading them all on every turn was an await
+ * each ahead of the Jev call. `sticky`, `ceiling`, `offered` and
  * `excluded` start here and are then owned by `/jev sticky`, `/jev ceiling`
  * and `/jev tiers`.
  */
@@ -844,10 +845,11 @@ export function register(on: On) {
   };
 
   /**
-   * Forget what the main loop was running on. After `/jev off` the session
-   * model answers, and after a compaction or `/clear` the cache the hold was
-   * protecting is gone either way, so the next routed turn starts from Jev's
-   * word.
+   * Forget what the main loop was running on and the turns in flight. After
+   * `/jev off` the session model answers, and after `/clear` or a resume
+   * into another session the cache the hold was protecting is not this
+   * conversation's, so the next routed turn starts from Jev's word. (A
+   * compaction forgets only what was warm; see session.compact.)
    */
   const clearRouting = () => {
     decisions.clear();
@@ -887,6 +889,7 @@ export function register(on: On) {
     reply,
     replyAgents: [...replyAgents],
     spawned: [...spawned.entries()],
+    unrouted: [...unrouted.entries()],
     turns: [...byTurn.entries()],
     decisions: [...decisions.entries()],
     pending: [...pending],
@@ -901,7 +904,7 @@ export function register(on: On) {
     announce,
     answered,
     sticky: settings?.sticky ?? null,
-    ceiling: settings?.ceiling ?? ceilingAt("medium"),
+    ceiling: settings?.ceiling ?? ceilingAt(DEFAULT_CEILING),
     excludedTiers: [...(settings?.excluded ?? [])],
     compactOn: settings?.compactOn ?? true,
     priceCheck: settings?.priceCheck ?? true,
@@ -920,6 +923,8 @@ export function register(on: On) {
     replyAgents = new Set(s.replyAgents);
     spawned.clear();
     for (const [id, a] of s.spawned) spawned.set(id, a);
+    unrouted.clear();
+    for (const [id, a] of s.unrouted) unrouted.set(id, a);
     byTurn.clear();
     for (const [id, a] of s.turns) byTurn.set(id, a);
     decisions.clear();
@@ -1085,6 +1090,9 @@ export function register(on: On) {
         unrouted.clear();
         stepped.clear();
         summarisedAgents.clear();
+        // The resumed session's model is read afresh, not the one this
+        // process was on (a resume's own model switch is not reported).
+        sessionModel = null;
         clearRouting();
         reply = [];
         replyAgents = new Set();
@@ -1788,9 +1796,9 @@ export function register(on: On) {
       // every routed subagent twice.
       attempt = spawned.get(e.agentId) ?? unrouted.get(e.agentId);
       if (attempt !== undefined) {
-        // Touch keeps the row warm; spawned itself is never trimmed — dropping
-        // an in-flight agent silently reverts its later steps to the session
-        // model and invents a "not routed at spawn" history row.
+        // Touch keeps the row warm, so a busy agent is the last evicted when
+        // a spawn trims the map: dropping an in-flight agent would revert its
+        // later steps to the session model.
         touch(spawned, e.agentId, attempt);
       } else {
         // A fork, or a spawn from before the router loaded: nothing was

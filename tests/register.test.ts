@@ -4297,3 +4297,32 @@ describe("register: round-5 findings (2026-09-29)", () => {
     assert.equal(kit.fetches(), before + 1, "Jev was asked: this copy routes");
   });
 });
+
+describe("register: round-6 findings (2026-09-29)", () => {
+  const run = (hooks: Map<string, Function>, $: unknown, args: string) =>
+    hooks.get('command.run:{"command":"jev"}')!($, { args });
+  test("a resume into another session reads that session's model, not the old one's", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-MA" };
+    const kit = load(undefined, shared);
+    await kit.hooks.get("session.start")!(kit.$, {}, async (e: unknown) => e);
+    await kit.hooks.get("turn.start")!(kit.$, { text: "x", turnId: "m1" }, async (e: unknown) => e);
+    await collect(kit.hooks.get("turn.step")!(kit.$, { turnId: "m1", index: 0 }, (e: { model: string }) => answeredBy(e.model)));
+    shared.id = "sess-MB";
+    kit.setSessionModel("claude-haiku-4-5");
+    await kit.hooks.get("classic.SessionStart")!(kit.$, { source: "resume" }, async (e: unknown) => e);
+    assert.match((await run(kit.hooks, kit.$, "")).text, /session\s+claude-haiku-4-5/);
+  });
+  test("an agent the router left alone keeps its one row across a reload", async () => {
+    const shared = { store: new Map<string, unknown>(), id: "sess-UR" };
+    const a = load(undefined, shared);
+    await a.hooks.get("session.start")!(a.$, {}, async (e: unknown) => e);
+    await a.hooks.get("agent.spawn")!(a.$, { prompt: "p", description: "Named", subagentType: "Explore", fork: false, background: true, model: "haiku" }, async () => ({ model: "claude-haiku-4-5", agentId: "agent-1" }));
+    await collect(a.hooks.get("turn.step")!(a.$, { turnId: "u1", index: 0, agentId: "agent-1" }, (e: { model: string }) => answeredBy(e.model ?? "claude-haiku-4-5")));
+    await new Promise((r) => setTimeout(r, 5));
+    const b = load(undefined, shared);
+    await b.hooks.get("session.start")!(b.$, {}, async (e: unknown) => e);
+    await collect(b.hooks.get("turn.step")!(b.$, { turnId: "u2", index: 0, agentId: "agent-1" }, (e: { model: string }) => answeredBy(e.model ?? "claude-haiku-4-5")));
+    const rows = (await run(b.hooks, b.$, "")).text.split("\n").filter((l) => /not routed/.test(l));
+    assert.equal(rows.length, 1);
+  });
+});
